@@ -105,10 +105,11 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
         {settings.data?.credentialsAllowed === "true" ? <div className="menu-quota-list">{quotaWindows.map(({ provider, window }) => {
           const remaining = window.usedPercent === undefined ? undefined : Math.max(0, Math.min(100, 100 - window.usedPercent));
           const reset = resetTime(window, locale);
+          const resetLabel = reset ? t("menubar.resetsAt", { time: reset }) : t("menubar.resetUnknown");
           return <div className={`menu-quota-row ${remaining !== undefined && remaining < 20 ? "critical" : remaining !== undefined && remaining < 50 ? "warning" : ""}`} key={`${provider.provider}-${window.id}`}>
             <div className="menu-quota-copy"><span>{providerName(provider.provider)} · {t(window.label, { defaultValue: window.label })}</span><strong>{remaining === undefined ? t("metrics.unavailable") : t("menubar.remaining", { value: Math.round(remaining) })}</strong></div>
             <div className="menu-quota-track" aria-hidden="true"><i style={{ width: `${remaining ?? 0}%` }} /></div>
-            <small>{reset ? t("menubar.resetsAt", { time: reset }) : t("menubar.resetUnknown")}</small>
+            <small title={resetLabel}>{resetLabel}</small>
           </div>;
         })}</div> : <button className="menu-enable-quota" onClick={() => void open(true)}><span><strong>{t("menubar.noQuota")}</strong><small>{t("menubar.enableInSettings")}</small></span><ArrowUpRight size={15} /></button>}
       </section>
