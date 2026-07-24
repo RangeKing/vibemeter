@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <filter id="shadow" x="50" y="48" width="924" height="930" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="26" stdDeviation="34" flood-color="#211D35" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="108" y="88" width="808" height="808" rx="190" fill="#2B2642"/>
+    <rect x="111" y="91" width="802" height="802" rx="187" fill="none" stroke="#FFF" stroke-opacity=".12" stroke-width="6"/>
+  </g>
+
+  <!-- The rewind trajectory is 75% of its previous size. -->
+  <g transform="translate(512 512) scale(.75) translate(-512 -512)">
+    <path d="M744 318A300 300 0 1 1 488 212" fill="none" stroke="#E48263" stroke-width="40" stroke-linecap="round"/>
+    <path d="M397 136L488 212L402 301" fill="none" stroke="#E48263" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- The centered 〈 ✦ 〉 logo is 75% of its previous size. -->
+  <g transform="translate(512 512) scale(.75) translate(-512 -512)">
+    <path d="M418 412L349 512L418 612" fill="none" stroke="#FFFDF7" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M606 412L675 512L606 612" fill="none" stroke="#FFFDF7" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M512 432C519 469 535 485 572 492C535 499 519 515 512 552C505 515 489 499 452 492C489 485 505 469 512 432Z" fill="#FFFDF7"/>
+  </g>
+</svg>

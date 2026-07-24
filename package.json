@@ -1,0 +1,22 @@
+{
+  "name": "aftervibe",
+  "version": "0.1.0",
+  "description": "Local-first reviews and insights for coding-agent work.",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "dev": "npm run tauri --workspace @aftervibe/desktop -- dev",
+    "build": "npm run tauri --workspace @aftervibe/desktop -- build",
+    "check": "npm run check --workspace @aftervibe/desktop",
+    "test": "npm run test --workspace @aftervibe/desktop",
+    "check:rust": "cd apps/desktop/src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
+    "test:rust": "cd apps/desktop/src-tauri && cargo test",
+    "ci": "npm run check && npm test && npm run check:rust && npm run test:rust"
+  }
+}

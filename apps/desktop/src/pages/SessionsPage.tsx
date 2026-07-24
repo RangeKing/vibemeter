@@ -1,0 +1,143 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, CheckCircle2, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
+import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { RangePicker } from "../components/RangePicker";
+import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "../components/ui";
+import { api } from "../lib/api";
+import { formatCompact, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
+import { useUiStore } from "../store";
+import type { Locale, SessionDetail, SessionSummary } from "../types";
+
+function deservesReview(session: SessionSummary): boolean {
+  return session.errors >= 3 || session.retries >= 2 || (session.activeSeconds >= 1_800 && session.filesTouched > 0 && session.verificationState !== "verified");
+}
+
+const phaseKeys = new Set(["understand", "inspect", "edit", "verify", "fix", "plan", "execute"]);
+
+function formatPhaseTime(value: string | undefined, locale: Locale): string | undefined {
+  if (!value) return undefined;
+  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
+function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; locale: Locale; onClose: () => void }) {
+  const { t } = useTranslation();
+  const client = useQueryClient();
+  const [showAllPhases, setShowAllPhases] = useState(false);
+  const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
+  const split = useMutation({
+    mutationFn: () => api.splitSession(detail.id),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["session", detail.id] }); await client.invalidateQueries({ queryKey: ["today"] }); },
+  });
+  return (
+    <aside className="replay-panel">
+      <header className="replay-header">
+        <button className="icon-button replay-back" onClick={onClose} aria-label={t("actions.back")}><ArrowLeft size={17} /></button>
+        <div><span className="eyebrow">{t("sessions.detailTitle")}</span><h2><SessionTitle session={detail} /></h2></div>
+        <AgentBadge agent={detail.agent} model={detail.model} compact />
+      </header>
+      <div className="replay-meta">
+        <span>{formatDateTime(detail.startedAt, locale)}</span><span>{formatDuration(detail.activeSeconds, locale)}</span><VerificationPill value={detail.verificationState} />
+      </div>
+      {detail.task ? <div className="task-assignment"><span>{detail.task.title}</span><button onClick={() => split.mutate()} disabled={split.isPending}><Split size={13} />{t("sessions.splitTask")}</button></div> : null}
+
+      <section className="replay-section process-section">
+        <header><div><h3>{t("sessions.process")}</h3><p>{t("sessions.processBody")}</p></div><span>{detail.phases.reduce((sum, phase) => sum + phase.eventCount, 0)} events</span></header>
+        <div className="phase-timeline">
+          {visiblePhases.map((phase, index) => {
+            const failures = phase.events.filter((event) => event.success === false).length;
+            const successes = phase.events.filter((event) => event.success === true).length;
+            const durationMs = phase.events.reduce((sum, event) => sum + (event.durationMs ?? 0), 0);
+            const phaseTime = formatPhaseTime(phase.startedAt, locale);
+            return <article key={phase.id} className={`phase phase-${phase.phaseKey}`}>
+              <div className="phase-axis"><span>{String(index + 1).padStart(2, "0")}</span></div>
+              <div className="phase-body">
+                <header><strong>{t(`sessions.phase.${phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other"}`)}</strong><span>{t("sessions.eventCount", { count: phase.eventCount })}</span></header>
+                <div className="phase-meta">{phaseTime ? <span>{phaseTime}</span> : null}{durationMs ? <span>{formatDuration(Math.max(1, Math.round(durationMs / 1_000)), locale)}</span> : null}{successes ? <span className="successful">{t("sessions.successful", { count: successes })}</span> : null}{failures ? <span className="failed">{t("sessions.failed", { count: failures })}</span> : null}</div>
+                <div className="event-chips">{phase.events.slice(0, 5).map((event) => <span key={`${event.sequence}-${event.name}`} className={event.success === false ? "failed" : ""}>{event.name}</span>)}{phase.events.length > 5 ? <span className="event-more">+{phase.events.length - 5}</span> : null}</div>
+              </div>
+            </article>;
+          })}
+          {!detail.phases.length ? <div className="quiet-empty">{t("metrics.unavailable")}</div> : null}
+        </div>
+        {detail.phases.length > 24 ? <button className="phase-expand" onClick={() => setShowAllPhases((value) => !value)}>{showAllPhases ? t("sessions.collapseTimeline") : t("sessions.expandTimeline", { count: detail.phases.length - 24 })}</button> : null}
+      </section>
+
+      <div className="replay-columns">
+        <section className="replay-section">
+          <header><div><h3>{t("sessions.files")}</h3></div><span>{detail.fileChanges.length}</span></header>
+          <div className="file-evidence-list">
+            {detail.fileChanges.map((file) => <div key={file.id}><FileCode2 size={15} /><span title={file.path}>{file.path}</span><strong>+{file.linesAdded} / −{file.linesDeleted}</strong><small>{file.finalState}</small></div>)}
+            {!detail.fileChanges.length ? <div className="quiet-empty">{t("metrics.unavailable")}</div> : null}
+          </div>
+        </section>
+        <section className="replay-section git-section">
+          <header><div><h3>{t("sessions.git")}</h3></div>{detail.gitEvidence.branch ? <span><GitBranch size={12} />{detail.gitEvidence.branch}</span> : null}</header>
+          {!detail.gitEvidence.available ? <div className="permission-empty"><GitBranch size={20} /><p>{t(detail.gitEvidence.state === "not-authorized" ? "sessions.gitNotAuthorized" : "sessions.gitUnavailable")}</p></div> : (
+            <div className="commit-list">{detail.gitEvidence.commits.map((commit) => <div key={commit.hash}><GitCommitHorizontal size={14} /><span><strong>{commit.subject}</strong><small>{commit.hash.slice(0, 8)} · {formatDateTime(commit.committedAt, locale)}</small></span></div>)}</div>
+          )}
+        </section>
+      </div>
+
+      <section className="capability-strip"><strong>{t("sessions.capabilities")}</strong>{detail.capabilities.map((item) => <span key={item}><CheckCircle2 size={12} />{item}</span>)}</section>
+    </aside>
+  );
+}
+
+export function SessionsPage({ locale }: { locale: Locale }) {
+  const { t } = useTranslation();
+  const range = useUiStore((state) => state.range);
+  const selectedId = useUiStore((state) => state.selectedSessionId);
+  const selectSession = useUiStore((state) => state.selectSession);
+  const [search, setSearch] = useState("");
+  const [agent, setAgent] = useState("");
+  const [model, setModel] = useState("");
+  const [project, setProject] = useState("");
+  const [state, setState] = useState("");
+  const [worthOnly, setWorthOnly] = useState(false);
+  const [codeOnly, setCodeOnly] = useState(false);
+  const [commitOnly, setCommitOnly] = useState(false);
+  const query = useQuery({ queryKey: ["sessions", range, agent, search], queryFn: () => api.sessions(range, agent || undefined, search || undefined, 0, 200) });
+  const detail = useQuery({ queryKey: ["session", selectedId], queryFn: () => api.sessionDetail(selectedId ?? ""), enabled: Boolean(selectedId) });
+  const projects = useMemo(() => [...new Set((query.data?.items ?? []).map((item) => item.projectLabel).filter(Boolean))].sort(), [query.data?.items]);
+  const models = useMemo(() => [...new Set((query.data?.items ?? []).map((item) => item.model).filter((item): item is string => Boolean(item)))].sort(), [query.data?.items]);
+  const items = useMemo(() => (query.data?.items ?? []).filter((item) =>
+    (!project || item.projectLabel === project)
+    && (!model || item.model === model)
+    && (!state || item.verificationState === state)
+    && (!worthOnly || deservesReview(item))
+    && (!codeOnly || item.filesTouched > 0)
+    && (!commitOnly || item.hasCommit)), [codeOnly, commitOnly, model, project, query.data?.items, state, worthOnly]);
+
+  return (
+    <div className={`page sessions-page ${selectedId ? "showing-replay" : ""}`}>
+      {!selectedId ? <>
+        <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
+        <div className="session-toolbar">
+          <label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("sessions.search")} />{search ? <button onClick={() => setSearch("")} aria-label={t("actions.clear")}><X size={14} /></button> : null}</label>
+          <select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t("sessions.allAgents")}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="kimi-code">Kimi Code</option><option value="cursor">Cursor</option><option value="openclaw">OpenClaw</option><option value="hermes">Hermes</option></select>
+          <select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{t("sessions.allModels")}</option>{models.map((item) => <option key={item}>{item}</option>)}</select>
+          <select value={project} onChange={(event) => setProject(event.target.value)}><option value="">{t("sessions.allProjects")}</option>{projects.map((item) => <option key={item}>{item}</option>)}</select>
+          <select value={state} onChange={(event) => setState(event.target.value)}><option value="">{t("sessions.allStates")}</option><option value="verified">{t("sessions.verification.verified")}</option><option value="unverified">{t("sessions.verification.unverified")}</option><option value="not-applicable">{t("sessions.verification.not-applicable")}</option></select>
+          <label className="filter-check"><input type="checkbox" checked={worthOnly} onChange={(event) => setWorthOnly(event.target.checked)} />{t("sessions.worthOnly")}</label>
+          <label className="filter-check"><input type="checkbox" checked={codeOnly} onChange={(event) => setCodeOnly(event.target.checked)} />{t("sessions.codeOnly")}</label>
+          <label className="filter-check"><input type="checkbox" checked={commitOnly} onChange={(event) => setCommitOnly(event.target.checked)} />{t("sessions.commitOnly")}</label>
+          <span className="result-count">{t("sessions.resultCount", { count: items.length })}</span>
+        </div>
+        <section className="session-ledger">
+          {query.isLoading ? <LoadingState /> : query.isError ? <ErrorState retry={() => void query.refetch()} /> : items.length === 0 ? <EmptyState title={t("sessions.emptyTitle")} body={t("sessions.emptyBody")} /> : items.map((session) => (
+            <button className="session-ledger-row" key={session.id} onClick={() => selectSession(session.id)}>
+              <span className="session-date">{formatDateTime(session.startedAt, locale)}</span>
+              <AgentBadge agent={session.agent} model={session.model} />
+              <span className="session-copy"><strong><SessionTitle session={session} /></strong><small>{session.projectLabel}</small></span>
+              <SessionEvidence session={session} locale={locale} />
+              <span className="session-usage"><strong>{formatCompact(tokenTotal(session.usage), locale)}</strong><small>{t("metrics.tokens")}</small></span>
+              <VerificationPill value={session.verificationState} />
+              <ChevronRight size={15} />
+            </button>
+          ))}
+        </section>
+      </> : detail.isLoading ? <LoadingState /> : detail.isError || !detail.data ? <ErrorState retry={() => void detail.refetch()} /> : <SessionReplay detail={detail.data} locale={locale} onClose={() => selectSession(undefined)} />}
+    </div>
+  );
+}
