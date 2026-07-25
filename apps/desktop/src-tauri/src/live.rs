@@ -762,12 +762,7 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
     let event_name = string_field(payload, &["hook_event_name", "event", "type"])
         .unwrap_or_else(|| "Unknown".into());
     let cwd = string_field(payload, &["cwd", "working_directory"]).unwrap_or_default();
-    let project_label = Path::new(&cwd)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("Unknown project")
-        .to_string();
+    let project_label = project_label_from_cwd(&cwd);
     let tool = string_field(payload, &["tool_name", "tool"]).unwrap_or_default();
     let notification_type =
         string_field(payload, &["notification_type", "notificationType"]).unwrap_or_default();
@@ -840,6 +835,101 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
     };
     let raw = serde_json::to_string(envelope).ok()?;
     Some((session, raw, event_name))
+}
+
+fn project_label_from_cwd(cwd: &str) -> String {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return "Unknown project".into();
+    }
+    let path = Path::new(cwd);
+    let root = path
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())
+        .or_else(|| {
+            path.ancestors()
+                .find(|ancestor| project_manifest_exists(ancestor))
+        })
+        .unwrap_or(path);
+    project_name_from_manifest(root)
+        .or_else(|| {
+            root.file_name()
+                .and_then(|value| value.to_str())
+                .and_then(clean_project_name)
+        })
+        .unwrap_or_else(|| "Unknown project".into())
+}
+
+fn project_manifest_exists(root: &Path) -> bool {
+    ["package.json", "Cargo.toml", "pyproject.toml"]
+        .iter()
+        .any(|name| root.join(name).is_file())
+}
+
+fn project_name_from_manifest(root: &Path) -> Option<String> {
+    let package_json = root.join("package.json");
+    if fs::metadata(&package_json)
+        .ok()
+        .is_some_and(|metadata| metadata.len() <= 512 * 1024)
+        && let Ok(bytes) = fs::read(package_json)
+        && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+        && let Some(name) = value.get("name").and_then(Value::as_str)
+        && let Some(name) = clean_project_name(name)
+    {
+        return Some(name);
+    }
+    project_name_from_toml(&root.join("Cargo.toml"), "package")
+        .or_else(|| project_name_from_toml(&root.join("pyproject.toml"), "project"))
+}
+
+fn project_name_from_toml(path: &Path, section: &str) -> Option<String> {
+    if !fs::metadata(path)
+        .ok()
+        .is_some_and(|metadata| metadata.len() <= 512 * 1024)
+    {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    let mut in_section = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line
+                .strip_prefix('[')
+                .and_then(|line| line.strip_suffix(']'))
+                == Some(section);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        let value = value.trim();
+        let name = value
+            .strip_prefix('"')
+            .and_then(|value| value.split('"').next())
+            .or_else(|| {
+                value
+                    .strip_prefix('\'')
+                    .and_then(|value| value.split('\'').next())
+            })?;
+        return clean_project_name(name);
+    }
+    None
+}
+
+fn clean_project_name(name: &str) -> Option<String> {
+    let name = name.trim().rsplit('/').next()?.trim();
+    (!name.is_empty()
+        && name.len() <= 80
+        && !name.contains('\\')
+        && !name.chars().any(char::is_control))
+    .then(|| name.to_string())
 }
 
 fn merge_session(
@@ -1505,6 +1595,47 @@ mod tests {
         let (session, _, _) = session_from_envelope(&attention).expect("attention session");
         assert_eq!(session.status, "waiting");
         assert_eq!(session.phase, "needs-you");
+    }
+
+    #[test]
+    fn live_project_label_prefers_repository_metadata_over_the_folder_name() {
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path().join("TokenGraph");
+        let nested = root.join("apps/desktop");
+        fs::create_dir_all(root.join(".git")).expect("git marker");
+        fs::create_dir_all(&nested).expect("nested cwd");
+        fs::write(
+            root.join("package.json"),
+            br#"{"name":"vibemeter","private":true}"#,
+        )
+        .expect("package metadata");
+        assert_eq!(
+            project_label_from_cwd(nested.to_str().expect("cwd")),
+            "vibemeter"
+        );
+    }
+
+    #[test]
+    fn live_project_label_supports_scoped_packages_and_folder_fallback() {
+        let directory = tempdir().expect("tempdir");
+        let scoped = directory.path().join("scoped-folder");
+        fs::create_dir_all(scoped.join(".git")).expect("git marker");
+        fs::write(
+            scoped.join("package.json"),
+            br#"{"name":"@vibemeter/desktop"}"#,
+        )
+        .expect("package metadata");
+        assert_eq!(
+            project_label_from_cwd(scoped.to_str().expect("cwd")),
+            "desktop"
+        );
+
+        let fallback = directory.path().join("plain-project");
+        fs::create_dir_all(&fallback).expect("fallback cwd");
+        assert_eq!(
+            project_label_from_cwd(fallback.to_str().expect("cwd")),
+            "plain-project"
+        );
     }
 
     #[test]

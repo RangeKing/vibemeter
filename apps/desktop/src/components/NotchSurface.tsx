@@ -1,4 +1,17 @@
-import { ArrowUpRight, Check, CircleAlert, RadioTower, Waves, X } from "lucide-react";
+import {
+  ArrowUpRight,
+  BookOpenText,
+  BrainCircuit,
+  Check,
+  CircleAlert,
+  CircleDot,
+  FilePenLine,
+  Gauge,
+  ShieldCheck,
+  Shrink,
+  Terminal,
+  X,
+} from "lucide-react";
 import type { TFunction } from "i18next";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,10 +29,33 @@ function liveReason(session: LiveSession, t: TFunction): string | undefined {
     : t("live.reason.waitingGeneric");
 }
 
-function StatusGlyph({ status }: { status: LiveSession["status"] }) {
-  if (status === "waiting" || status === "error") return <CircleAlert size={14} />;
-  if (status === "completed") return <Check size={14} />;
-  return <Waves size={14} />;
+export function AgentActivityGlyph({
+  session,
+  compact = false,
+}: {
+  session?: Pick<LiveSession, "phase" | "status">;
+  compact?: boolean;
+}) {
+  const status = session?.status ?? "idle";
+  const phase = session?.phase ?? "ready";
+  let Icon = Gauge;
+  if (status === "waiting" || status === "error") Icon = CircleAlert;
+  else if (status === "completed") Icon = Check;
+  else if (phase === "thinking") Icon = BrainCircuit;
+  else if (phase === "reading") Icon = BookOpenText;
+  else if (phase === "editing") Icon = FilePenLine;
+  else if (phase === "verifying") Icon = ShieldCheck;
+  else if (phase === "running-tool") Icon = Terminal;
+  else if (phase === "compacting") Icon = Shrink;
+  else if (phase === "ready") Icon = CircleDot;
+  return (
+    <span
+      className={`notch-activity-glyph status-${status} phase-${phase}${compact ? " compact" : ""}`}
+      aria-hidden="true"
+    >
+      <Icon size={compact ? 11 : 13} strokeWidth={2.15} />
+    </span>
+  );
 }
 
 export function NotchSurface({ locale }: { locale: Locale }) {
@@ -36,13 +72,12 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   if (!expanded) {
     return (
       <button className={`notch-capsule ${urgent ? `status-${urgent.status}` : "status-idle"}`} onClick={() => void toggle(true)}>
-        <span className="notch-brand"><RadioTower size={13} /></span>
+        <AgentActivityGlyph session={urgent} />
         {urgent ? (
           <>
             <span className="notch-agent">{agentName(urgent.agent)}</span>
-            <strong>{t(`live.phase.${urgent.phase}`, { defaultValue: urgent.phase })}</strong>
-            <small>{urgent.projectLabel}</small>
-            <span className="notch-state"><StatusGlyph status={urgent.status} /></span>
+            <strong className="notch-project">{urgent.projectLabel}</strong>
+            <small className="notch-phase-label">{t(`live.phase.${urgent.phase}`, { defaultValue: urgent.phase })}</small>
           </>
         ) : (
           <>
@@ -58,7 +93,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   return (
     <section className="notch-expanded">
       <header>
-        <span><RadioTower size={14} /><strong>VibeMeter</strong><small>{t("notch.activeCount", { count: snapshot.data?.activeCount ?? 0 })}</small></span>
+        <span><AgentActivityGlyph session={urgent} compact /><strong>VibeMeter</strong><small>{t("notch.activeCount", { count: snapshot.data?.activeCount ?? 0 })}</small></span>
         <button onClick={() => void toggle(false)} aria-label={t("actions.close")}><X size={14} /></button>
       </header>
       <div className="notch-session-list">
@@ -68,7 +103,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
             <div className="notch-session-top">
               <span className="notch-agent-dot">{session.agent === "codex" ? "C" : "A"}</span>
               <span><strong>{session.projectLabel}</strong><small>{agentName(session.agent)} · {formatTime(session.updatedAt, locale)}</small></span>
-              <span className="notch-phase"><StatusGlyph status={session.status} />{t(`live.phase.${session.phase}`, { defaultValue: session.phase })}</span>
+              <span className="notch-phase"><AgentActivityGlyph session={session} compact />{t(`live.phase.${session.phase}`, { defaultValue: session.phase })}</span>
             </div>
             {reason ? <p>{reason}</p> : null}
             <footer>
@@ -77,10 +112,9 @@ export function NotchSurface({ locale }: { locale: Locale }) {
             </footer>
           </article>;
         }) : (
-          <div className="notch-empty"><Waves size={17} /><strong>{t("notch.ready")}</strong><span>{t("notch.waiting")}</span></div>
+          <div className="notch-empty"><AgentActivityGlyph compact /><strong>{t("notch.ready")}</strong><span>{t("notch.waiting")}</span></div>
         )}
       </div>
-      <footer className="notch-footer">{t("live.structuredOnly")}</footer>
     </section>
   );
 }

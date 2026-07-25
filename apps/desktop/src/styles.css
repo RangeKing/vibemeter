@@ -270,20 +270,36 @@ select { padding-right: 28px; }
 .live-privacy-note strong { color: var(--ink); }
 
 html[data-surface="notch"], html[data-surface="notch"] body, html[data-surface="notch"] #root { background: transparent !important; }
-.notch-capsule { display: grid; grid-template-columns: auto auto minmax(0, auto) minmax(0, 1fr) auto auto; align-items: center; gap: 8px; width: 100%; height: 100%; padding: 0 12px; overflow: hidden; border: 1px solid rgb(255 255 255 / 8%); border-radius: 0 0 17px 17px; color: #fff8f2; background: rgb(8 7 10 / 97%); box-shadow: 0 9px 26px rgb(0 0 0 / 32%); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); }
+.notch-capsule { display: grid; grid-template-columns: auto auto minmax(0, 1fr) minmax(0, auto) auto; align-items: center; gap: 8px; width: 100%; height: 100%; padding: 0 12px; overflow: hidden; border: 1px solid rgb(255 255 255 / 8%); border-radius: 0 0 17px 17px; color: #fff8f2; background: rgb(8 7 10 / 97%); box-shadow: 0 9px 26px rgb(0 0 0 / 32%); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); }
 .notch-capsule::before { content: ""; position: absolute; top: 0; left: 50%; width: 92px; height: 5px; border-radius: 0 0 6px 6px; background: #000; transform: translateX(-50%); }
 .notch-capsule.status-waiting { box-shadow: inset 0 -2px 0 #ffc65a, 0 9px 26px rgb(0 0 0 / 32%); }
 .notch-capsule.status-error { box-shadow: inset 0 -2px 0 #ff6b68, 0 9px 26px rgb(0 0 0 / 32%); }
-.notch-brand { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 7px; color: #ff9b63; background: rgb(255 139 87 / 12%); }
+.notch-activity-glyph { position: relative; isolation: isolate; display: grid; flex: 0 0 auto; place-items: center; width: 23px; height: 23px; border-radius: 50%; color: #ff9b63; background: rgb(255 139 87 / 11%); }
+.notch-activity-glyph::before { position: absolute; z-index: -1; inset: 1px; border: 1.5px solid rgb(255 155 99 / 24%); border-top-color: currentColor; border-radius: inherit; content: ""; }
+.notch-activity-glyph.status-running::before { animation: notch-activity-spin .9s linear infinite; }
+.notch-activity-glyph.status-running svg { animation: notch-activity-breathe 1.15s ease-in-out infinite; }
+.notch-activity-glyph.status-running.phase-editing svg { animation-name: notch-activity-edit; animation-duration: .7s; animation-direction: alternate; }
+.notch-activity-glyph.status-running.phase-running-tool svg { animation-name: notch-activity-terminal; animation-duration: .8s; animation-timing-function: steps(2, end); }
+.notch-activity-glyph.status-waiting { color: #ffc65a; background: rgb(255 198 90 / 11%); }
+.notch-activity-glyph.status-waiting::before { animation: notch-activity-pulse 1.2s ease-out infinite; }
+.notch-activity-glyph.status-error { color: #ff7771; background: rgb(255 107 104 / 10%); }
+.notch-activity-glyph.status-error::before { animation: notch-activity-pulse .85s ease-out infinite; }
+.notch-activity-glyph.status-completed { color: #64c795; background: rgb(100 199 149 / 10%); }
+.notch-activity-glyph.status-completed::before { border-color: rgb(100 199 149 / 35%); border-top-color: currentColor; }
+.notch-activity-glyph.compact { width: 18px; height: 18px; background: rgb(255 139 87 / 8%); }
+.notch-activity-glyph.compact::before { inset: 0; }
+@keyframes notch-activity-spin { to { transform: rotate(360deg); } }
+@keyframes notch-activity-breathe { 50% { opacity: .7; transform: scale(.9); } }
+@keyframes notch-activity-edit { to { transform: translate(1px, -1px) rotate(-4deg); } }
+@keyframes notch-activity-terminal { 50% { opacity: .45; } }
+@keyframes notch-activity-pulse { 70%, 100% { opacity: 0; transform: scale(1.22); } }
 .notch-agent { color: rgb(255 255 255 / 55%); font-size: 8px; font-weight: 680; white-space: nowrap; }
 .notch-capsule strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .notch-capsule small { overflow: hidden; color: rgb(255 255 255 / 42%); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.notch-state { display: grid; place-items: center; color: #ff9b63; }
-.status-waiting .notch-state { color: #ffc65a; }
-.status-error .notch-state { color: #ff7771; }
-.status-completed .notch-state { color: #64c795; }
+.notch-project { min-width: 0; }
+.notch-phase-label { max-width: 88px; }
 .notch-count { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 8px; color: rgb(255 255 255 / 62%); background: rgb(255 255 255 / 9%); font-size: 8px; }
-.notch-expanded { display: grid; grid-template-rows: 39px minmax(0, 1fr) 25px; width: 100%; height: 100%; overflow: hidden; border: 1px solid rgb(255 255 255 / 9%); border-radius: 0 0 20px 20px; color: #fff8f2; background: rgb(11 9 14 / 97%); box-shadow: 0 14px 42px rgb(0 0 0 / 40%); -webkit-backdrop-filter: blur(26px); backdrop-filter: blur(26px); }
+.notch-expanded { display: grid; grid-template-rows: 39px minmax(0, 1fr); width: 100%; height: 100%; overflow: hidden; border: 1px solid rgb(255 255 255 / 9%); border-radius: 0 0 20px 20px; color: #fff8f2; background: rgb(11 9 14 / 97%); box-shadow: 0 14px 42px rgb(0 0 0 / 40%); -webkit-backdrop-filter: blur(26px); backdrop-filter: blur(26px); }
 .notch-expanded > header { display: flex; align-items: center; justify-content: space-between; padding: 4px 10px 0 13px; border-bottom: 1px solid rgb(255 255 255 / 7%); }
 .notch-expanded > header > span { display: flex; align-items: center; gap: 7px; color: #ff9b63; }
 .notch-expanded > header strong { color: #fff8f2; font-size: 10px; }
@@ -308,7 +324,6 @@ html[data-surface="notch"], html[data-surface="notch"] body, html[data-surface="
 .notch-empty svg { color: #ff9b63; }
 .notch-empty strong { margin-top: 8px; color: rgb(255 255 255 / 72%); font-size: 10px; }
 .notch-empty span { margin-top: 3px; font-size: 8px; }
-.notch-footer { display: grid; place-items: center; border-top: 1px solid rgb(255 255 255 / 6%); color: rgb(255 255 255 / 25%); font-size: 7px; }
 
 /* Data — VibeMeter analytics with its event layer. */
 .data-page { position: relative; padding-top: 53px; }
