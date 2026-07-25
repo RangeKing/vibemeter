@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aftervibe",
+  "productName": "VibeMeter",
   "version": "0.1.0",
-  "identifier": "com.aftervibe.desktop",
+  "identifier": "com.vibemeter.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "aftervibe",
+        "title": "VibeMeter",
         "width": 1320,
         "height": 860,
         "minWidth": 1040,
@@ -34,8 +34,8 @@
     "active": true,
     "targets": ["app"],
     "category": "DeveloperTool",
-    "shortDescription": "Review the work behind the vibe.",
-    "longDescription": "Local-first, evidence-backed reviews for coding-agent work.",
+    "shortDescription": "Track your agents. Discover your coding type.",
+    "longDescription": "Live agent monitoring, local AI coding analytics, and an evolving VCTI profile.",
     "macOS": {
       "minimumSystemVersion": "14.0"
     },

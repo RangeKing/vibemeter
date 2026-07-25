@@ -19,7 +19,7 @@ const { exportShare, previewShare, saveDialog } = vi.hoisted(() => ({
     canExport: true,
     modelHash: request.range,
   })),
-  saveDialog: vi.fn(async () => "/tmp/aftervibe-share.png"),
+  saveDialog: vi.fn(async () => "/tmp/vibemeter-share.png"),
 }));
 
 vi.mock("../lib/api", () => ({
@@ -93,7 +93,7 @@ describe("ShareStudioPage range controls", () => {
     await waitFor(() => expect(exportShare).toHaveBeenCalledWith(
       expect.objectContaining({ range: "year" }),
       "png",
-      "/tmp/aftervibe-share.png",
+      "/tmp/vibemeter-share.png",
     ));
   });
 });

@@ -211,6 +211,7 @@ pub fn consider_title(state: &mut ParseState, text: Option<&str>) {
     {
         return;
     }
+    crate::phrases::observe(state, "user", trimmed);
     observe_prompt_structure(state, trimmed);
     if state.prompt_excerpt.is_none() {
         state.prompt_excerpt = sanitize_prompt_excerpt(trimmed);
@@ -290,6 +291,7 @@ pub fn consider_result(state: &mut ParseState, text: Option<&str>) {
     let Some(text) = text.map(str::trim).filter(|value| !value.is_empty()) else {
         return;
     };
+    crate::phrases::observe(state, "agent", text);
     state.result_excerpt = sanitize_result_excerpt(text);
 }
 
@@ -297,6 +299,7 @@ pub fn append_result(state: &mut ParseState, text: Option<&str>) {
     let Some(text) = text.map(str::trim).filter(|value| !value.is_empty()) else {
         return;
     };
+    crate::phrases::observe(state, "agent", text);
     let combined = state
         .result_excerpt
         .as_deref()
@@ -320,7 +323,7 @@ pub fn set_project(state: &mut ParseState, path: Option<&str>) {
             .and_then(sanitize_title);
     }
     if state.ignore_patterns.is_empty() {
-        for name in [".gitignore", ".aftervibeignore"] {
+        for name in [".gitignore", ".vibemeterignore", ".aftervibeignore"] {
             if let Ok(content) = std::fs::read_to_string(root.join(name)) {
                 state.ignore_patterns.extend(
                     content

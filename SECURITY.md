@@ -1,21 +1,18 @@
-# Security Policy
+# Security policy
 
-aftervibe reads sensitive local development metadata, so privacy and data-boundary bugs are treated as security issues.
+VibeMeter reads sensitive local development metadata. Privacy, retention, Hook-integrity, and export-boundary defects are security issues.
 
-## Reporting a vulnerability
+Use the repository's private vulnerability reporting feature. Do not open a public report containing credentials, source code, private prompts, absolute paths, repository identities, databases, or transcripts.
 
-Please use GitHub's private vulnerability reporting feature for the repository. Do not open a public issue if the report contains:
+Security-sensitive areas include:
 
-- credentials or secret-like strings;
-- source code or private prompts;
-- absolute local paths;
-- private repository or organization names;
-- a database, session transcript, or export containing personal data.
+- local session parsing and path sanitization;
+- Hook config merge, backup, repair, and uninstall;
+- Unix socket permissions and payload bounds;
+- 90-day raw live-event retention;
+- secret detection and Share Guard;
+- deep-review payload construction;
+- provider authentication reuse;
+- read-only source handling.
 
-Include the affected version, a minimal reproduction, expected behavior, and the observed impact. Use synthetic data whenever possible.
-
-## Scope
-
-Security-sensitive areas include local session parsing, path sanitization, secret detection, share exports, deep-review payloads, provider authentication reuse, database retention, and read-only source handling.
-
-There is currently no guaranteed response or patch timeline. Maintainers will acknowledge and triage reports as capacity allows.
+Reports should include the affected version, a minimal synthetic reproduction, expected behavior, and observed impact.

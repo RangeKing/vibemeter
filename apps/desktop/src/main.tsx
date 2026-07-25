@@ -23,7 +23,8 @@ function OfflineShell() {
   return <main className="offline-shell"><span>T</span><h1>{t("app.name")}</h1><p>{t("errors.offlineShell")}</p></main>;
 }
 
-const surface = new URLSearchParams(window.location.search).get("surface") === "menubar" ? "menubar" : "main";
+const requestedSurface = new URLSearchParams(window.location.search).get("surface");
+const surface = requestedSurface === "menubar" || requestedSurface === "notch" ? requestedSurface : "main";
 document.documentElement.dataset.surface = surface;
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

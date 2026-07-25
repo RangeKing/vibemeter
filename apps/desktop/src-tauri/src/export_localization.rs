@@ -9,6 +9,7 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         ("zh-CN", "template.weekly-recap") => "每周回顾",
         ("zh-CN", "template.ship-card") => "交付卡",
         ("zh-CN", "template.vcti-card") => "VCTI 人格身份卡",
+        ("zh-CN", "template.catchphrases") => "口头禅",
         ("zh-CN", "metric.sessions") => "会话",
         ("zh-CN", "metric.duration") => "使用时长",
         ("zh-CN", "metric.tokens") => "Token 总量",
@@ -49,6 +50,16 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         ("zh-CN", "label.weekly-recap") => "03 / 本周脉络",
         ("zh-CN", "label.ship-card") => "04 / 交付回执",
         ("zh-CN", "label.vcti-card") => "VCTI / 真实行为人格",
+        ("zh-CN", "label.catchphrases") => "VOICE / 口头禅画像",
+        ("zh-CN", "catchphrases.mine") => "我的口头禅",
+        ("zh-CN", "catchphrases.agent") => "Agent 的口头禅",
+        ("zh-CN", "catchphrases.subtitle") => {
+            "真实会话中反复出现的短语，构成你与 Agent 的协作声纹。"
+        }
+        ("zh-CN", "catchphrases.method") => {
+            "字号代表频次 · Agent 底色代表主要来源 · 仅保留本机派生计数"
+        }
+        ("zh-CN", "catchphrases.insufficient") => "至少需要两个会话重复同一句短语",
         ("zh-CN", "label.focused-build") => "一次有证据的 Vibe Coding 交付",
         ("zh-CN", "label.activity-map") => "活跃节奏",
         ("zh-CN", "label.session-evidence") => "会话证据",
@@ -86,6 +97,7 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         (_, "template.weekly-recap") => "Weekly Recap",
         (_, "template.ship-card") => "Ship Card",
         (_, "template.vcti-card") => "VCTI Identity Card",
+        (_, "template.catchphrases") => "Catchphrases",
         (_, "metric.sessions") => "Sessions",
         (_, "metric.duration") => "Time with agents",
         (_, "metric.tokens") => "Total tokens",
@@ -126,6 +138,16 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         (_, "label.weekly-recap") => "03 / WEEKLY THREAD",
         (_, "label.ship-card") => "04 / SHIP RECEIPT",
         (_, "label.vcti-card") => "VCTI / BEHAVIOR IDENTITY",
+        (_, "label.catchphrases") => "VOICE / CATCHPHRASE FINGERPRINT",
+        (_, "catchphrases.mine") => "My Catchphrases",
+        (_, "catchphrases.agent") => "Agent Catchphrases",
+        (_, "catchphrases.subtitle") => {
+            "Repeated phrases from real sessions become a fingerprint of how you and your agents work."
+        }
+        (_, "catchphrases.method") => {
+            "Size shows frequency · Agent color shows the dominant source · Derived locally"
+        }
+        (_, "catchphrases.insufficient") => "A phrase must repeat across at least two sessions",
         (_, "label.focused-build") => "An evidence-backed vibe coding delivery",
         (_, "label.activity-map") => "Activity rhythm",
         (_, "label.session-evidence") => "Session evidence",
@@ -232,6 +254,16 @@ pub fn format_range(locale: &str, range: &str) -> String {
         (_, "year") => "Last year".into(),
         (_, "all") => "All time".into(),
         _ => range.into(),
+    }
+}
+
+pub fn format_sessions(locale: &str, sessions: u64) -> String {
+    if normalize_locale(locale) == "zh-CN" {
+        format!("{sessions} 个会话")
+    } else if sessions == 1 {
+        "1 session".into()
+    } else {
+        format!("{sessions} sessions")
     }
 }
 

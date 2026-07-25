@@ -1,8 +1,6 @@
 {
-  "name": "@aftervibe/desktop",
+  "name": "@vibemeter/desktop",
   "version": "0.1.0",
-  "description": "The aftervibe macOS desktop app.",
-  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {

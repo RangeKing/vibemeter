@@ -1,7 +1,7 @@
-use aftervibe_lib::database::Database;
-use aftervibe_lib::export;
-use aftervibe_lib::models::{ExportRequest, ShareRenderRequest};
 use std::path::PathBuf;
+use vibemeter_lib::database::Database;
+use vibemeter_lib::export;
+use vibemeter_lib::models::{ExportRequest, ShareRenderRequest};
 
 fn without_embedded_image_data(svg: &str) -> String {
     let mut sanitized = String::with_capacity(svg.len());
@@ -20,18 +20,24 @@ fn without_embedded_image_data(svg: &str) -> String {
 }
 
 #[test]
-#[ignore = "requires AFTERVIBE_TEST_DB with a sanitized or local aftervibe database snapshot"]
-fn validates_the_288_release_export_combinations() {
-    let database_path = std::env::var("AFTERVIBE_TEST_DB")
+#[ignore = "requires VIBEMETER_TEST_DB with a sanitized or local VibeMeter database snapshot"]
+fn validates_the_320_release_export_combinations() {
+    let database_path = std::env::var("VIBEMETER_TEST_DB")
+        .or_else(|_| std::env::var("AFTERVIBE_TEST_DB"))
+        .or_else(|_| std::env::var("TOKEN_GRAPH_TEST_DB"))
         .map(PathBuf::from)
-        .expect("AFTERVIBE_TEST_DB");
-    let output = std::env::var("AFTERVIBE_EXPORT_MATRIX_DIR")
+        .expect("VIBEMETER_TEST_DB");
+    let output = std::env::var("VIBEMETER_EXPORT_MATRIX_DIR")
+        .or_else(|_| std::env::var("AFTERVIBE_EXPORT_MATRIX_DIR"))
+        .or_else(|_| std::env::var("TOKEN_GRAPH_EXPORT_MATRIX_DIR"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir().join("aftervibe-export-matrix"));
+        .unwrap_or_else(|_| std::env::temp_dir().join("vibemeter-export-matrix"));
     std::fs::create_dir_all(&output).expect("matrix output directory");
     let database = Database::open(database_path).expect("database snapshot");
 
-    let template_filter = std::env::var("AFTERVIBE_EXPORT_TEMPLATE").ok();
+    let template_filter = std::env::var("VIBEMETER_EXPORT_TEMPLATE")
+        .or_else(|_| std::env::var("AFTERVIBE_EXPORT_TEMPLATE"))
+        .ok();
     let templates = [
         "usage-overview",
         "developer-wrapped",
@@ -42,6 +48,7 @@ fn validates_the_288_release_export_combinations() {
         "weekly-recap",
         "ship-card",
         "vcti-card",
+        "catchphrases",
     ]
     .into_iter()
     .filter(|template| {

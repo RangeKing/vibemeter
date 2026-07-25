@@ -4,11 +4,13 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { AppShell } from "./components/AppShell";
 import { MenuBarPopover } from "./components/MenuBarPopover";
+import { NotchSurface } from "./components/NotchSurface";
 import { Onboarding } from "./components/Onboarding";
 import { LoadingState } from "./components/ui";
 import { api } from "./lib/api";
 import { DataPage } from "./pages/DataPage";
 import { InsightsPage } from "./pages/InsightsPage";
+import { LivePage } from "./pages/LivePage";
 import { ReviewsPage } from "./pages/ReviewsPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -22,9 +24,9 @@ function systemLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 
-const pages: PageKey[] = ["data", "sessions", "reviews", "insights", "vcti", "share", "sources", "settings"];
+const pages: PageKey[] = ["live", "data", "sessions", "reviews", "insights", "vcti", "share", "sources", "settings"];
 
-export function App({ surface }: { surface: "main" | "menubar" }) {
+export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const { i18n } = useTranslation();
   const client = useQueryClient();
   const page = useUiStore((state) => state.page);
@@ -56,6 +58,7 @@ export function App({ surface }: { surface: "main" | "menubar" }) {
 
   if (settings.isLoading) return <LoadingState />;
   if (surface === "menubar") return <MenuBarPopover locale={locale} />;
+  if (surface === "notch") return <NotchSurface locale={locale} />;
   if (settings.data?.onboardingComplete !== "true") {
     return <Onboarding onFinish={async ({ credentialsAllowed, gitReadAllowed, vctiPromptStructure }) => {
       await Promise.all([
@@ -63,6 +66,9 @@ export function App({ surface }: { surface: "main" | "menubar" }) {
         api.setSetting("credentialsAllowed", String(credentialsAllowed)),
         api.setSetting("gitReadAllowed", String(gitReadAllowed)),
         api.setSetting("vctiPromptStructure", String(vctiPromptStructure)),
+        api.setSetting("liveHooksEnabled", "true"),
+        api.setSetting("notchEnabled", "true"),
+        api.setSetting("menuBarEnabled", "true"),
       ]);
       if (credentialsAllowed) await api.refreshProviders(true, false);
       await api.refreshIndex(true);
@@ -72,6 +78,7 @@ export function App({ surface }: { surface: "main" | "menubar" }) {
 
   const content = (() => {
     switch (page) {
+      case "live": return <LivePage locale={locale} />;
       case "data": return <DataPage locale={locale} />;
       case "sessions": return <SessionsPage locale={locale} />;
       case "reviews": return <ReviewsPage locale={locale} />;

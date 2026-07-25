@@ -106,7 +106,7 @@ fn run_index(
     }
     index_cursor_database(database, force)?;
     index_hermes_database(database, force)?;
-    files.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
+    files.sort_by_key(|item| std::cmp::Reverse(item.modified));
     if let Ok(mut current) = status.write() {
         current.phase = "indexing".into();
         current.discovered_files = files.len() as u64;

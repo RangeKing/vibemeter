@@ -8,19 +8,24 @@ import {
   Settings,
   Share2,
   Sparkles,
+  RadioTower,
 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import appIconUrl from "../../src-tauri/icons/icon-source.svg";
+import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { useUiStore } from "../store";
 import type { IndexStatus, PageKey } from "../types";
 
 const primary: Array<{ id: PageKey; icon: typeof Sparkles }> = [
+  { id: "live", icon: RadioTower },
   { id: "data", icon: BarChart3 },
+  { id: "vcti", icon: ScanFace },
+];
+
+const history: Array<{ id: PageKey; icon: typeof Sparkles }> = [
   { id: "sessions", icon: History },
   { id: "reviews", icon: FileSearch2 },
   { id: "insights", icon: Lightbulb },
-  { id: "vcti", icon: ScanFace },
 ];
 
 const utility: Array<{ id: PageKey; icon: typeof Sparkles }> = [
@@ -54,11 +59,12 @@ export function AppShell({ children, indexStatus }: { children: ReactNode; index
     <div className="app-shell">
       <div className="titlebar-drag" data-tauri-drag-region />
       <aside className="sidebar">
-        <button className="brand" onClick={() => navigate("data")} aria-label={t("app.name")}>
+        <button className="brand" onClick={() => navigate("live")} aria-label={t("app.name")}>
           <span className="brand-mark"><img src={appIconUrl} alt="" aria-hidden="true" /></span>
           <span><strong>{t("app.name")}</strong><small>{t("app.tagline")}</small></span>
         </button>
         <nav className="sidebar-nav primary-nav" aria-label="Primary">{links(primary)}</nav>
+        <nav className="sidebar-nav history-nav" aria-label="History">{links(history)}</nav>
         <div className="sidebar-spacer" />
         {indexStatus?.running ? (
           <div className="index-chip">

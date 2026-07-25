@@ -1,33 +1,50 @@
 # Privacy model
 
-aftervibe is local-first. It can still encounter sensitive development data, so every feature is designed around explicit collection and export boundaries.
+VibeMeter is local-first. It can encounter sensitive development data, so collection, live monitoring, retention, and export have separate boundaries.
 
 ## Stored locally
 
-- session and task timestamps;
+- session/task timestamps and bounded normalized events;
 - model and token metadata when available;
 - bounded, sanitized goal and result excerpts;
 - tool categories, success state, and duration;
-- project-relative file paths and line-count summaries;
+- project-relative file evidence and line-count summaries;
 - optional read-only Git evidence;
-- generated reviews, settings, and user edits.
+- generated reviews, settings, and user edits;
+- derived catchphrase counts, session counts, and Agent attribution;
+- raw local Hook envelopes for at most 90 days;
+- long-term derived live counters used by activity analytics and VCTI.
 
 ## Not stored
 
 - source-code contents or full diff bodies;
 - complete transcripts or model responses;
-- terminal output;
-- environment-variable values;
-- API keys, cookies, or provider credentials.
+- terminal environment-variable values;
+- API keys, cookies, or provider credentials;
+- historical source text solely because it was scanned for catchphrases;
+- raw prompts, commands, code, paths, or tool output in the Notch.
+
+## Agent configuration
+
+VibeMeter does not change Agent configuration until onboarding is complete. For detected Claude Code and Codex installations, it can then add a managed local Hook:
+
+- existing JSON/TOML content is structurally merged;
+- the original config is backed up before its first change;
+- unrelated Hook commands and settings are preserved;
+- repair is idempotent;
+- uninstall removes only VibeMeter-managed entries and its managed script;
+- a shared Codex feature flag is not disabled during uninstall.
+
+The managed script sends bounded events only to `~/.vibemeter/vibemeter.sock`, which is created with mode `0600`.
 
 ## Optional features
 
-Git evidence, Prompt structure analysis, API-based deep review, and Cursor Dashboard usage require separate user choices. Cursor account usage is kept in memory and never merged into local session evidence.
+Git evidence, prompt-structure analysis, API-based deep review, and Cursor Dashboard usage require separate user choices. Account-level Cursor usage is kept separate from local session evidence and does not affect local VCTI.
 
 ## Export boundary
 
-Share Guard checks export content for secrets, usernames, email addresses, absolute paths, and unreviewed free text. Project identity and file paths are hidden unless the user explicitly enables and reviews them.
+Share Guard checks export content for secrets, absolute paths, email addresses, repository URLs, and unreviewed free text. Project identity and file paths remain hidden unless the user explicitly enables and reviews them. Preview and export use the same sanitized model.
 
-## Source access
+## Source access and migration
 
-Agent directories and source repositories are read-only. aftervibe does not edit agent configuration, source files, Git state, or session history.
+Historical Agent directories and source repositories are read-only. First launch copies an existing aftervibe or legacy TokenGraph database through SQLite online backup into VibeMeter’s own application directory. The source database, WAL, and SHM are not migration targets.

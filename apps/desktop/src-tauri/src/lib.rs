@@ -6,7 +6,10 @@ pub mod export;
 mod export_localization;
 mod git_evidence;
 mod ingestion;
+mod live;
+mod migration;
 pub mod models;
+mod phrases;
 mod pricing;
 mod privacy;
 mod providers;
@@ -19,10 +22,11 @@ use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     ComparisonItem, DeepReviewPreview, DeepReviewRequest, ExportRequest, ExportResult,
-    GenerateReviewRequest, IndexStatus, InsightsResponse, MenuBarSnapshot, OverviewResponse,
-    PlaybookItem, ProjectControl, ProviderUsage, ReviewDocument, ReviewsResponse,
-    SavePlaybookRequest, SessionDetail, SessionsResponse, SharePreview, ShareRenderRequest,
-    SourceStatus, TaskSummary, TodayResponse, UpdateReviewRequest, VctiProfile,
+    GenerateReviewRequest, HookStatus, IndexStatus, InsightsResponse, LiveSnapshot,
+    MenuBarSnapshot, OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl,
+    ProviderUsage, ReviewDocument, ReviewsResponse, SavePlaybookRequest, SessionDetail,
+    SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, TodayResponse,
+    UpdateReviewRequest, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -35,6 +39,7 @@ struct AppState {
     database: Database,
     index_status: Arc<RwLock<IndexStatus>>,
     providers: ProviderStore,
+    live: live::LiveMonitor,
 }
 
 #[tauri::command]
@@ -44,6 +49,51 @@ async fn get_overview(state: State<'_, AppState>, range: String) -> AppResult<Ov
     tauri::async_runtime::spawn_blocking(move || database.overview(&range, index_status))
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_phrase_cloud(
+    state: State<'_, AppState>,
+    range: String,
+) -> AppResult<PhraseCloudResponse> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.phrase_cloud(&range))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+fn get_live_snapshot(state: State<'_, AppState>) -> LiveSnapshot {
+    state.live.snapshot()
+}
+
+#[tauri::command]
+fn repair_live_hooks(state: State<'_, AppState>) -> AppResult<HookStatus> {
+    let status = live::install_hooks()?;
+    state.database.set_setting("liveHooksEnabled", "true")?;
+    Ok(status)
+}
+
+#[tauri::command]
+fn uninstall_live_hooks(state: State<'_, AppState>) -> AppResult<HookStatus> {
+    let status = live::uninstall_hooks()?;
+    state.database.set_setting("liveHooksEnabled", "false")?;
+    Ok(status)
+}
+
+#[tauri::command]
+fn jump_to_live_session(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    let session = state
+        .live
+        .session(&id)
+        .ok_or_else(|| AppError::InvalidRequest("live session is no longer active".into()))?;
+    live::jump_to_session(&session)
+}
+
+#[tauri::command]
+fn set_notch_expanded(app: AppHandle, expanded: bool) -> AppResult<()> {
+    tray::set_notch_expanded(&app, expanded)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
 #[tauri::command]
@@ -481,6 +531,9 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("deepReviewMode", "cli"),
             ("deepReviewProvider", "codex"),
             ("deepReviewModel", ""),
+            ("liveHooksEnabled", "true"),
+            ("notchEnabled", "true"),
+            ("menuBarEnabled", "true"),
         ] {
             settings.insert(
                 key.into(),
@@ -494,8 +547,28 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
 }
 
 #[tauri::command]
-async fn set_app_setting(state: State<'_, AppState>, key: String, value: String) -> AppResult<()> {
+async fn set_app_setting(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> AppResult<()> {
     validate_setting(&key, &value)?;
+    if key == "notchEnabled" {
+        tray::set_notch_enabled(&app, value == "true")
+            .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    }
+    if key == "menuBarEnabled" {
+        tray::set_menu_bar_enabled(&app, value == "true")
+            .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    }
+    if key == "liveHooksEnabled" {
+        if value == "true" {
+            live::install_hooks()?;
+        } else {
+            live::uninstall_hooks()?;
+        }
+    }
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || database.set_setting(&key, &value))
         .await
@@ -511,7 +584,10 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
         | "cursorDashboardUsage"
         | "gitReadAllowed"
         | "vctiPromptStructure"
-        | "launchAtLogin" => {
+        | "launchAtLogin"
+        | "liveHooksEnabled"
+        | "notchEnabled"
+        | "menuBarEnabled" => {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),
@@ -621,24 +697,48 @@ pub fn run() {
             ))?;
             let data_dir = app.path().app_data_dir()?;
             #[cfg(debug_assertions)]
-            let database_path = std::env::var("AFTERVIBE_TEST_DB")
+            let database_path = std::env::var("VIBEMETER_TEST_DB")
+                .or_else(|_| std::env::var("AFTERVIBE_TEST_DB"))
+                .or_else(|_| std::env::var("TOKEN_GRAPH_TEST_DB"))
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| data_dir.join("aftervibe.sqlite"));
+                .unwrap_or(migration::prepare_database(&data_dir)?);
             #[cfg(not(debug_assertions))]
-            let database_path = data_dir.join("aftervibe.sqlite");
+            let database_path = migration::prepare_database(&data_dir)?;
             let database = Database::open(database_path)?;
             let index_status = Arc::new(RwLock::new(IndexStatus::default()));
             let providers = ProviderStore::new(data_dir.join("ProviderProbe"))?;
+            let live = live::LiveMonitor::start(database.clone(), app.handle().clone())?;
+            let onboarding_complete = database
+                .setting("onboardingComplete")?
+                .is_some_and(|value| value == "true");
+            let hooks_enabled = database
+                .setting("liveHooksEnabled")?
+                .is_none_or(|value| value == "true");
+            if onboarding_complete && hooks_enabled {
+                let _ = live::install_hooks();
+                database.set_setting("liveHooksEnabled", "true")?;
+            }
             let state = AppState {
                 database: database.clone(),
                 index_status: index_status.clone(),
                 providers: providers.clone(),
+                live,
             };
             app.manage(state);
-            tray::setup(app)?;
+            let notch_enabled = onboarding_complete
+                && database
+                    .setting("notchEnabled")?
+                    .is_none_or(|value| value == "true");
+            let menu_bar_enabled = database
+                .setting("menuBarEnabled")?
+                .is_none_or(|value| value == "true");
+            tray::setup(app, notch_enabled, menu_bar_enabled)?;
 
             #[cfg(debug_assertions)]
-            if std::env::var_os("AFTERVIBE_PREVIEW_MENUBAR").is_some() {
+            if std::env::var_os("VIBEMETER_PREVIEW_MENUBAR").is_some()
+                || std::env::var_os("AFTERVIBE_PREVIEW_MENUBAR").is_some()
+                || std::env::var_os("TOKENGRAPH_PREVIEW_MENUBAR").is_some()
+            {
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.hide();
                 }
@@ -699,6 +799,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_overview,
+            get_phrase_cloud,
+            get_live_snapshot,
+            repair_live_hooks,
+            uninstall_live_hooks,
+            jump_to_live_session,
+            set_notch_expanded,
             get_today,
             get_tasks,
             merge_tasks,
@@ -754,6 +860,6 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }),
-        Err(error) => eprintln!("aftervibe failed to start: {error}"),
+        Err(error) => eprintln!("VibeMeter failed to start: {error}"),
     }
 }

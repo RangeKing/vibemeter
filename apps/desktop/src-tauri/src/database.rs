@@ -3,7 +3,8 @@ use crate::models::{
     AgentKind, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem, CoverageNotice,
     DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, GenerateReviewRequest,
     GitCommitEvidence, GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem,
-    InsightStat, InsightsResponse, OverviewResponse, OverviewTotals, ParseState, PlaybookItem,
+    InsightStat, InsightsResponse, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount,
+    PhraseCloud, PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PlaybookItem,
     ProcessPhase, ProjectControl, Provenance, ReviewContent, ReviewDocument, ReviewFinding,
     ReviewsResponse, SavePlaybookRequest, SessionDetail, SessionSummary, SessionsResponse,
     SourceStatus, TaskSummary, TodayInsight, TodayResponse, TokenUsage, UpdateReviewRequest,
@@ -12,7 +13,7 @@ use crate::models::{
 use crate::review_engine::{self, ReviewEvidence};
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -344,6 +345,56 @@ CREATE TABLE IF NOT EXISTS vcti_profile_snapshots (
 PRAGMA user_version = 6;
 "#;
 
+const MIGRATION_V7: &str = r#"
+CREATE TABLE IF NOT EXISTS phrase_usage (
+    session_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    role TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    phrase TEXT NOT NULL,
+    occurrences INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(session_id, date, role, agent, phrase),
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS phrase_usage_range_idx
+    ON phrase_usage(date, role, phrase);
+CREATE INDEX IF NOT EXISTS phrase_usage_agent_idx
+    ON phrase_usage(agent, date);
+
+PRAGMA user_version = 7;
+"#;
+
+const MIGRATION_V8: &str = r#"
+CREATE TABLE IF NOT EXISTS live_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    project_label TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS live_events_expiry_idx ON live_events(expires_at);
+CREATE INDEX IF NOT EXISTS live_events_session_idx
+    ON live_events(agent, source_session_id, received_at);
+
+CREATE TABLE IF NOT EXISTS live_session_metrics (
+    agent TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    event_count INTEGER NOT NULL DEFAULT 0,
+    waiting_count INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    completion_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(agent, source_session_id)
+);
+
+PRAGMA user_version = 8;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -382,6 +433,12 @@ impl Database {
         }
         if version < 6 {
             connection.execute_batch(MIGRATION_V6)?;
+        }
+        if version < 7 {
+            connection.execute_batch(MIGRATION_V7)?;
+        }
+        if version < 8 {
+            connection.execute_batch(MIGRATION_V8)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -433,6 +490,9 @@ impl Database {
         byte_offset: u64,
         state: &ParseState,
     ) -> AppResult<String> {
+        let mut persisted_state = state.clone();
+        crate::phrases::compact(&mut persisted_state);
+        let state = &persisted_state;
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         let derived_session_id = session_database_id(state.agent, &state.source_session_id);
@@ -904,6 +964,8 @@ impl Database {
              DELETE FROM sources;
              DELETE FROM share_exports;
              DELETE FROM vcti_profile_snapshots;
+             DELETE FROM live_events;
+             DELETE FROM live_session_metrics;
              DELETE FROM excluded_projects;",
         )?;
         Ok(())
@@ -963,6 +1025,101 @@ impl Database {
         })
     }
 
+    pub fn phrase_cloud(&self, range: &str) -> AppResult<PhraseCloudResponse> {
+        let connection = self.connect()?;
+        let start_date = range_start(range);
+        let user = query_phrase_cloud(&connection, &start_date, "user")?;
+        let agents = query_phrase_cloud(&connection, &start_date, "agent")?;
+        let mut statement = connection.prepare(
+            "SELECT agent, COALESCE(SUM(occurrences), 0)
+             FROM phrase_usage
+             WHERE date>=?1 AND role='agent'
+             GROUP BY agent
+             ORDER BY SUM(occurrences) DESC, agent ASC",
+        )?;
+        let legend = statement
+            .query_map(params![start_date], |row| {
+                Ok(PhraseLegendItem {
+                    agent: row.get(0)?,
+                    occurrences: read_u64(row, 1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(PhraseCloudResponse {
+            range: range.into(),
+            generated_at: Utc::now().to_rfc3339(),
+            user,
+            agents,
+            legend,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_live_event(
+        &self,
+        received_at: &str,
+        expires_at: &str,
+        agent: &str,
+        source_session_id: &str,
+        event_name: &str,
+        project_label: &str,
+        payload_json: &str,
+        status: &str,
+    ) -> AppResult<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO live_events(
+                received_at, expires_at, agent, source_session_id,
+                event_name, project_label, payload_json
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                received_at,
+                expires_at,
+                agent,
+                source_session_id,
+                event_name,
+                project_label,
+                payload_json
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO live_session_metrics(
+                agent, source_session_id, started_at, last_seen_at,
+                event_count, waiting_count, error_count, completion_count
+             ) VALUES(?1, ?2, ?3, ?3, 1, ?4, ?5, ?6)
+             ON CONFLICT(agent, source_session_id) DO UPDATE SET
+                last_seen_at=excluded.last_seen_at,
+                event_count=live_session_metrics.event_count+1,
+                waiting_count=live_session_metrics.waiting_count+excluded.waiting_count,
+                error_count=live_session_metrics.error_count+excluded.error_count,
+                completion_count=live_session_metrics.completion_count+excluded.completion_count",
+            params![
+                agent,
+                source_session_id,
+                received_at,
+                i64::from(status == "waiting"),
+                i64::from(status == "error"),
+                i64::from(status == "completed"),
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM live_events WHERE expires_at<?1",
+            params![received_at],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn purge_expired_live_events(&self) -> AppResult<u64> {
+        let connection = self.connect()?;
+        let removed = connection.execute(
+            "DELETE FROM live_events WHERE expires_at<?1",
+            params![Utc::now().to_rfc3339()],
+        )?;
+        Ok(removed as u64)
+    }
+
     pub fn vcti_profile(&self) -> AppResult<VctiProfile> {
         let connection = self.connect()?;
         let now = Utc::now();
@@ -993,10 +1150,15 @@ impl Database {
                 COALESCE(SUM(CASE WHEN lower(tu.tool) IN ('edit','write','apply_patch','file-write')
                     THEN tu.count ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN lower(tu.tool) IN ('shell','bash','exec','exec_command')
-                    THEN tu.count ELSE 0 END),0)
+                    THEN tu.count ELSE 0 END),0),
+                COALESCE(lm.waiting_count,0),
+                COALESCE(lm.error_count,0),
+                COALESCE(lm.completion_count,0)
              FROM sessions s
              LEFT JOIN session_behavior sb ON sb.session_id=s.id
              LEFT JOIN tool_usage tu ON tu.session_id=s.id
+             LEFT JOIN live_session_metrics lm
+                ON lm.agent=s.agent AND lm.source_session_id=s.source_session_id
              WHERE s.started_at>=?1
              GROUP BY s.id
              ORDER BY s.started_at",
@@ -1004,6 +1166,14 @@ impl Database {
         let records = statement
             .query_map(params![start_timestamp], |row| {
                 let behavior_json = row.get::<_, Option<String>>(17)?;
+                let mut behavior: BehaviorSignals = behavior_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok())
+                    .unwrap_or_default();
+                let live_completion = read_u64(row, 29)?;
+                if live_completion > 0 {
+                    behavior.task_completions = behavior.task_completions.max(1);
+                }
                 Ok(crate::vcti::SessionBehaviorRecord {
                     id: row.get(0)?,
                     started_at: row.get(1)?,
@@ -1015,17 +1185,14 @@ impl Database {
                     tool_calls: read_u64(row, 7)?,
                     files_touched: read_u64(row, 8)?,
                     lines_changed: read_u64(row, 9)?,
-                    errors: read_u64(row, 10)?,
+                    errors: read_u64(row, 10)?.max(read_u64(row, 28)?),
                     verification_events: read_u64(row, 11)?,
-                    human_interventions: read_u64(row, 12)?,
+                    human_interventions: read_u64(row, 12)?.max(read_u64(row, 27)?),
                     subagent_count: read_u64(row, 13)?,
                     model_switches: read_u64(row, 14)?,
                     longest_uninterrupted_seconds: read_u64(row, 15)?,
                     has_commit: row.get::<_, i64>(16)? != 0,
-                    behavior: behavior_json
-                        .as_deref()
-                        .and_then(|json| serde_json::from_str(json).ok())
-                        .unwrap_or_default(),
+                    behavior,
                     git_review_events: read_u64(row, 18)?,
                     test_events: read_u64(row, 19)?,
                     build_events: read_u64(row, 20)?,
@@ -2079,6 +2246,10 @@ fn replace_session_children(
         params![session_id],
     )?;
     transaction.execute(
+        "DELETE FROM phrase_usage WHERE session_id=?1",
+        params![session_id],
+    )?;
+    transaction.execute(
         "DELETE FROM file_changes WHERE session_id=?1",
         params![session_id],
     )?;
@@ -2173,6 +2344,21 @@ fn replace_session_children(
                 event.success.map(i64::from),
                 event.duration_ms.map(sql_i64),
                 event.provenance,
+            ],
+        )?;
+    }
+    for phrase in state.phrase_counts.values() {
+        transaction.execute(
+            "INSERT INTO phrase_usage(
+                session_id, date, role, agent, phrase, occurrences
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                session_id,
+                phrase.date,
+                phrase.role,
+                state.agent.as_str(),
+                phrase.phrase,
+                sql_i64(phrase.occurrences),
             ],
         )?;
     }
@@ -2594,6 +2780,123 @@ fn range_start(range: &str) -> String {
     (Local::now().date_naive() - Duration::days(days))
         .format("%Y-%m-%d")
         .to_string()
+}
+
+fn query_phrase_cloud(
+    connection: &Connection,
+    start_date: &str,
+    role: &str,
+) -> AppResult<PhraseCloud> {
+    #[derive(Default)]
+    struct PendingPhrase {
+        occurrences: u64,
+        session_count: u64,
+        agents: BTreeMap<String, (u64, u64)>,
+    }
+
+    let sample_sessions = connection.query_row(
+        "SELECT COUNT(DISTINCT session_id)
+         FROM phrase_usage WHERE date>=?1 AND role=?2",
+        params![start_date, role],
+        |row| read_u64(row, 0),
+    )?;
+    let mut statement = connection.prepare(
+        "SELECT phrase, agent, COALESCE(SUM(occurrences), 0),
+                COUNT(DISTINCT session_id)
+         FROM phrase_usage
+         WHERE date>=?1 AND role=?2
+         GROUP BY phrase, agent
+         ORDER BY phrase, agent",
+    )?;
+    let rows = statement
+        .query_map(params![start_date, role], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                read_u64(row, 2)?,
+                read_u64(row, 3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut grouped = HashMap::<String, PendingPhrase>::new();
+    for (phrase, agent, occurrences, sessions) in rows {
+        let item = grouped.entry(phrase).or_default();
+        item.occurrences = item.occurrences.saturating_add(occurrences);
+        item.session_count = item.session_count.saturating_add(sessions);
+        item.agents.insert(agent, (occurrences, sessions));
+    }
+
+    let mut scored = grouped
+        .into_iter()
+        .filter(|(_, item)| item.session_count >= 2 && item.occurrences >= 2)
+        .map(|(phrase, item)| {
+            let length_factor = 1.0 + (phrase.chars().count().min(12) as f64 / 12.0) * 0.08;
+            let score =
+                item.occurrences as f64 * (1.0 + (item.session_count as f64).ln()) * length_factor;
+            (phrase, item, score)
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| right.1.session_count.cmp(&left.1.session_count))
+            .then_with(|| right.1.occurrences.cmp(&left.1.occurrences))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    scored.truncate(32);
+
+    let minimum = scored.last().map(|item| item.2).unwrap_or(0.0);
+    let maximum = scored.first().map(|item| item.2).unwrap_or(0.0);
+    let items = scored
+        .into_iter()
+        .map(|(phrase, item, score)| {
+            let weight = if maximum > minimum {
+                0.36 + ((score - minimum) / (maximum - minimum)) * 0.64
+            } else {
+                0.68
+            };
+            let agents = item
+                .agents
+                .into_iter()
+                .map(|(agent, (occurrences, session_count))| PhraseAgentCount {
+                    agent,
+                    occurrences,
+                    session_count,
+                })
+                .collect::<Vec<_>>();
+            let dominant_agent = if role == "agent" {
+                agents
+                    .iter()
+                    .max_by(|left, right| {
+                        left.occurrences
+                            .cmp(&right.occurrences)
+                            .then_with(|| right.agent.cmp(&left.agent))
+                    })
+                    .map(|item| item.agent.clone())
+            } else {
+                None
+            };
+            PhraseCloudItem {
+                phrase,
+                occurrences: item.occurrences,
+                session_count: item.session_count,
+                weight,
+                dominant_agent,
+                agents,
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(PhraseCloud {
+        status: if sample_sessions >= 2 && !items.is_empty() {
+            "ready".into()
+        } else {
+            "insufficient-data".into()
+        },
+        sample_sessions,
+        items,
+    })
 }
 
 fn query_overview_totals(
@@ -3755,7 +4058,11 @@ fn query_behavior_summary(
     for (started_at, agent, parser_version, behavior_json) in rows {
         summary.sessions = summary.sessions.saturating_add(1);
         active_days.insert(started_at.chars().take(10).collect::<String>());
-        let parser_current = parser_version.starts_with('4') || parser_version.starts_with('5');
+        let parser_current = parser_version
+            .split('.')
+            .next()
+            .and_then(|major| major.parse::<u64>().ok())
+            .is_some_and(|major| major >= 4);
         if parser_current {
             structure_capable = structure_capable.saturating_add(1);
             tool_result_capable = tool_result_capable.saturating_add(1);
@@ -3875,7 +4182,7 @@ fn add_rate_count(current: Option<f64>, value: u64) -> Option<f64> {
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
-    use crate::models::DailyAggregate;
+    use crate::models::{DailyAggregate, PhraseAggregate};
     use std::collections::HashMap;
     use std::sync::{Arc, Barrier};
 
@@ -3968,6 +4275,66 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn catchphrase_cloud_requires_cross_session_repetition_and_tracks_agent_attribution() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database =
+            Database::open(temporary.path().join("phrases.sqlite")).expect("database should open");
+        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let make_state = |agent: AgentKind, id: &str, agent_occurrences: u64| {
+            let mut state = ParseState::new(agent, id.into());
+            state.started_at = Some(format!("{date}T02:00:00Z"));
+            state.ended_at = Some(format!("{date}T02:10:00Z"));
+            state.phrase_counts.insert(
+                "user".into(),
+                PhraseAggregate {
+                    date: date.clone(),
+                    role: "user".into(),
+                    phrase: "先验证一下".into(),
+                    occurrences: 2,
+                },
+            );
+            state.phrase_counts.insert(
+                "agent".into(),
+                PhraseAggregate {
+                    date: date.clone(),
+                    role: "agent".into(),
+                    phrase: "验证已经通过".into(),
+                    occurrences: agent_occurrences,
+                },
+            );
+            state
+        };
+        database
+            .persist_parse_state(
+                "phrase-one",
+                1,
+                1,
+                1,
+                &make_state(AgentKind::Codex, "phrase-one", 3),
+            )
+            .expect("first phrase session");
+        database
+            .persist_parse_state(
+                "phrase-two",
+                1,
+                1,
+                1,
+                &make_state(AgentKind::ClaudeCode, "phrase-two", 1),
+            )
+            .expect("second phrase session");
+
+        let response = database.phrase_cloud("30d").expect("phrase cloud");
+        assert_eq!(response.user.status, "ready");
+        assert_eq!(response.agents.status, "ready");
+        assert_eq!(response.user.items[0].phrase, "先验证一下");
+        assert_eq!(
+            response.agents.items[0].dominant_agent.as_deref(),
+            Some("codex")
+        );
+        assert_eq!(response.agents.items[0].session_count, 2);
+    }
+
+    #[test]
     fn project_exclusion_purges_source_evidence_but_marks_user_authored_material() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("exclusion.sqlite"))
@@ -3977,7 +4344,7 @@ mod concurrency_tests {
         state.ended_at = Some("2026-07-21T02:30:00Z".into());
         state.title = Some("Refine review flow".into());
         state.project_hash = Some("project-hash".into());
-        state.project_label = Some("aftervibe-fixture".into());
+        state.project_label = Some("vibemeter-fixture".into());
         state.current_model = Some("gpt-5".into());
         state.usage.input_tokens = 2_000;
         state.usage.output_tokens = 400;
@@ -4012,7 +4379,7 @@ mod concurrency_tests {
                 title: "Keep verification close".into(),
                 body: "Run the focused check after the first coherent edit.".into(),
                 category: "verification".into(),
-                project_label: Some("aftervibe-fixture".into()),
+                project_label: Some("vibemeter-fixture".into()),
                 task_type: None,
                 source_review_id: Some(authored.id.clone()),
                 source_finding_id: None,
@@ -4060,9 +4427,9 @@ mod concurrency_tests {
             let mut state = ParseState::new(AgentKind::Codex, id.into());
             state.started_at = Some(start.into());
             state.ended_at = Some(end.into());
-            state.title = Some("Continue aftervibe review flow".into());
+            state.title = Some("Continue VibeMeter review flow".into());
             state.project_hash = Some("project-hash".into());
-            state.project_label = Some("aftervibe-fixture".into());
+            state.project_label = Some("vibemeter-fixture".into());
             state.current_model = Some("gpt-5".into());
             state.file_changes.insert(
                 path.into(),
@@ -4120,17 +4487,17 @@ mod concurrency_tests {
     fn semantic_similarity_handles_chinese_and_english_objectives() {
         assert!(
             semantic_similarity(
-                "继续修复 aftervibe 的分享导出流程",
-                "修复 aftervibe 分享导出，并运行验证"
+                "继续修复 VibeMeter 的分享导出流程",
+                "修复 VibeMeter 分享导出，并运行验证"
             ) > semantic_similarity(
-                "继续修复 aftervibe 的分享导出流程",
+                "继续修复 VibeMeter 的分享导出流程",
                 "调查提供商额度刷新失败"
             )
         );
         assert!(
             semantic_similarity(
-                "Repair the aftervibe share export flow",
-                "Continue repairing aftervibe share exports"
+                "Repair the VibeMeter share export flow",
+                "Continue repairing VibeMeter share exports"
             ) > 0.35
         );
     }

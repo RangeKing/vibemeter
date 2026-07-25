@@ -32,7 +32,7 @@ export function PlaybookPage() {
   ].join("\n") : "";
   const copy = async (value: string) => { await writeText(value); setNotice(t("actions.copied")); };
   const exportPatch = async () => {
-    const path = await saveDialog({ defaultPath: "aftervibe_AGENTS_suggestions.patch", filters: [{ name: "Patch", extensions: ["patch"] }] });
+    const path = await saveDialog({ defaultPath: "vibemeter_AGENTS_suggestions.patch", filters: [{ name: "Patch", extensions: ["patch"] }] });
     if (!path) return;
     await api.exportTextFile(path, patchText);
     setNotice(t("share.exported", { format: "PATCH" }));

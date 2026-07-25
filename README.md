@@ -1,152 +1,101 @@
-<div align="center">
-  <img src="docs/assets/aftervibe-banner.png" width="100%" alt="aftervibe：本机优先的 Coding Agent 复盘应用">
+# VibeMeter
 
-  <h1>aftervibe</h1>
+> Track your agents. Discover your coding type.<br>
+> 追踪你的 Agent，发现你的 AI 编程人格。
 
-  <p><strong>复盘你的 Vibe Coding。</strong></p>
+[中文](README.md) · [English](README_EN.md)
 
-  <p>
-    <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-000000?style=for-the-badge&logo=apple&logoColor=white">
-    <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=for-the-badge&logo=tauri&logoColor=white">
-    <img alt="Rust stable" src="https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&logo=rust&logoColor=white">
-    <img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=0B1F33">
-    <img alt="TypeScript 6" src="https://img.shields.io/badge/TypeScript-6-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
-  </p>
+VibeMeter 是一款本机优先的 macOS AI 编程活动追踪器。它在 MacBook Notch 与菜单栏里显示 Claude Code、Codex 的实时状态，把本机 Agent 会话整理成可验证的数据、回放与复盘，并从长期真实行为生成动态 VCTI 编程人格。
 
-  <p>
-    <img alt="Local first" src="https://img.shields.io/badge/privacy-local--first-6B5BFF?style=flat-square&logo=shield&logoColor=white">
-    <img alt="SQLite" src="https://img.shields.io/badge/storage-SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white">
-    <img alt="Simplified Chinese and English" src="https://img.shields.io/badge/i18n-中文%20%7C%20English-EF4444?style=flat-square">
-    <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat-square">
-    <img alt="Open source" src="https://img.shields.io/badge/open%20source-yes-F59E0B?style=flat-square&logo=github&logoColor=white">
-  </p>
+![VibeMeter icon](vibemeter.png)
 
-  <p>
-    🇨🇳 中文
-    ·
-    <a href="README_EN.md">🇺🇸 English</a>
-  </p>
-</div>
+## 三个核心入口
 
----
+- **Live**：在主界面、Notch 与菜单栏查看 Claude Code / Codex 的 `等待你处理 > 错误 > 运行中 > 已完成` 状态；可以跳回来源 App 或终端，但不会替用户批准权限、拒绝操作或发送 Prompt。
+- **Data**：汇总会话、Token、时长、成本、Agent、模型、工具、活跃时间与工作事件；新增“我的口头禅”与“Agent 的口头禅”，词频来自本机真实会话，不调用 LLM 猜测。
+- **VCTI**：使用本机可验证的行为信号生成 AI 编程人格、维度、置信度和证据；数据不足时明确显示不足，不强行判型。
 
-aftervibe 是一款本机优先的 macOS 应用，用来整理和复盘 Coding Agent 的真实工作记录。它把零散的会话、工具调用、文件修改、测试与 Git 证据，转化为可追溯的用量分析、过程回放、工作复盘、长期洞察和分享卡片。
+会话回放、Aftervibe 复盘、洞察、分享、数据源和设置仍作为二级能力保留。Aftervibe 是会话结束后的证据型复盘功能，不再承担主品牌。
 
-它不会替你启动或控制 Agent，也不会修改源码仓库。aftervibe 只读分析已经存在的本机记录，并在数据不足时明确显示“不可用”或“未记录”。
+## 实时监看
 
-### ✨ 功能亮点
+首次完成引导时，VibeMeter 会为已安装的 Claude Code 与 Codex 自动配置本机 Hook：
 
-- 📊 **数据总览**：按今日、7 天、30 天、90 天、180 天和一年查看会话、Token、活跃时间、模型与工具分布。
-- 🎬 **会话回放**：依据真实事件还原检查、编辑、测试、修复和验证过程。
-- 🔎 **证据复盘**：把结论分为事实、推断和建议，每条结论尽量关联到具体证据。
-- 🧬 **VCTI 人格**：根据一段时间内的真实协作行为生成 Vibe Coding 人格，不需要填写问卷。
-- 🎨 **分享卡片**：通过确定性的 SVG 渲染管线导出 PNG、SVG，或直接复制图片。
-- 💳 **Cursor 账户用量**：默认关闭；开启后可按当前时间范围查看 Dashboard Token 与成本，账户数据不会混入本机会话证据。
-- 🌏 **中英双语**：界面和分享内容均支持简体中文与英文。
+- 安全合并现有 JSON / TOML 配置，不覆盖其他 Hook；
+- 写入前创建带时间戳的备份；
+- Hook 只把事件发送到权限为 `0600` 的本机 Unix socket；
+- Notch 只显示 Agent、项目、阶段、状态与最近结构化动作，不显示原始 Prompt、命令或工具输出；
+- 只有来源不在前台且进入“等待处理”或“错误”时才发系统通知，不播放声音；
+- 设置页支持检查、修复和卸载；卸载只移除 VibeMeter 管理的条目。
 
-### 🤖 支持的数据源
+Notch 与菜单栏可以分别关闭。不具备实体 Notch 的屏幕会诚实降级为菜单栏与主界面。首版实时状态只支持 Claude Code 和 Codex；Kimi Code、Cursor、OpenClaw 与 Hermes 仍可按本机可读取能力进入数据、回放和 VCTI。
 
-aftervibe 会在本机查找以下工具的可读记录：
+## 口头禅
 
-- Claude Code
-- Codex
-- Cursor
-- Kimi Code
-- OpenClaw
-- Hermes
+“我的口头禅”与“Agent 的口头禅”遵循同一套确定性规则：
 
-不同工具提供的数据字段并不相同，因此部分指标可能显示为“不可用”或“未记录”。所有适配器都遵循同一个原则：源目录只读，未知记录跳过，解析失败不输出原始私密内容。
+- 中文短语 2–8 个字，英文短语 1–3 个词；
+- 至少在多个会话重复出现才进入词云；
+- 排除代码、文件路径、密钥形态、工具输出和停用词；
+- 字号只编码出现频率；
+- Agent 词语底色表示主要来源 Agent，并提供颜色图例与悬浮归因；
+- 当前范围数据不足时显示明确的不足状态，不用 `0` 冒充“没有”。
 
-### 🔐 隐私边界
+分析在本机完成。历史会话只保存派生词频；实时 Hook 原始事件最多保留 90 天，长期仅保留 VCTI 所需的派生指标。
 
-- 🏠 索引数据库保存在 `~/Library/Application Support/com.aftervibe.desktop/aftervibe.sqlite`。
-- 🚫 不保存源代码、完整 diff、终端输出、环境变量值、API Key 或完整模型回复。
-- 🎛️ Git 读取、Prompt 结构分析和 Cursor Dashboard 用量均有独立开关。
-- 🛡️ 分享内容会经过 Share Guard；项目名称、文件路径和自由文本默认不公开。
-- 👀 深度复盘只发送确认页中列出的限长、脱敏 payload。
+## 数据与隐私
 
-完整说明见 [隐私模型](docs/privacy.md)。
+- VibeMeter 只读扫描受支持的本机会话历史，不改写源会话或源码仓库。
+- 独立数据库位于 `~/Library/Application Support/com.vibemeter.desktop/vibemeter.sqlite`。
+- 首次启动会优先从 aftervibe 数据库复制，其次兼容旧 TokenGraph 数据库；复制使用 SQLite 在线备份，源数据库、WAL 与 SHM 不会被修改。
+- Git 证据读取默认关闭；未授权、未记录与不可用会作为不同状态展示。
+- 不保存完整 diff、终端环境变量、凭据或完整模型回复。
+- 深度复盘只有在用户检查准确 payload 后才会调用本机 CLI 或 API。
+- 分享导出统一经过 Share Guard；发现密钥或绝对路径时直接阻止导出。
 
-### 🧰 开发环境
+完整边界见 [架构](docs/architecture.md)、[隐私模型](docs/privacy.md)与[迁移记录](docs/vibemeter-migration.md)。
 
-- macOS 14 或更高版本
-- Node.js 22 或更高版本
-- Rust stable，包含 `rustfmt` 与 `clippy`
-- Xcode Command Line Tools
+## 分享
 
-### 🚀 开始开发
+分享工作台目前公开 6 个模板：
+
+| 分组 | 模板 |
+| --- | --- |
+| 数据 | Usage Overview、Developer Wrapped、Agent Comparison、Session Recap |
+| 身份 | VCTI Identity Card、Catchphrases |
+
+“Catchphrases”卡片同步包含“我的口头禅”与“Agent 的口头禅”、Agent 颜色图例和数据不足状态。所有公开模板支持简体中文 / 英文、浅色 / 深色、8 种画幅、PNG / SVG 与复制图片，并让预览和导出共用同一确定性渲染模型。
+
+## 运行与构建
+
+要求 macOS 14+、Node.js 22+、Rust stable 和 Xcode Command Line Tools：
 
 ```sh
 npm install
-npm run dev
-```
-
-### 🧪 运行检查
-
-```sh
-npm run check
-npm test
-npm run check:rust
-npm run test:rust
-```
-
-也可以一次运行全部检查：
-
-```sh
 npm run ci
-```
-
-### 🏗️ 构建 macOS 应用
-
-```sh
 npm run build
 ```
 
-构建产物位于：
+开发运行：
 
-```text
-apps/desktop/src-tauri/target/release/bundle/macos/aftervibe.app
+```sh
+npm run dev
 ```
 
-### 🔑 可选环境变量
-
-aftervibe 不会把 API Key 写入数据库。只有手动选择 API 深度复盘时，应用才会读取：
+Tauri 产物位于：
 
 ```text
-OPENAI_API_KEY
-ANTHROPIC_API_KEY
+apps/desktop/src-tauri/target/release/bundle/macos/VibeMeter.app
 ```
 
-开发和导出测试还可使用：
+本机交付副本位于 `release/VibeMeter.app`。当前构建为 Apple Silicon、ad-hoc 签名，未做 Apple notarization；实机与自动化记录见 [VALIDATION.md](VALIDATION.md)。
 
-```text
-AFTERVIBE_TEST_DB
-AFTERVIBE_PREVIEW_MENUBAR
-AFTERVIBE_EXPORT_MATRIX_DIR
-AFTERVIBE_EXPORT_TEMPLATE
-```
+## 项目边界
 
-### 🗂️ 项目结构
+- Bundle ID：`com.vibemeter.desktop`
+- 数据库：`vibemeter.sqlite`
+- 主品牌：`VibeMeter`
+- 技术包名：`vibemeter`
+- 许可证：MIT
 
-```text
-apps/desktop/src/                 React 界面、状态、图表与本地化
-apps/desktop/src-tauri/src/       Rust 数据适配、索引、复盘与导出
-apps/desktop/src-tauri/tests/     Rust 集成测试
-docs/                             架构与隐私说明
-```
-
-技术栈：Tauri 2、Rust、React、TypeScript、SQLite、ECharts。
-
-### 🤝 参与贡献
-
-提交代码前请阅读 [贡献指南](CONTRIBUTING.md)。涉及真实会话格式时，只能提交经过脱敏的最小 fixture，不要上传自己的完整记录、数据库或导出内容。
-
-发现安全或隐私问题时，请按照 [安全策略](SECURITY.md) 私下报告，不要在公开 Issue 中附带敏感记录。
-
-### 📄 License
-
-项目采用 [MIT License](LICENSE)。
-
-Space Grotesk 字体按其目录中的 [SIL Open Font License](apps/desktop/src/assets/fonts/OFL.txt) 分发。
-
-aftervibe 与上述 Coding Agent 提供商没有隶属或背书关系。相关名称与商标归各自所有者。
+实时集成参考了 [notchi](https://github.com/sk-ruban/notchi) 与 [VibeHub](https://github.com/mtunique/VibeHub) 的公开产品机制，但本仓库采用独立实现，没有复制其源码。notchi 为 GPL-3.0，VibeHub 为 Apache-2.0。

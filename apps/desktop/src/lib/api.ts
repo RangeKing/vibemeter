@@ -8,7 +8,10 @@ import type {
   InsightsResponse,
   IndexStatus,
   MenuBarSnapshot,
+  LiveSnapshot,
+  HookStatus,
   OverviewResponse,
+  PhraseCloudResponse,
   PlaybookItem,
   ProjectControl,
   ProviderUsage,
@@ -28,6 +31,12 @@ import type {
 
 export const api = {
   overview: (range: string) => invoke<OverviewResponse>("get_overview", { range }),
+  phraseCloud: (range: string) => invoke<PhraseCloudResponse>("get_phrase_cloud", { range }),
+  liveSnapshot: () => invoke<LiveSnapshot>("get_live_snapshot"),
+  repairLiveHooks: () => invoke<HookStatus>("repair_live_hooks"),
+  uninstallLiveHooks: () => invoke<HookStatus>("uninstall_live_hooks"),
+  jumpToLiveSession: (id: string) => invoke<void>("jump_to_live_session", { id }),
+  setNotchExpanded: (expanded: boolean) => invoke<void>("set_notch_expanded", { expanded }),
   today: () => invoke<TodayResponse>("get_today"),
   tasks: (range: string) => invoke<TaskSummary[]>("get_tasks", { range }),
   mergeTasks: (taskIds: string[], title?: string) => invoke<string>("merge_tasks", { taskIds, title }),

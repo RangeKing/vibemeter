@@ -17,6 +17,10 @@ export function formatDateTime(value: string, locale: Locale): string {
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
+export function formatTime(value: string, locale: Locale): string {
+  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+}
+
 export function formatQuarter(value: string, locale: Locale): string {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T12:00:00`) : new Date(value);
   const quarter = Math.floor(date.getMonth() / 3) + 1;
@@ -50,6 +54,6 @@ export function agentName(value: string): string {
   if (value === "cursor") return "Cursor";
   if (value === "openclaw") return "OpenClaw";
   if (value === "hermes") return "Hermes";
-  if (value === "aftervibe") return "aftervibe";
+  if (value === "vibemeter") return "VibeMeter";
   return value;
 }

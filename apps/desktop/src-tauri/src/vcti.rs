@@ -5,7 +5,7 @@ use crate::models::{
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub const ALGORITHM_VERSION: &str = "1.2.0";
+pub const ALGORITHM_VERSION: &str = "1.3.0";
 const WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 

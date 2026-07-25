@@ -48,7 +48,8 @@ static LEADING_MARKER: Lazy<Regex> = Lazy::new(|| {
     .expect("valid leading marker regex")
 });
 
-/// Strips leading command, skill, mention, and list markers from raw prompts.
+/// Strips leading command/skill/mention/list markers so a raw prompt like
+/// `[$grill-me]([path] 1. TokenGraph …` reads as a clean headline `TokenGraph …`.
 pub fn clean_display_title(value: &str) -> String {
     let mut current = value.trim().to_string();
     loop {
@@ -246,8 +247,8 @@ mod tests {
     #[test]
     fn strips_command_and_skill_markers_from_titles() {
         assert_eq!(
-            clean_display_title("[$grill-me]([path] 1. 完善数据页的显示功能"),
-            "完善数据页的显示功能"
+            clean_display_title("[$grill-me]([path] 1. TokenGraph 原有的数据显示功能"),
+            "TokenGraph 原有的数据显示功能"
         );
         assert_eq!(
             clean_display_title("/goal [$thesis-writer]([path] 根据 AGENT.md 要求"),

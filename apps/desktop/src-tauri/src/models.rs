@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "5.1.0";
+pub const PARSER_VERSION: &str = "6.1.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -118,6 +118,15 @@ pub struct CanonicalEvent {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct PhraseAggregate {
+    pub date: String,
+    pub role: String,
+    pub phrase: String,
+    pub occurrences: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct FileChangeAccumulator {
     pub path: String,
     pub change_kind: String,
@@ -227,6 +236,10 @@ pub struct ParseState {
     #[serde(default)]
     pub events: Vec<CanonicalEvent>,
     #[serde(default)]
+    pub phrase_counts: HashMap<String, PhraseAggregate>,
+    #[serde(default)]
+    pub last_phrase_fingerprints: HashMap<String, String>,
+    #[serde(default)]
     pub file_changes: HashMap<String, FileChangeAccumulator>,
     pub daily: HashMap<String, DailyAggregate>,
     #[serde(default)]
@@ -290,6 +303,8 @@ impl ParseState {
             touched_file_hashes: HashSet::new(),
             tool_counts: HashMap::new(),
             events: Vec::new(),
+            phrase_counts: HashMap::new(),
+            last_phrase_fingerprints: HashMap::new(),
             file_changes: HashMap::new(),
             daily: HashMap::new(),
             hourly: HashMap::new(),
@@ -508,6 +523,102 @@ pub struct OverviewResponse {
     pub recent_sessions: Vec<SessionSummary>,
     pub coverage: Vec<CoverageNotice>,
     pub index_status: IndexStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseAgentCount {
+    pub agent: String,
+    pub occurrences: u64,
+    pub session_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseCloudItem {
+    pub phrase: String,
+    pub occurrences: u64,
+    pub session_count: u64,
+    pub weight: f64,
+    pub dominant_agent: Option<String>,
+    pub agents: Vec<PhraseAgentCount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseCloud {
+    pub status: String,
+    pub sample_sessions: u64,
+    pub items: Vec<PhraseCloudItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseLegendItem {
+    pub agent: String,
+    pub occurrences: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhraseCloudResponse {
+    pub range: String,
+    pub generated_at: String,
+    pub user: PhraseCloud,
+    pub agents: PhraseCloud,
+    pub legend: Vec<PhraseLegendItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveAction {
+    pub kind: String,
+    pub label: String,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSession {
+    pub id: String,
+    pub source_session_id: String,
+    pub agent: String,
+    pub project_label: String,
+    pub status: String,
+    pub phase: String,
+    pub started_at: String,
+    pub updated_at: String,
+    pub waiting_reason: Option<String>,
+    pub actions: Vec<LiveAction>,
+    pub process_id: Option<u32>,
+    pub origin: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookProviderStatus {
+    pub provider: String,
+    pub available: bool,
+    pub installed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookStatus {
+    pub state: String,
+    pub providers: Vec<HookProviderStatus>,
+    pub socket_ready: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveSnapshot {
+    pub generated_at: String,
+    pub sessions: Vec<LiveSession>,
+    pub urgent_session_id: Option<String>,
+    pub active_count: u64,
+    pub hook_status: HookStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, ArrowUpRight, Coins, Gauge, Power, RefreshCw, Settings, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import appIconUrl from "../../src-tauri/icons/icon-source.svg";
+import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, tokenTotal } from "../lib/format";
 import type { Locale, RateWindow } from "../types";

@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { EChart } from "../components/EChart";
 import { BehaviorStreams } from "../components/BehaviorStreams";
 import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
+import { CatchphraseClouds } from "../components/CatchphraseClouds";
 import { RangePicker } from "../components/RangePicker";
 import { WorkEventCard } from "../components/WorkEventCard";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
@@ -142,6 +143,7 @@ export function DataPage({ locale }: { locale: Locale }) {
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [showAllEvents, setShowAllEvents] = useState(false);
   const overview = useQuery({ queryKey: ["overview", range], queryFn: () => api.overview(range), refetchInterval: 30_000 });
+  const phrases = useQuery({ queryKey: ["phrase-cloud", range], queryFn: () => api.phraseCloud(range), refetchInterval: 30_000 });
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
   const merge = useMutation({
@@ -197,6 +199,12 @@ export function DataPage({ locale }: { locale: Locale }) {
       </section>
 
       <CursorAccountUsagePanel locale={locale} range={range} />
+
+      {phrases.data ? <CatchphraseClouds data={phrases.data} locale={locale} /> : phrases.isError ? (
+        <section className="catchphrase-section">
+          <ErrorState retry={() => void phrases.refetch()} />
+        </section>
+      ) : null}
 
       <section className="data-panel trend-panel">
         <header className="panel-heading"><div><span className="section-index">01</span><h2>{t("data.trend")}</h2><p>{t(isToday ? "data.trendHourlyBody" : "data.trendBody", { range: rangeText })}</p></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>

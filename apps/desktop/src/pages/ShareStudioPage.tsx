@@ -28,7 +28,7 @@ import { useUiStore } from "../store";
 import type { AspectRatio, Locale, ShareRenderRequest, ShareTemplate } from "../types";
 
 const dataTemplates: ShareTemplate[] = ["usage-overview", "developer-wrapped", "agent-comparison", "session-recap"];
-const identityTemplates: ShareTemplate[] = ["vcti-card"];
+const identityTemplates: ShareTemplate[] = ["vcti-card", "catchphrases"];
 const aspects: AspectRatio[] = ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9"];
 const metricIds = ["sessions", "duration", "tokens", "activeDays", "files", "lines", "tools", "topAgent", "topModel", "activeDate", "cost"];
 const templateMetricIds: Record<ShareTemplate, string[]> = {
@@ -41,6 +41,7 @@ const templateMetricIds: Record<ShareTemplate, string[]> = {
   "weekly-recap": ["sessions", "duration", "files", "lines", "topAgent", "topModel", "activeDate"],
   "ship-card": ["duration", "files", "lines"],
   "vcti-card": ["startStructure", "delegation", "guardrail", "debugDepth", "shipping", "toolNomad"],
+  catchphrases: [],
 };
 
 const previewFrames: Record<AspectRatio, { width: number; height: number }> = {
@@ -131,7 +132,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
     try {
       const date = new Date().toISOString().slice(0, 10);
       const ratio = request.aspectRatio.replace(":", "x");
-      const path = await save({ defaultPath: `aftervibe_${ratio}_${request.templateId}_${date}.${format}`, filters: [{ name: format.toUpperCase(), extensions: [format] }] });
+      const path = await save({ defaultPath: `vibemeter_${ratio}_${request.templateId}_${date}.${format}`, filters: [{ name: format.toUpperCase(), extensions: [format] }] });
       if (!path) return;
       await api.exportShare(request, format, path);
       setNotice(t("share.exported", { format: format.toUpperCase() }));
@@ -178,7 +179,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
               <h3 className="template-group-label">{t("share.dataTemplates")}</h3>
               {dataTemplates.map((template, index) => <button key={template} className={request.templateId === template ? "active" : ""} onClick={() => chooseTemplate(template)}><i>D{index + 1}</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
               <h3 className="template-group-label">{t("share.identityTemplates")}</h3>
-              {identityTemplates.map((template) => <button key={template} className={request.templateId === template ? "active identity" : "identity"} onClick={() => chooseTemplate(template)}><i>V</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
+              {identityTemplates.map((template) => <button key={template} className={request.templateId === template ? "active identity" : "identity"} onClick={() => chooseTemplate(template)}><i>{template === "vcti-card" ? "V" : "C"}</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
             </div>
           </section>
 
@@ -208,7 +209,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
             {(["showModel", "showCost", "showProject", "showBrand"] as const).map((key) => <label key={key}><span>{t(`share.${key}`)}</span><Toggle checked={request[key]} onCheckedChange={(value) => patch(key, value)} label={t(`share.${key}`)} /></label>)}
             {request.templateId === "vcti-card" ? <label><span><b>{t("share.showBehaviorEvidence")}</b><small>{t("share.showBehaviorEvidenceBody")}</small></span><Toggle checked={request.showBehaviorEvidence} onCheckedChange={(value) => patch("showBehaviorEvidence", value)} label={t("share.showBehaviorEvidence")} /></label> : null}
           </section>
-          <section className="control-section toggle-section"><h2>{t("share.metricsTitle")}</h2>{templateMetricIds[request.templateId].map((id) => <label key={id}><span>{t(`metrics.${id}`)}</span><Toggle checked={request.metrics.find((metric) => metric.id === id)?.visible !== false} onCheckedChange={(value) => toggleMetric(id, value)} label={t(`metrics.${id}`)} /></label>)}</section>
+          {templateMetricIds[request.templateId].length ? <section className="control-section toggle-section"><h2>{t("share.metricsTitle")}</h2>{templateMetricIds[request.templateId].map((id) => <label key={id}><span>{t(`metrics.${id}`)}</span><Toggle checked={request.metrics.find((metric) => metric.id === id)?.visible !== false} onCheckedChange={(value) => toggleMetric(id, value)} label={t(`metrics.${id}`)} /></label>)}</section> : null}
         </aside>
 
         <section className="share-workspace">

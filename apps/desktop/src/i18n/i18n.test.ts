@@ -21,9 +21,9 @@ describe("localization resources", () => {
     expect(values(zhCN).every((value) => value.trim().length > 0)).toBe(true);
   });
 
-  it("uses the approved Chinese product tagline", () => {
-    expect(zhCN.app.tagline).toBe("复盘你的 Vibe Coding。");
-    expect(enUS.app.tagline).toBe("Review the work behind the vibe.");
+  it("uses the approved VibeMeter product tagline", () => {
+    expect(zhCN.app.tagline).toBe("追踪你的 Agent，发现你的 AI 编程人格。");
+    expect(enUS.app.tagline).toBe("Track your agents. Discover your coding type.");
   });
 
   it("does not ship a generic session-story vocabulary", () => {

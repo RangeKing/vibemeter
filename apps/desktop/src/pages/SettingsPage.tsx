@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { BrainCircuit, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, Power, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { BrainCircuit, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
@@ -12,6 +12,7 @@ export function SettingsPage() {
   const client = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 3_000 });
   const [loginEnabled, setLoginEnabled] = useState(false);
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
@@ -70,6 +71,14 @@ export function SettingsPage() {
           <header><Languages size={17} /><div><h2>{t("settings.general")}</h2></div></header>
           <div className="setting-row"><div><strong>{t("settings.language")}</strong></div><select value={data.locale} onChange={(event) => void setSetting("locale", event.target.value)}><option value="system">{t("settings.systemLanguage")}</option><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></div>
           <div className="setting-row"><div><strong>{t("settings.appearance")}</strong></div><div className="segmented compact"><button className={theme === "system" ? "active" : ""} onClick={() => void setSetting("theme", "system")}><Laptop size={13} />{t("settings.systemTheme")}</button><button className={theme === "light" ? "active" : ""} onClick={() => void setSetting("theme", "light")}>{t("share.light")}</button><button className={theme === "dark" ? "active" : ""} onClick={() => void setSetting("theme", "dark")}>{t("share.dark")}</button></div></div>
+        </section>
+
+        <section className="settings-section">
+          <header><RadioTower size={17} /><div><h2>{t("settings.live")}</h2><p>{t("settings.liveBody")}</p></div></header>
+          <div className="setting-row multiline"><div><strong>{t("settings.liveHooks")}</strong><p>{t("settings.liveHooksBody")}</p></div><Toggle checked={data.liveHooksEnabled === "true"} onCheckedChange={(value) => void setSetting("liveHooksEnabled", String(value))} label={t("settings.liveHooks")} /></div>
+          <div className="setting-row multiline"><div><strong>{t("settings.notch")}</strong><p>{t("settings.notchBody")}</p></div><Toggle checked={data.notchEnabled === "true"} onCheckedChange={(value) => void setSetting("notchEnabled", String(value))} label={t("settings.notch")} /></div>
+          <div className="setting-row multiline"><div><strong>{t("settings.menuBar")}</strong><p>{t("settings.menuBarBody")}</p></div><Toggle checked={data.menuBarEnabled === "true"} onCheckedChange={(value) => void setSetting("menuBarEnabled", String(value))} label={t("settings.menuBar")} /></div>
+          <p className="setting-callout live-setting-status"><PanelTop size={13} />{t(`settings.liveState.${live.data?.hookStatus.state ?? "unavailable"}`)} · {t("settings.rawRetention")}</p>
         </section>
 
         <section className="settings-section">

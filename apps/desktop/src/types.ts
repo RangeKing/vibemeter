@@ -1,7 +1,7 @@
 export type Locale = "en-US" | "zh-CN";
 export type Theme = "light" | "dark" | "system";
 export type RangeKey = "today" | "7d" | "30d" | "90d" | "180d" | "year" | "all";
-export type PageKey = "data" | "sessions" | "reviews" | "insights" | "vcti" | "share" | "sources" | "settings";
+export type PageKey = "live" | "data" | "sessions" | "reviews" | "insights" | "vcti" | "share" | "sources" | "settings";
 export type ShareTemplate =
   | "usage-overview"
   | "developer-wrapped"
@@ -11,7 +11,8 @@ export type ShareTemplate =
   | "session-breakdown"
   | "weekly-recap"
   | "ship-card"
-  | "vcti-card";
+  | "vcti-card"
+  | "catchphrases";
 export type AspectRatio = "1:1" | "2:3" | "3:2" | "3:4" | "4:3" | "4:5" | "16:9" | "9:16";
 
 export interface TokenUsage {
@@ -166,6 +167,82 @@ export interface OverviewResponse {
   recentSessions: SessionSummary[];
   coverage: CoverageNotice[];
   indexStatus: IndexStatus;
+}
+
+export interface PhraseAgentCount {
+  agent: string;
+  occurrences: number;
+  sessionCount: number;
+}
+
+export interface PhraseCloudItem {
+  phrase: string;
+  occurrences: number;
+  sessionCount: number;
+  weight: number;
+  dominantAgent?: string;
+  agents: PhraseAgentCount[];
+}
+
+export interface PhraseCloud {
+  status: "ready" | "insufficient-data";
+  sampleSessions: number;
+  items: PhraseCloudItem[];
+}
+
+export interface PhraseLegendItem {
+  agent: string;
+  occurrences: number;
+}
+
+export interface PhraseCloudResponse {
+  range: RangeKey;
+  generatedAt: string;
+  user: PhraseCloud;
+  agents: PhraseCloud;
+  legend: PhraseLegendItem[];
+}
+
+export interface LiveAction {
+  kind: string;
+  label: string;
+  occurredAt: string;
+}
+
+export interface LiveSession {
+  id: string;
+  sourceSessionId: string;
+  agent: "claude-code" | "codex";
+  projectLabel: string;
+  status: "waiting" | "error" | "running" | "idle" | "completed";
+  phase: string;
+  startedAt: string;
+  updatedAt: string;
+  waitingReason?: string;
+  actions: LiveAction[];
+  processId?: number;
+  origin?: "cli" | "desktop";
+}
+
+export interface HookProviderStatus {
+  provider: string;
+  available: boolean;
+  installed: boolean;
+  detail: "ready" | "not-found" | "hook-missing" | "feature-disabled" | string;
+}
+
+export interface HookStatus {
+  state: "ready" | "partial" | "unavailable";
+  providers: HookProviderStatus[];
+  socketReady: boolean;
+}
+
+export interface LiveSnapshot {
+  generatedAt: string;
+  sessions: LiveSession[];
+  urgentSessionId?: string;
+  activeCount: number;
+  hookStatus: HookStatus;
 }
 
 export interface SessionsResponse {
@@ -589,4 +666,7 @@ export interface AppSettings {
   deepReviewMode: "cli" | "api";
   deepReviewProvider: "codex" | "claude" | "openai" | "anthropic";
   deepReviewModel: string;
+  liveHooksEnabled: string;
+  notchEnabled: string;
+  menuBarEnabled: string;
 }

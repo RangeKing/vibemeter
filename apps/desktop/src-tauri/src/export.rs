@@ -2,8 +2,9 @@ use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::export_localization as loc;
 use crate::models::{
-    ComparisonItem, ExportRequest, ExportResult, IndexStatus, OverviewResponse, SessionDetail,
-    SharePreview, ShareRenderRequest, TaskSummary, VctiEvidenceItem, VctiProfile,
+    ComparisonItem, ExportRequest, ExportResult, IndexStatus, OverviewResponse, PhraseCloud,
+    PhraseCloudResponse, SessionDetail, SharePreview, ShareRenderRequest, TaskSummary,
+    VctiEvidenceItem, VctiProfile,
 };
 use crate::privacy;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -12,7 +13,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use uuid::Uuid;
 
-const TEMPLATE_VERSION: &str = "14.0.0";
+const TEMPLATE_VERSION: &str = "15.0.0";
 const SAVITZKY_GOLAY_7: [f64; 7] = [
     -2.0 / 21.0,
     3.0 / 21.0,
@@ -97,6 +98,7 @@ struct ShareData {
     session: Option<SessionDetail>,
     tasks: Vec<TaskSummary>,
     vcti: Option<VctiProfile>,
+    phrases: Option<PhraseCloudResponse>,
 }
 
 pub fn preview(database: &Database, request: ShareRenderRequest) -> AppResult<SharePreview> {
@@ -208,12 +210,16 @@ fn load_data(database: &Database, request: &ShareRenderRequest) -> AppResult<Sha
     let vcti = (request.template_id == "vcti-card")
         .then(|| database.vcti_profile())
         .transpose()?;
+    let phrases = (request.template_id == "catchphrases")
+        .then(|| database.phrase_cloud(&request.range))
+        .transpose()?;
     Ok(ShareData {
         overview,
         comparison,
         session,
         tasks,
         vcti,
+        phrases,
     })
 }
 
@@ -228,6 +234,7 @@ fn validate_request(request: &ShareRenderRequest) -> AppResult<()> {
         "weekly-recap",
         "ship-card",
         "vcti-card",
+        "catchphrases",
     ]
     .contains(&request.template_id.as_str())
     {
@@ -310,6 +317,7 @@ fn render(request: &ShareRenderRequest, data: &ShareData, width: u32, height: u3
         "weekly-recap" => render_weekly_recap_card(&mut svg, request, data, width, height, palette),
         "ship-card" => render_ship_card(&mut svg, request, data, width, height, palette),
         "vcti-card" => render_vcti_card(&mut svg, request, data, width, height, palette),
+        "catchphrases" => render_catchphrases_card(&mut svg, request, data, width, height, palette),
         _ => {}
     }
     if request.show_brand {
@@ -317,6 +325,328 @@ fn render(request: &ShareRenderRequest, data: &ShareData, width: u32, height: u3
     }
     svg.push_str("</svg>");
     svg
+}
+
+fn render_catchphrases_card(
+    svg: &mut String,
+    request: &ShareRenderRequest,
+    data: &ShareData,
+    width: u32,
+    height: u32,
+    palette: Palette,
+) {
+    let locale = loc::normalize_locale(&request.locale);
+    let margin = if width > height { 92.0 } else { 78.0 };
+    let header_y = 74.0;
+    rect(
+        svg,
+        margin,
+        header_y - 17.0,
+        18.0,
+        18.0,
+        5.0,
+        "#FF8358",
+        None,
+    );
+    text(
+        svg,
+        margin + 34.0,
+        header_y,
+        29.0,
+        720,
+        palette.muted,
+        loc::text(locale, "label.catchphrases"),
+        None,
+    );
+    text(
+        svg,
+        width as f64 - margin,
+        header_y,
+        26.0,
+        560,
+        palette.muted,
+        &loc::format_range(locale, &request.range),
+        Some("end"),
+    );
+
+    let default_title = loc::text(locale, "template.catchphrases");
+    let title = custom_or(&request.title, default_title);
+    text_block_display(
+        svg,
+        margin,
+        154.0,
+        width as f64 - margin * 2.0,
+        if width > height { 62.0 } else { 68.0 },
+        720,
+        palette.text,
+        title,
+        2,
+    );
+    let subtitle = custom_or(&request.summary, loc::text(locale, "catchphrases.subtitle"));
+    text_block(
+        svg,
+        margin,
+        220.0,
+        width as f64 - margin * 2.0,
+        25.0,
+        500,
+        palette.muted,
+        subtitle,
+        2,
+    );
+
+    let Some(phrases) = data.phrases.as_ref() else {
+        render_empty(svg, request, width, height, palette);
+        return;
+    };
+    let landscape = width as f64 / height as f64 > 1.18;
+    let panel_top = 300.0;
+    let panel_bottom = height as f64 - 184.0;
+    let gap = 24.0;
+    if landscape {
+        let panel_width = (width as f64 - margin * 2.0 - gap) / 2.0;
+        render_phrase_panel(
+            svg,
+            locale,
+            &phrases.user,
+            None,
+            margin,
+            panel_top,
+            panel_width,
+            panel_bottom - panel_top,
+            palette,
+            false,
+        );
+        render_phrase_panel(
+            svg,
+            locale,
+            &phrases.agents,
+            Some(phrases),
+            margin + panel_width + gap,
+            panel_top,
+            panel_width,
+            panel_bottom - panel_top,
+            palette,
+            true,
+        );
+    } else {
+        let panel_height = (panel_bottom - panel_top - gap) / 2.0;
+        render_phrase_panel(
+            svg,
+            locale,
+            &phrases.user,
+            None,
+            margin,
+            panel_top,
+            width as f64 - margin * 2.0,
+            panel_height,
+            palette,
+            false,
+        );
+        render_phrase_panel(
+            svg,
+            locale,
+            &phrases.agents,
+            Some(phrases),
+            margin,
+            panel_top + panel_height + gap,
+            width as f64 - margin * 2.0,
+            panel_height,
+            palette,
+            true,
+        );
+    }
+    text(
+        svg,
+        margin,
+        height as f64 - 145.0,
+        20.0,
+        520,
+        palette.muted,
+        loc::text(locale, "catchphrases.method"),
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_phrase_panel(
+    svg: &mut String,
+    locale: &str,
+    cloud: &PhraseCloud,
+    response: Option<&PhraseCloudResponse>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    palette: Palette,
+    agent_cloud: bool,
+) {
+    panel(svg, x, y, width, height, palette);
+    let title = if agent_cloud {
+        loc::text(locale, "catchphrases.agent")
+    } else {
+        loc::text(locale, "catchphrases.mine")
+    };
+    text(
+        svg,
+        x + 34.0,
+        y + 54.0,
+        30.0,
+        710,
+        palette.text,
+        title,
+        None,
+    );
+    text(
+        svg,
+        x + width - 34.0,
+        y + 53.0,
+        20.0,
+        560,
+        palette.muted,
+        &loc::format_sessions(locale, cloud.sample_sessions),
+        Some("end"),
+    );
+    line(
+        svg,
+        x + 34.0,
+        y + 76.0,
+        x + width - 34.0,
+        y + 76.0,
+        palette.hairline,
+        1.0,
+        None,
+    );
+    if cloud.status != "ready" || cloud.items.is_empty() {
+        text(
+            svg,
+            x + width / 2.0,
+            y + height / 2.0,
+            28.0,
+            650,
+            palette.muted,
+            loc::text(locale, "catchphrases.insufficient"),
+            Some("middle"),
+        );
+        return;
+    }
+
+    let content_left = x + 34.0;
+    let content_right = x + width - 34.0;
+    let mut cursor_x = content_left;
+    let legend_space = if agent_cloud { 67.0 } else { 24.0 };
+    let content_bottom = y + height - legend_space;
+    let font_scale = (width / 1_000.0).clamp(0.85, 2.25);
+    let horizontal_gap = 11.0 * font_scale.min(1.7);
+    let vertical_gap = 12.0 * font_scale.min(1.7);
+    let horizontal_padding = 34.0 * font_scale.min(1.7);
+    let mut cursor_y = y + 105.0 + 60.0 * font_scale;
+    let mut row_height = 0.0_f64;
+    for item in &cloud.items {
+        let font_size = (25.0 + item.weight * 35.0) * font_scale;
+        let display = truncate_phrase(&item.phrase, 34);
+        let token_width = (measure_text(&display, font_size) + horizontal_padding)
+            .min(content_right - content_left);
+        let token_height = font_size * 1.34;
+        if cursor_x + token_width > content_right {
+            cursor_x = content_left;
+            cursor_y += row_height + vertical_gap;
+            row_height = 0.0;
+        }
+        if cursor_y + token_height > content_bottom {
+            break;
+        }
+        let (background, foreground) = if agent_cloud {
+            phrase_agent_style(
+                item.dominant_agent.as_deref().unwrap_or("unknown"),
+                palette.dark,
+            )
+        } else {
+            (palette.tile, palette.text)
+        };
+        rect(
+            svg,
+            cursor_x,
+            cursor_y - font_size,
+            token_width,
+            token_height,
+            token_height * 0.28,
+            background,
+            None,
+        );
+        text(
+            svg,
+            cursor_x + 17.0,
+            cursor_y,
+            font_size,
+            (570.0 + item.weight * 150.0) as u16,
+            foreground,
+            &display,
+            None,
+        );
+        cursor_x += token_width + horizontal_gap;
+        row_height = row_height.max(token_height);
+    }
+    if agent_cloud && let Some(response) = response {
+        let mut legend_x = content_left;
+        let legend_y = y + height - 30.0;
+        for item in response.legend.iter().take(6) {
+            let (background, _) = phrase_agent_style(&item.agent, palette.dark);
+            rect(
+                svg,
+                legend_x,
+                legend_y - 11.0,
+                14.0,
+                14.0,
+                4.0,
+                background,
+                None,
+            );
+            text(
+                svg,
+                legend_x + 22.0,
+                legend_y + 1.0,
+                17.0,
+                570,
+                palette.muted,
+                &agent_label(&item.agent),
+                None,
+            );
+            legend_x += measure_text(&agent_label(&item.agent), 17.0) + 50.0;
+            if legend_x > content_right - 120.0 {
+                break;
+            }
+        }
+    }
+}
+
+fn truncate_phrase(value: &str, maximum: usize) -> String {
+    let mut characters = value.chars();
+    let visible = characters.by_ref().take(maximum).collect::<String>();
+    if characters.next().is_some() {
+        format!("{visible}…")
+    } else {
+        visible
+    }
+}
+
+fn phrase_agent_style(agent: &str, dark: bool) -> (&'static str, &'static str) {
+    match (agent, dark) {
+        ("codex", false) => ("#FFE0D5", "#9F3D21"),
+        ("claude-code", false) => ("#F1DFD0", "#74452E"),
+        ("kimi-code", false) => ("#DDEBFF", "#315F9D"),
+        ("cursor", false) => ("#E5E0FF", "#5B4EB3"),
+        ("openclaw", false) => ("#D9F2EA", "#26785F"),
+        ("hermes", false) => ("#F7DDEB", "#99486F"),
+        ("codex", true) => ("#5A2B22", "#FFB098"),
+        ("claude-code", true) => ("#4B3429", "#E9B78E"),
+        ("kimi-code", true) => ("#223D62", "#9AC5FF"),
+        ("cursor", true) => ("#312A59", "#BDB4FF"),
+        ("openclaw", true) => ("#203F37", "#82D8BC"),
+        ("hermes", true) => ("#512B40", "#F4A2C9"),
+        (_, false) => ("#E7E2EF", "#5F526F"),
+        (_, true) => ("#342D3D", "#BFAFCF"),
+    }
 }
 
 fn render_vcti_card(
@@ -840,9 +1170,9 @@ fn render_vcti_card(
             520,
             palette.muted,
             if locale == "zh-CN" {
-                "由本机可读 Coding Agent 行为生成 · 不上传 Prompt 或代码 · aftervibe"
+                "由本机可读 Coding Agent 行为生成 · 不上传 Prompt 或代码 · VibeMeter"
             } else {
-                "Generated from readable local agent behavior · no prompts or code uploaded · aftervibe"
+                "Generated from readable local agent behavior · no prompts or code uploaded · VibeMeter"
             },
             None,
         );
@@ -3935,7 +4265,7 @@ fn render_brand(
         28.0,
         650,
         palette.text,
-        "aftervibe",
+        "VibeMeter",
         Some("d"),
     );
     text(
@@ -4405,6 +4735,37 @@ mod tests {
         assert!(impulse.iter().all(|value| *value >= 0.0));
     }
 
+    #[test]
+    fn catchphrase_share_keeps_exact_titles_and_honest_empty_state() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = Database::open(directory.path().join("vibemeter.sqlite")).expect("database");
+        let request = ShareRenderRequest {
+            template_id: "catchphrases".into(),
+            locale: "zh-CN".into(),
+            aspect_ratio: "1:1".into(),
+            theme: "dark".into(),
+            range: "30d".into(),
+            session_id: None,
+            compare_ids: Vec::new(),
+            title: String::new(),
+            summary: String::new(),
+            project_name: String::new(),
+            metrics: Vec::new(),
+            show_brand: true,
+            show_model: false,
+            show_cost: false,
+            show_project: false,
+            show_behavior_evidence: false,
+            privacy_reviewed: true,
+        };
+        let result = preview(&database, request).expect("preview");
+        assert!(result.svg.contains("我的口头禅"));
+        assert!(result.svg.contains("Agent 的口头禅"));
+        assert!(result.svg.contains("至少需要两个会话重复同一句短语"));
+        let png = render_png_bytes(&result.svg).expect("png");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
     // Renders every template against a real DB copy so cards can be inspected visually.
     // Run with: cargo test render_sample_cards -- --ignored --nocapture
     #[test]
@@ -4424,6 +4785,7 @@ mod tests {
             "weekly-recap",
             "ship-card",
             "vcti-card",
+            "catchphrases",
         ];
         let combos = [
             ("zh-CN", "1:1", "light"),

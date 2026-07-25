@@ -1,7 +1,7 @@
-import { BookOpenCheck, GitBranch, HardDrive, ScanSearch, ShieldCheck } from "lucide-react";
+import { BookOpenCheck, GitBranch, HardDrive, RadioTower, ScanSearch, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import appIconUrl from "../../src-tauri/icons/icon-source.svg";
+import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { Toggle } from "./ui";
 
 interface Consent {
@@ -22,6 +22,7 @@ export function Onboarding({ onFinish }: { onFinish: (value: Consent) => Promise
   };
   const items = [
     [HardDrive, t("onboarding.localTitle"), t("onboarding.localBody")],
+    [RadioTower, t("onboarding.liveTitle"), t("onboarding.liveBody")],
     [BookOpenCheck, t("onboarding.reviewTitle"), t("onboarding.reviewBody")],
     [ShieldCheck, t("onboarding.shareTitle"), t("onboarding.shareBody")],
   ] as const;

@@ -242,7 +242,7 @@ fn run_anthropic(prompt: &str, model: Option<&str>) -> AppResult<String> {
 fn http_client() -> AppResult<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(180))
-        .user_agent("aftervibe/0.1.0")
+        .user_agent("vibemeter/0.1.0")
         .build()?)
 }
 

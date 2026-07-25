@@ -1,3 +1,3 @@
 fn main() {
-    aftervibe_lib::run();
+    vibemeter_lib::run();
 }

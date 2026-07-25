@@ -57,7 +57,7 @@ export function Toggle({ checked, onCheckedChange, label, disabled = false }: { 
 
 export function AgentBadge({ agent, model, compact = false }: { agent: string; model?: string; compact?: boolean }) {
   const glyph = agent === "claude-code" ? "C" : agent === "codex" ? "O" : agent === "kimi-code" ? "K" : agent === "cursor" ? "↗" : agent === "openclaw" ? "◌" : agent === "hermes" ? "H" : "A";
-  const kind = agent === "claude-code" ? "claude" : agent === "codex" ? "codex" : agent === "kimi-code" ? "kimi" : agent === "cursor" ? "cursor" : agent === "openclaw" ? "openclaw" : agent === "hermes" ? "hermes" : "aftervibe";
+  const kind = agent === "claude-code" ? "claude" : agent === "codex" ? "codex" : agent === "kimi-code" ? "kimi" : agent === "cursor" ? "cursor" : agent === "openclaw" ? "openclaw" : agent === "hermes" ? "hermes" : "vibemeter";
   return (
     <span className={compact ? "agent-badge compact" : "agent-badge"}>
       <span className={`agent-glyph ${kind}`}>{glyph}</span>
