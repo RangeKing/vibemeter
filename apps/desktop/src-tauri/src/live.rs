@@ -1,23 +1,96 @@
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{HookProviderStatus, HookStatus, LiveAction, LiveSession, LiveSnapshot};
+use crate::providers::{codex_binary, write_json_line};
 use chrono::{DateTime, Duration, Utc};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
+use std::time::{Duration as StdDuration, Instant};
 use tauri::{AppHandle, Emitter};
 
 const RAW_RETENTION_DAYS: i64 = 90;
 const MAX_HOOK_BYTES: u64 = 768 * 1024;
 const MANAGED_MARKER: &str = "vibemeter_hook.py";
+const CODEX_PROBE_TTL: StdDuration = StdDuration::from_secs(20);
+const CLAUDE_HOOKS: &[(&str, Option<&str>, Option<u64>)] = &[
+    ("SessionStart", None, None),
+    ("UserPromptSubmit", None, None),
+    ("PreToolUse", Some("*"), None),
+    ("PostToolUse", Some("*"), None),
+    ("PostToolUseFailure", Some("*"), None),
+    ("PermissionRequest", Some("*"), None),
+    ("Notification", Some("permission_prompt|idle_prompt"), None),
+    ("PreCompact", Some("auto|manual"), None),
+    ("PostCompact", None, None),
+    ("Stop", None, Some(30)),
+    ("SubagentStart", None, None),
+    ("SubagentStop", None, None),
+    ("SessionEnd", None, None),
+];
+const CODEX_HOOKS: &[(&str, Option<&str>, Option<u64>)] = &[
+    ("PreToolUse", Some("*"), None),
+    ("PermissionRequest", Some("*"), None),
+    ("PostToolUse", Some("*"), None),
+    ("PreCompact", None, None),
+    ("PostCompact", None, None),
+    ("SessionStart", None, None),
+    ("SessionEnd", None, None),
+    ("UserPromptSubmit", None, None),
+    ("SubagentStart", None, None),
+    ("SubagentStop", None, None),
+    ("Stop", None, Some(30)),
+];
+const CODEX_RUNTIME_EVENTS: &[&str] = &[
+    "preToolUse",
+    "permissionRequest",
+    "postToolUse",
+    "preCompact",
+    "postCompact",
+    "sessionStart",
+    "sessionEnd",
+    "userPromptSubmit",
+    "subagentStart",
+    "subagentStop",
+    "stop",
+];
+const CODEX_EVENT_NAMES: &[&str] = &[
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+];
+
+#[derive(Clone, Debug)]
+struct CodexHookHealth {
+    working: bool,
+    detail: &'static str,
+}
+
+#[derive(Default)]
+struct CodexHookProbeCache {
+    checked_at: Option<Instant>,
+    health: Option<CodexHookHealth>,
+}
+
+static CODEX_HOOK_PROBE: Lazy<Mutex<CodexHookProbeCache>> =
+    Lazy::new(|| Mutex::new(CodexHookProbeCache::default()));
 const PYTHON_HOOK: &str = r#"#!/usr/bin/python3
 import json
 import os
@@ -208,35 +281,14 @@ pub fn install_hooks() -> AppResult<HookStatus> {
     let claude_dir = home.join(".claude");
     if claude_dir.is_dir() {
         let settings = claude_dir.join("settings.json");
-        upsert_hook_json(
-            &settings,
-            &format!("{command} claude"),
-            &[
-                ("SessionStart", None, None),
-                ("UserPromptSubmit", None, None),
-                ("PreToolUse", Some("*"), None),
-                ("PostToolUse", Some("*"), None),
-                ("PermissionRequest", Some("*"), None),
-                ("PreCompact", Some("auto|manual"), None),
-                ("Stop", None, Some(30)),
-                ("SubagentStop", None, None),
-                ("SessionEnd", None, None),
-            ],
-        )?;
+        upsert_hook_json(&settings, &format!("{command} claude"), CLAUDE_HOOKS)?;
     }
     let codex_dir = home.join(".codex");
     if codex_dir.is_dir() {
         let hooks = codex_dir.join("hooks.json");
-        upsert_hook_json(
-            &hooks,
-            &format!("{command} codex"),
-            &[
-                ("SessionStart", Some("startup|resume"), None),
-                ("UserPromptSubmit", None, None),
-                ("Stop", None, Some(30)),
-            ],
-        )?;
+        upsert_codex_hook_json(&hooks, &format!("{command} codex"), CODEX_HOOKS)?;
         enable_codex_hooks(&codex_dir.join("config.toml"))?;
+        invalidate_codex_hook_probe();
     }
     Ok(hook_status(true))
 }
@@ -254,6 +306,7 @@ pub fn uninstall_hooks() -> AppResult<HookStatus> {
     if script.exists() {
         fs::remove_file(script)?;
     }
+    invalidate_codex_hook_probe();
     Ok(hook_status(socket_path()?.exists()))
 }
 
@@ -264,39 +317,52 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
     let codex_config = home.join(".codex/config.toml");
     let claude_available = home.join(".claude").is_dir();
     let codex_available = home.join(".codex").is_dir();
-    let claude_installed = json_contains_managed_hook(&claude_path);
-    let codex_command_installed = json_contains_managed_hook(&codex_hooks);
+    let claude_health = if claude_available {
+        claude_hook_config_status(&claude_path)
+    } else {
+        CodexHookHealth {
+            working: false,
+            detail: "not-found",
+        }
+    };
+    let codex_config_health = if codex_available {
+        codex_hook_config_status(&codex_hooks)
+    } else {
+        CodexHookHealth {
+            working: false,
+            detail: "not-found",
+        }
+    };
     let codex_feature = fs::read_to_string(&codex_config)
         .ok()
         .is_some_and(|text| codex_hook_feature_enabled(&text));
+    let codex_health = if !codex_available {
+        CodexHookHealth {
+            working: false,
+            detail: "not-found",
+        }
+    } else if !codex_feature {
+        CodexHookHealth {
+            working: false,
+            detail: "feature-disabled",
+        }
+    } else if !codex_config_health.working {
+        codex_config_health
+    } else {
+        codex_hook_runtime_status()
+    };
     let providers = vec![
         HookProviderStatus {
             provider: "claude-code".into(),
             available: claude_available,
-            installed: claude_installed,
-            detail: if !claude_available {
-                "not-found"
-            } else if claude_installed {
-                "ready"
-            } else {
-                "hook-missing"
-            }
-            .into(),
+            installed: claude_health.working,
+            detail: claude_health.detail.into(),
         },
         HookProviderStatus {
             provider: "codex".into(),
             available: codex_available,
-            installed: codex_command_installed && codex_feature,
-            detail: if !codex_available {
-                "not-found"
-            } else if !codex_feature {
-                "feature-disabled"
-            } else if !codex_command_installed {
-                "hook-missing"
-            } else {
-                "ready"
-            }
-            .into(),
+            installed: codex_health.working,
+            detail: codex_health.detail.into(),
         },
     ];
     let installed_count = providers.iter().filter(|item| item.installed).count();
@@ -313,6 +379,295 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
         .into(),
         providers,
         socket_ready,
+    }
+}
+
+fn claude_hook_config_status(path: &Path) -> CodexHookHealth {
+    let Ok(root) = read_json_object(path) else {
+        return CodexHookHealth {
+            working: false,
+            detail: "config-invalid",
+        };
+    };
+    if root
+        .get("disableAllHooks")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return CodexHookHealth {
+            working: false,
+            detail: "hooks-disabled",
+        };
+    }
+    managed_hook_config_status(&root, CLAUDE_HOOKS)
+}
+
+fn codex_hook_config_status(path: &Path) -> CodexHookHealth {
+    let Ok(root) = read_json_object(path) else {
+        return CodexHookHealth {
+            working: false,
+            detail: "config-invalid",
+        };
+    };
+    if CODEX_EVENT_NAMES
+        .iter()
+        .any(|event| root.contains_key(*event))
+    {
+        return CodexHookHealth {
+            working: false,
+            detail: "config-invalid",
+        };
+    }
+    managed_hook_config_status(&root, CODEX_HOOKS)
+}
+
+fn managed_hook_config_status(
+    root: &Map<String, Value>,
+    expected: &[(&str, Option<&str>, Option<u64>)],
+) -> CodexHookHealth {
+    let Ok(events) = managed_hook_events(root) else {
+        return CodexHookHealth {
+            working: false,
+            detail: "config-invalid",
+        };
+    };
+    if expected.iter().all(|(event, _, _)| events.contains(*event)) {
+        CodexHookHealth {
+            working: true,
+            detail: "ready",
+        }
+    } else {
+        CodexHookHealth {
+            working: false,
+            detail: "hook-missing",
+        }
+    }
+}
+
+fn managed_hook_events(root: &Map<String, Value>) -> Result<HashSet<String>, ()> {
+    let Some(hooks_value) = root.get("hooks") else {
+        return Ok(HashSet::new());
+    };
+    let hooks = hooks_value.as_object().ok_or(())?;
+    let mut events = HashSet::new();
+    for (event, groups_value) in hooks {
+        let groups = groups_value.as_array().ok_or(())?;
+        for group in groups {
+            let commands = group
+                .as_object()
+                .and_then(|group| group.get("hooks"))
+                .and_then(Value::as_array)
+                .ok_or(())?;
+            if commands.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|command| command.contains(MANAGED_MARKER))
+            }) {
+                events.insert(event.clone());
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn invalidate_codex_hook_probe() {
+    if let Ok(mut cache) = CODEX_HOOK_PROBE.lock() {
+        *cache = CodexHookProbeCache::default();
+    }
+}
+
+fn codex_hook_runtime_status() -> CodexHookHealth {
+    if let Ok(cache) = CODEX_HOOK_PROBE.lock()
+        && cache
+            .checked_at
+            .is_some_and(|checked_at| checked_at.elapsed() < CODEX_PROBE_TTL)
+        && let Some(health) = cache.health.clone()
+    {
+        return health;
+    }
+    let health = probe_codex_hooks().unwrap_or(CodexHookHealth {
+        working: false,
+        detail: "status-unavailable",
+    });
+    if let Ok(mut cache) = CODEX_HOOK_PROBE.lock() {
+        cache.checked_at = Some(Instant::now());
+        cache.health = Some(health.clone());
+    }
+    health
+}
+
+fn probe_codex_hooks() -> AppResult<CodexHookHealth> {
+    let binary = codex_binary()
+        .ok_or_else(|| AppError::ProviderUnavailable("a working Codex CLI was not found".into()))?;
+    let mut child = Command::new(binary)
+        .args(["app-server", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| AppError::ProviderUnavailable("Codex stdin is unavailable".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::ProviderUnavailable("Codex stdout is unavailable".into()))?;
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    write_json_line(
+        &mut stdin,
+        &json!({
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
+                "capabilities": {"experimentalApi":true}
+            }
+        }),
+    )?;
+
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+    let mut result = None;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let line = match receiver.recv_timeout(remaining.min(StdDuration::from_millis(500))) {
+            Ok(line) => line,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let Ok(payload) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match payload.get("id").and_then(Value::as_i64) {
+            Some(1) => {
+                write_json_line(&mut stdin, &json!({"method":"initialized","params":{}}))?;
+                let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                write_json_line(
+                    &mut stdin,
+                    &json!({"id":2,"method":"hooks/list","params":{"cwds":[cwd]}}),
+                )?;
+            }
+            Some(2) => {
+                result = payload.get("result").cloned();
+                break;
+            }
+            _ => {}
+        }
+    }
+    let _ = child.kill();
+    let result =
+        result.ok_or_else(|| AppError::ProviderUnavailable("Codex hook probe timed out".into()))?;
+    Ok(codex_hook_health_from_list(&result))
+}
+
+fn codex_hook_health_from_list(result: &Value) -> CodexHookHealth {
+    let Some(entry) = result
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.first())
+    else {
+        return CodexHookHealth {
+            working: false,
+            detail: "status-unavailable",
+        };
+    };
+    let config_warning = entry
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|warning| warning.contains(".codex/hooks.json"));
+    let config_error = entry
+        .get("errors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|error| {
+            error
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.ends_with("hooks.json"))
+        });
+    if config_warning || config_error {
+        return CodexHookHealth {
+            working: false,
+            detail: "config-invalid",
+        };
+    }
+    let managed = entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|hook| {
+            hook.get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.contains(MANAGED_MARKER))
+        })
+        .collect::<Vec<_>>();
+    let events = managed
+        .iter()
+        .filter_map(|hook| hook.get("eventName").and_then(Value::as_str))
+        .collect::<HashSet<_>>();
+    if !CODEX_RUNTIME_EVENTS
+        .iter()
+        .all(|event| events.contains(event))
+    {
+        return CodexHookHealth {
+            working: false,
+            detail: "hook-missing",
+        };
+    }
+    if managed
+        .iter()
+        .any(|hook| hook.get("trustStatus").and_then(Value::as_str) == Some("modified"))
+    {
+        return CodexHookHealth {
+            working: false,
+            detail: "hook-modified",
+        };
+    }
+    if managed
+        .iter()
+        .any(|hook| hook.get("trustStatus").and_then(Value::as_str) == Some("untrusted"))
+    {
+        return CodexHookHealth {
+            working: false,
+            detail: "review-required",
+        };
+    }
+    if managed
+        .iter()
+        .any(|hook| hook.get("enabled").and_then(Value::as_bool) != Some(true))
+    {
+        return CodexHookHealth {
+            working: false,
+            detail: "hooks-disabled",
+        };
+    }
+    if managed.iter().all(|hook| {
+        matches!(
+            hook.get("trustStatus").and_then(Value::as_str),
+            Some("trusted" | "managed")
+        )
+    }) {
+        CodexHookHealth {
+            working: true,
+            detail: "ready",
+        }
+    } else {
+        CodexHookHealth {
+            working: false,
+            detail: "status-unavailable",
+        }
     }
 }
 
@@ -414,17 +769,26 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
         .unwrap_or("Unknown project")
         .to_string();
     let tool = string_field(payload, &["tool_name", "tool"]).unwrap_or_default();
-    let error = payload
-        .get("is_error")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    let notification_type =
+        string_field(payload, &["notification_type", "notificationType"]).unwrap_or_default();
+    let error = event_name == "PostToolUseFailure"
+        || payload
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
         || payload
             .get("status")
             .and_then(Value::as_str)
             .is_some_and(|status| matches!(status, "error" | "failed"));
     let status = if error {
         "error"
-    } else if event_name == "PermissionRequest" {
+    } else if event_name == "PermissionRequest"
+        || (event_name == "Notification"
+            && matches!(
+                notification_type.as_str(),
+                "permission_prompt" | "idle_prompt"
+            ))
+    {
         "waiting"
     } else if matches!(event_name.as_str(), "Stop" | "SessionEnd") {
         "completed"
@@ -588,7 +952,7 @@ fn phase_for<'a>(event: &'a str, tool: &'a str, status: &str) -> (&'a str, &'a s
         ("reading", "read")
     } else if event == "UserPromptSubmit" {
         ("thinking", "prompt")
-    } else if event == "PreCompact" {
+    } else if matches!(event, "PreCompact" | "PostCompact") {
         ("compacting", "compact")
     } else if !tool.is_empty() {
         ("running-tool", "tool")
@@ -675,7 +1039,73 @@ fn upsert_hook_json(
     desired: &[(&str, Option<&str>, Option<u64>)],
 ) -> AppResult<()> {
     let mut root = read_json_object(path)?;
-    prune_managed_hooks(&mut root);
+    upsert_managed_hooks(&mut root, path, command, desired)?;
+    let bytes = serde_json::to_vec_pretty(&Value::Object(root))?;
+    write_if_changed(path, &bytes, None, true)
+}
+
+fn upsert_codex_hook_json(
+    path: &Path,
+    command: &str,
+    desired: &[(&str, Option<&str>, Option<u64>)],
+) -> AppResult<()> {
+    let mut root = read_json_object(path)?;
+    migrate_codex_legacy_events(&mut root, path)?;
+    upsert_managed_hooks(&mut root, path, command, desired)?;
+    let bytes = serde_json::to_vec_pretty(&Value::Object(root))?;
+    write_if_changed(path, &bytes, None, true)
+}
+
+fn migrate_codex_legacy_events(root: &mut Map<String, Value>, path: &Path) -> AppResult<()> {
+    let mut legacy = Vec::new();
+    for event in CODEX_EVENT_NAMES {
+        let Some(value) = root.remove(*event) else {
+            continue;
+        };
+        let groups = value.as_array().cloned().ok_or_else(|| {
+            AppError::InvalidRequest(format!(
+                "{} legacy hook event {} must be an array",
+                path.display(),
+                event
+            ))
+        })?;
+        legacy.push((*event, groups));
+    }
+    if legacy.is_empty() {
+        return Ok(());
+    }
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            AppError::InvalidRequest(format!("{} hooks must be an object", path.display()))
+        })?;
+    for (event, mut groups) in legacy {
+        let entries = hooks
+            .entry(event)
+            .or_insert_with(|| Value::Array(Vec::new()))
+            .as_array_mut()
+            .ok_or_else(|| {
+                AppError::InvalidRequest(format!(
+                    "{} hook event {} must be an array",
+                    path.display(),
+                    event
+                ))
+            })?;
+        groups.append(entries);
+        *entries = groups;
+    }
+    Ok(())
+}
+
+fn upsert_managed_hooks(
+    root: &mut Map<String, Value>,
+    path: &Path,
+    command: &str,
+    desired: &[(&str, Option<&str>, Option<u64>)],
+) -> AppResult<()> {
+    prune_managed_hooks(root);
     let hooks = root
         .entry("hooks")
         .or_insert_with(|| Value::Object(Map::new()))
@@ -705,8 +1135,7 @@ fn upsert_hook_json(
         }
         entries.push(group);
     }
-    let bytes = serde_json::to_vec_pretty(&Value::Object(root))?;
-    write_if_changed(path, &bytes, None, true)
+    Ok(())
 }
 
 fn remove_managed_hooks(path: &Path) -> AppResult<()> {
@@ -774,6 +1203,7 @@ fn prune_managed_hooks(root: &mut Map<String, Value>) -> bool {
     changed
 }
 
+#[cfg(test)]
 fn json_contains_managed_hook(path: &Path) -> bool {
     fs::read(path)
         .ok()
@@ -802,37 +1232,69 @@ fn enable_codex_hooks(path: &Path) -> AppResult<()> {
 }
 
 fn upsert_codex_feature(text: &str) -> String {
-    let line = Regex::new(r"(?m)^[ \t]*codex_hooks[ \t]*=[^\n]*$").expect("codex hooks regex");
-    if line.is_match(text) {
-        return line.replace(text, "codex_hooks = true").into_owned();
-    }
-    let features = Regex::new(r"(?m)^\[features\][ \t]*$").expect("features regex");
-    if let Some(found) = features.find(text) {
-        let insertion = text[found.end()..]
-            .find('\n')
-            .map(|offset| found.end() + offset + 1)
-            .unwrap_or(found.end());
-        let mut updated = text.to_string();
-        let feature_line = if insertion == found.end() {
-            "\ncodex_hooks = true\n"
+    let mut updated = remove_legacy_codex_feature(text);
+    if let Some((body_start, block_end)) = codex_features_block(&updated) {
+        let block = &updated[body_start..block_end];
+        let line = Regex::new(r"(?m)^[ \t]*hooks[ \t]*=[^\n]*$").expect("hooks regex");
+        if let Some(existing) = line.find(block) {
+            updated.replace_range(
+                body_start + existing.start()..body_start + existing.end(),
+                "hooks = true",
+            );
+            return updated;
+        }
+        let insertion = if updated.as_bytes().get(body_start.saturating_sub(1)) == Some(&b'\n') {
+            "hooks = true\n"
         } else {
-            "codex_hooks = true\n"
+            "\nhooks = true\n"
         };
-        updated.insert_str(insertion, feature_line);
+        updated.insert_str(body_start, insertion);
         return updated;
     }
-    let separator = if text.is_empty() || text.ends_with('\n') {
+    let separator = if updated.is_empty() || updated.ends_with('\n') {
         ""
     } else {
         "\n"
     };
-    format!("{text}{separator}\n[features]\ncodex_hooks = true\n")
+    format!("{updated}{separator}\n[features]\nhooks = true\n")
 }
 
 fn codex_hook_feature_enabled(text: &str) -> bool {
-    Regex::new(r"(?m)^[ \t]*codex_hooks[ \t]*=[ \t]*true[ \t]*$")
+    let Some((body_start, block_end)) = codex_features_block(text) else {
+        return false;
+    };
+    Regex::new(r"(?m)^[ \t]*hooks[ \t]*=[ \t]*true[ \t]*$")
         .expect("codex feature regex")
-        .is_match(text)
+        .is_match(&text[body_start..block_end])
+}
+
+fn remove_legacy_codex_feature(text: &str) -> String {
+    let mut updated = text.to_string();
+    let Some((body_start, block_end)) = codex_features_block(&updated) else {
+        return updated;
+    };
+    let legacy =
+        Regex::new(r"(?m)^[ \t]*codex_hooks[ \t]*=[^\n]*(?:\n|$)").expect("legacy hooks regex");
+    if let Some(found) = legacy.find(&updated[body_start..block_end]) {
+        updated.replace_range(body_start + found.start()..body_start + found.end(), "");
+    }
+    updated
+}
+
+fn codex_features_block(text: &str) -> Option<(usize, usize)> {
+    let features = Regex::new(r"(?m)^\[features\][ \t]*$").expect("features regex");
+    let found = features.find(text)?;
+    let body_start = if text.as_bytes().get(found.end()) == Some(&b'\n') {
+        found.end() + 1
+    } else {
+        found.end()
+    };
+    let block_end = Regex::new(r"(?m)^\[[^\n]+\][ \t]*$")
+        .expect("section regex")
+        .find(&text[body_start..])
+        .map(|next| body_start + next.start())
+        .unwrap_or(text.len());
+    Some((body_start, block_end))
 }
 
 fn write_if_changed(
@@ -905,6 +1367,144 @@ mod tests {
         assert_eq!(updated.matches("[features]").count(), 1);
         assert!(codex_hook_feature_enabled(&updated));
         assert!(updated.contains("foo=true"));
+        assert!(!codex_hook_feature_enabled(
+            "[features]\ncodex_hooks = true\n"
+        ));
+        let scoped = upsert_codex_feature(
+            "[features]\nhooks = false\ncodex_hooks = true\n\n[unrelated]\nhooks = false\n",
+        );
+        assert!(codex_hook_feature_enabled(&scoped));
+        assert!(!scoped.contains("codex_hooks"));
+        assert!(scoped.contains("[unrelated]\nhooks = false"));
+        assert_eq!(
+            upsert_codex_feature("[features]"),
+            "[features]\nhooks = true\n"
+        );
+    }
+
+    #[test]
+    fn codex_hook_merge_migrates_legacy_events_without_losing_other_commands() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("hooks.json");
+        fs::write(
+            &path,
+            br#"{
+              "SessionStart": [{
+                "matcher": "startup",
+                "hooks": [{"type": "command", "command": "other-session-hook"}]
+              }],
+              "hooks": {
+                "Stop": [{
+                  "hooks": [{"type": "command", "command": "python3 /tmp/vibemeter_hook.py codex"}]
+                }]
+              }
+            }"#,
+        )
+        .expect("fixture");
+        upsert_codex_hook_json(
+            &path,
+            "\"/usr/bin/python3\" \"/tmp/vibemeter_hook.py\" codex",
+            CODEX_HOOKS,
+        )
+        .expect("install");
+        let root = read_json_object(&path).expect("read migrated config");
+        assert!(!root.contains_key("SessionStart"));
+        let hooks = root
+            .get("hooks")
+            .and_then(Value::as_object)
+            .expect("nested hooks");
+        assert!(
+            hooks["SessionStart"]
+                .as_array()
+                .expect("session groups")
+                .iter()
+                .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+                .any(|hook| hook["command"] == "other-session-hook")
+        );
+        let managed = managed_hook_events(&root).expect("managed events");
+        assert!(
+            CODEX_HOOKS
+                .iter()
+                .all(|(event, _, _)| managed.contains(*event))
+        );
+    }
+
+    #[test]
+    fn codex_runtime_status_requires_loaded_trusted_hooks() {
+        let hooks = CODEX_RUNTIME_EVENTS
+            .iter()
+            .map(|event| {
+                json!({
+                    "eventName": event,
+                    "command": "/usr/bin/python3 ~/.vibemeter/hooks/vibemeter_hook.py codex",
+                    "enabled": true,
+                    "trustStatus": "untrusted"
+                })
+            })
+            .collect::<Vec<_>>();
+        let untrusted = json!({"data":[{"hooks":hooks,"warnings":[],"errors":[]}]});
+        let health = codex_hook_health_from_list(&untrusted);
+        assert!(!health.working);
+        assert_eq!(health.detail, "review-required");
+
+        let trusted_hooks = CODEX_RUNTIME_EVENTS
+            .iter()
+            .map(|event| {
+                json!({
+                    "eventName": event,
+                    "command": "/usr/bin/python3 ~/.vibemeter/hooks/vibemeter_hook.py codex",
+                    "enabled": true,
+                    "trustStatus": "trusted"
+                })
+            })
+            .collect::<Vec<_>>();
+        let trusted = json!({"data":[{"hooks":trusted_hooks,"warnings":[],"errors":[]}]});
+        let health = codex_hook_health_from_list(&trusted);
+        assert!(health.working);
+        assert_eq!(health.detail, "ready");
+
+        let invalid = json!({
+            "data":[{
+                "hooks":[],
+                "warnings":["failed to parse hooks config /Users/me/.codex/hooks.json"],
+                "errors":[]
+            }]
+        });
+        assert_eq!(
+            codex_hook_health_from_list(&invalid).detail,
+            "config-invalid"
+        );
+    }
+
+    #[test]
+    fn claude_failure_and_attention_notifications_map_to_visible_states() {
+        let failure = json!({
+            "provider":"claude",
+            "received_at":Utc::now().to_rfc3339(),
+            "payload":{
+                "session_id":"claude-failure",
+                "hook_event_name":"PostToolUseFailure",
+                "cwd":"/tmp/project",
+                "tool_name":"Bash"
+            }
+        });
+        let (session, _, _) = session_from_envelope(&failure).expect("failure session");
+        assert_eq!(session.status, "error");
+        assert_eq!(session.phase, "error");
+
+        let attention = json!({
+            "provider":"claude",
+            "received_at":Utc::now().to_rfc3339(),
+            "payload":{
+                "session_id":"claude-attention",
+                "hook_event_name":"Notification",
+                "notification_type":"idle_prompt",
+                "cwd":"/tmp/project"
+            }
+        });
+        let (session, _, _) = session_from_envelope(&attention).expect("attention session");
+        assert_eq!(session.status, "waiting");
+        assert_eq!(session.phase, "needs-you");
     }
 
     #[test]

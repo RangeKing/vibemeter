@@ -951,14 +951,14 @@ fn append_codex_snapshot(
     }
 }
 
-fn write_json_line(writer: &mut impl Write, value: &Value) -> AppResult<()> {
+pub(crate) fn write_json_line(writer: &mut impl Write, value: &Value) -> AppResult<()> {
     serde_json::to_writer(&mut *writer, value)?;
     writer.write_all(b"\n")?;
     writer.flush()?;
     Ok(())
 }
 
-fn codex_binary() -> Option<PathBuf> {
+pub(crate) fn codex_binary() -> Option<PathBuf> {
     let mut candidates = vec![PathBuf::from(
         "/Applications/ChatGPT.app/Contents/Resources/codex",
     )];

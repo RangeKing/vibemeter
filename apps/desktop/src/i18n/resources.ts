@@ -186,6 +186,11 @@ export const enUS = {
       "not-found": "Agent not found on this Mac",
       "hook-missing": "Hook needs repair",
       "feature-disabled": "Codex hooks feature is off",
+      "config-invalid": "Hook config is invalid — repair needed",
+      "hooks-disabled": "Hooks are disabled",
+      "review-required": "In Codex, run /hooks and trust VibeMeter",
+      "hook-modified": "VibeMeter Hook changed — review it again in /hooks",
+      "status-unavailable": "Could not verify Hook runtime status",
     },
   },
   notch: {
@@ -893,6 +898,11 @@ export const zhCN = {
       "not-found": "本机未发现该 Agent",
       "hook-missing": "Hook 需要修复",
       "feature-disabled": "Codex Hook 功能未开启",
+      "config-invalid": "Hook 配置无效，需要修复",
+      "hooks-disabled": "Hook 已被关闭",
+      "review-required": "请在 Codex 输入 /hooks，信任 VibeMeter",
+      "hook-modified": "VibeMeter Hook 有变更，请在 /hooks 重新确认",
+      "status-unavailable": "暂时无法确认 Hook 是否生效",
     },
   },
   notch: {
