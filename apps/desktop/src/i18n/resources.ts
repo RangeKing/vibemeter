@@ -131,8 +131,8 @@ export const enUS = {
   },
   live: {
     eyebrow: "Live agent signal",
-    title: "Know when your agents need you",
-    description: "Claude Code and Codex activity, reduced to a quiet status signal in your notch. No prompt control and no approval proxy.",
+    title: "See what your agents are doing at a glance",
+    description: "Claude Code and Codex status lives in your notch, so you can spot approvals, errors, and completions without switching windows.",
     activeAgents: "active agents",
     socketReady: "Local event channel ready",
     socketUnavailable: "Local event channel unavailable",
@@ -838,8 +838,8 @@ export const zhCN = {
   },
   live: {
     eyebrow: "Agent 实时信号",
-    title: "Agent 需要你时，及时看见",
-    description: "把 Claude Code 和 Codex 的活动收敛成安静的 Notch 状态信号；不代替你输入 Prompt，也不代替你批准权限。",
+    title: "Agent 在做什么，一眼就知道",
+    description: "Claude Code 和 Codex 的运行状态会直接显示在 Notch 里。需要你确认、遇到错误或任务完成时，不用来回切窗口也能马上知道。",
     activeAgents: "个活跃 Agent",
     socketReady: "本地事件通道已就绪",
     socketUnavailable: "本地事件通道不可用",

@@ -211,8 +211,7 @@ select { padding-right: 28px; }
 .live-signal-summary::after { content: ""; position: absolute; right: -35px; bottom: -50px; width: 150px; height: 150px; border-radius: 50%; background: radial-gradient(circle, rgb(255 133 83 / 28%), transparent 68%); }
 .live-signal-summary > * { position: relative; z-index: 1; }
 .live-orbit { position: relative; display: grid; place-items: center; width: 72px; height: 72px; border: 1px solid rgb(255 190 108 / 28%); border-radius: 50%; }
-.live-orbit::before { content: "<>"; color: #fff9f0; font-family: "SFMono-Regular", monospace; font-size: 18px; font-weight: 700; letter-spacing: -4px; transform: translateX(-2px); }
-.live-orbit i { position: absolute; inset: 8px; border: 1px solid transparent; border-top-color: #ff8b57; border-radius: 50%; animation: live-orbit 3.2s linear infinite; }
+.live-orbit i { position: absolute; inset: 8px; border: 2px solid transparent; border-top-color: #ff8b57; border-radius: 50%; animation: live-orbit 3.2s linear infinite; }
 .live-orbit i:nth-child(2) { inset: -6px; border-top-color: #ffc65a; opacity: .62; animation-duration: 5.6s; animation-direction: reverse; }
 .live-orbit i:nth-child(3) { inset: 21px; border-top-color: #fff; opacity: .42; animation-duration: 2.1s; }
 @keyframes live-orbit { to { transform: rotate(360deg); } }

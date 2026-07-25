@@ -13,7 +13,7 @@ interface UiState {
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  page: "live",
+  page: "data",
   range: "30d",
   selectedSessionId: undefined,
   shareTemplate: undefined,

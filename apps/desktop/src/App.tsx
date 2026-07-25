@@ -24,7 +24,7 @@ function systemLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 
-const pages: PageKey[] = ["live", "data", "sessions", "reviews", "insights", "vcti", "share", "sources", "settings"];
+const pages: PageKey[] = ["data", "live", "sessions", "reviews", "insights", "vcti", "share", "sources", "settings"];
 
 export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const { i18n } = useTranslation();
