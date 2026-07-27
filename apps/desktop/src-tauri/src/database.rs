@@ -5,8 +5,8 @@ use crate::models::{
     GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat,
     InsightsResponse, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount, PhraseCloud,
     PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
-    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionSummary,
-    SessionsResponse, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
+    SessionSummary, SessionsResponse, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
 };
 use chrono::{DateTime, Duration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -1787,26 +1787,23 @@ impl Database {
     pub fn sessions(
         &self,
         range: &str,
-        agent: Option<&str>,
-        search: Option<&str>,
+        filters: SessionListFilters<'_>,
         page: u64,
         page_size: u64,
     ) -> AppResult<SessionsResponse> {
         let connection = self.connect()?;
         let start_timestamp = format!("{}T00:00:00Z", range_start(range));
-        let (items, total) = query_session_rows(
-            &connection,
-            &start_timestamp,
-            agent,
-            search,
-            page,
-            page_size.clamp(1, 100),
-        )?;
+        let page_size = page_size.clamp(1, 100);
+        let (items, total) =
+            query_session_rows(&connection, &start_timestamp, &filters, page, page_size)?;
+        let (models, projects) = query_session_facets(&connection, &start_timestamp, filters.agent)?;
         Ok(SessionsResponse {
             items,
             total,
             page,
             page_size,
+            models,
+            projects,
         })
     }
 
@@ -3732,25 +3729,61 @@ fn query_comparison(
     Ok(rows)
 }
 
-fn query_session_rows(
-    connection: &Connection,
-    start_timestamp: &str,
-    agent: Option<&str>,
-    search: Option<&str>,
-    page: u64,
-    page_size: u64,
-) -> AppResult<(Vec<SessionSummary>, u64)> {
-    let agent_filter = agent.unwrap_or("");
-    let search_filter = search.unwrap_or("").trim();
-    let search_pattern = format!("%{search_filter}%");
-    let base_where = "COALESCE(ended_at, started_at) >= ?1
+fn session_list_where_clause() -> &'static str {
+    "COALESCE(ended_at, started_at) >= ?1
         AND (?2='' OR agent=?2)
         AND (?3='' OR COALESCE(title,'') LIKE ?4 OR COALESCE(model,'') LIKE ?4
             OR COALESCE(project_label,'') LIKE ?4
-            OR EXISTS(SELECT 1 FROM file_changes fc WHERE fc.session_id=sessions.id AND fc.path LIKE ?4))";
+            OR EXISTS(SELECT 1 FROM file_changes fc WHERE fc.session_id=sessions.id AND fc.path LIKE ?4))
+        AND (?5='' OR COALESCE(model,'')=?5)
+        AND (?6='' OR project_label=?6 OR COALESCE(project_label, project_hash)=?6
+            OR (length(COALESCE(project_label, project_hash))=16
+                AND substr(COALESCE(project_label, project_hash),1,6)=?6))
+        AND (
+            ?7='' OR
+            (?7='verified' AND verification_events > 0) OR
+            (?7='unverified' AND verification_events = 0
+                AND (files_touched > 0 OR lines_added > 0 OR lines_deleted > 0)) OR
+            (?7='not-applicable' AND verification_events = 0
+                AND files_touched = 0 AND lines_added = 0 AND lines_deleted = 0)
+        )
+        AND (?8=0 OR errors >= 3 OR retries >= 2
+            OR (active_seconds >= 1800 AND files_touched > 0 AND verification_events = 0))
+        AND (?9=0 OR files_touched > 0)
+        AND (?10=0 OR EXISTS(SELECT 1 FROM git_commits gc WHERE gc.session_id=sessions.id))"
+}
+
+fn query_session_rows(
+    connection: &Connection,
+    start_timestamp: &str,
+    filters: &SessionListFilters<'_>,
+    page: u64,
+    page_size: u64,
+) -> AppResult<(Vec<SessionSummary>, u64)> {
+    let agent_filter = filters.agent.unwrap_or("");
+    let search_filter = filters.search.unwrap_or("").trim();
+    let search_pattern = format!("%{search_filter}%");
+    let model_filter = filters.model.unwrap_or("");
+    let project_filter = filters.project.unwrap_or("");
+    let verification_filter = filters.verification_state.unwrap_or("");
+    let attention_flag = i64::from(filters.attention_only);
+    let code_flag = i64::from(filters.code_only);
+    let commit_flag = i64::from(filters.commit_only);
+    let base_where = session_list_where_clause();
     let total = connection.query_row(
         &format!("SELECT COUNT(*) FROM sessions WHERE {base_where}"),
-        params![start_timestamp, agent_filter, search_filter, search_pattern],
+        params![
+            start_timestamp,
+            agent_filter,
+            search_filter,
+            search_pattern,
+            model_filter,
+            project_filter,
+            verification_filter,
+            attention_flag,
+            code_flag,
+            commit_flag,
+        ],
         |row| read_u64(row, 0),
     )?;
     let limit = if page_size == 0 { 8 } else { page_size };
@@ -3764,7 +3797,7 @@ fn query_session_rows(
                 longest_uninterrupted_seconds, subagent_count,
                 EXISTS(SELECT 1 FROM git_commits gc WHERE gc.session_id=sessions.id)
          FROM sessions WHERE {base_where}
-         ORDER BY COALESCE(ended_at, started_at) DESC, started_at DESC LIMIT ?5 OFFSET ?6"
+         ORDER BY COALESCE(ended_at, started_at) DESC, started_at DESC LIMIT ?11 OFFSET ?12"
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement
@@ -3774,6 +3807,12 @@ fn query_session_rows(
                 agent_filter,
                 search_filter,
                 search_pattern,
+                model_filter,
+                project_filter,
+                verification_filter,
+                attention_flag,
+                code_flag,
+                commit_flag,
                 sql_i64(limit),
                 sql_i64(offset)
             ],
@@ -3781,6 +3820,49 @@ fn query_session_rows(
         )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok((rows, total))
+}
+
+fn query_session_facets(
+    connection: &Connection,
+    start_timestamp: &str,
+    agent: Option<&str>,
+) -> AppResult<(Vec<String>, Vec<String>)> {
+    let agent_filter = agent.unwrap_or("");
+    let mut model_statement = connection.prepare(
+        "SELECT DISTINCT model FROM sessions
+         WHERE COALESCE(ended_at, started_at) >= ?1
+           AND (?2='' OR agent=?2)
+           AND model IS NOT NULL AND trim(model) != ''
+         ORDER BY model COLLATE NOCASE",
+    )?;
+    let models = model_statement
+        .query_map(params![start_timestamp, agent_filter], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut project_statement = connection.prepare(
+        "SELECT DISTINCT COALESCE(project_label, project_hash) FROM sessions
+         WHERE COALESCE(ended_at, started_at) >= ?1
+           AND (?2='' OR agent=?2)
+           AND COALESCE(project_label, project_hash) IS NOT NULL
+           AND trim(COALESCE(project_label, project_hash)) != ''
+         ORDER BY 1 COLLATE NOCASE",
+    )?;
+    let mut projects = project_statement
+        .query_map(params![start_timestamp, agent_filter], |row| {
+            Ok(display_project_label(&row.get::<_, String>(0)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    projects.sort_by(|left, right| left.to_lowercase().cmp(&right.to_lowercase()));
+    projects.dedup();
+    Ok((models, projects))
+}
+
+fn display_project_label(value: &str) -> String {
+    if value.len() == 16 && value.chars().all(|item| item.is_ascii_hexdigit()) {
+        value.chars().take(6).collect()
+    } else {
+        value.to_string()
+    }
 }
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary> {
@@ -3805,13 +3887,6 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary>
         verification_events,
     );
     let project_value = row.get::<_, Option<String>>(4)?.unwrap_or_default();
-    let project_label = if project_value.len() == 16
-        && project_value.chars().all(|value| value.is_ascii_hexdigit())
-    {
-        project_value.chars().take(6).collect()
-    } else {
-        project_value
-    };
     Ok(SessionSummary {
         id: row.get(0)?,
         agent: row.get(1)?,
@@ -3819,7 +3894,7 @@ fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionSummary>
         title: crate::privacy::clean_display_title(
             &row.get::<_, Option<String>>(3)?.unwrap_or_default(),
         ),
-        project_label,
+        project_label: display_project_label(&project_value),
         started_at: row.get(5)?,
         ended_at: row.get(6)?,
         active_seconds: read_u64(row, 7)?,
@@ -4040,6 +4115,105 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn sessions_filters_and_pagination_run_server_side() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("session-filters.sqlite"))
+            .expect("database should open");
+        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let persist = |id: &str, model: &str, project: &str, files: u64, errors: u64, verified: bool| {
+            let mut state = ParseState::new(AgentKind::Codex, id.into());
+            state.started_at = Some(format!("{date}T10:00:00Z"));
+            state.ended_at = Some(format!("{date}T11:00:00Z"));
+            state.current_model = Some(model.into());
+            state.project_label = Some(project.into());
+            state.project_hash = Some(format!("hash-{project}"));
+            state.title = Some(format!("{id} title"));
+            state.touched_file_hashes = (0..files)
+                .map(|index| format!("{id}-file-{index}"))
+                .collect();
+            state.lines_added = files;
+            state.errors = errors;
+            state.verification_events = u64::from(verified);
+            state.active_seconds = if errors >= 3 { 2_000 } else { 600 };
+            database
+                .persist_parse_state(&format!("{id}-file"), 1, 1, 1, &state)
+                .expect("session should persist");
+        };
+        persist("alpha", "model-a", "proj-one", 2, 0, false);
+        persist("beta", "model-b", "proj-two", 0, 4, false);
+        persist("gamma", "model-a", "proj-one", 3, 0, true);
+
+        let code_only = database
+            .sessions(
+                "today",
+                SessionListFilters {
+                    code_only: true,
+                    ..SessionListFilters::default()
+                },
+                0,
+                10,
+            )
+            .expect("code filter");
+        assert_eq!(code_only.total, 2);
+        assert!(code_only.items.iter().all(|item| item.files_touched > 0));
+        assert!(code_only.models.iter().any(|item| item == "model-a"));
+        assert!(code_only.projects.iter().any(|item| item == "proj-one"));
+
+        let verified = database
+            .sessions(
+                "today",
+                SessionListFilters {
+                    verification_state: Some("verified"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                10,
+            )
+            .expect("verification filter");
+        assert_eq!(verified.total, 1);
+        assert_eq!(verified.items[0].title, "gamma title");
+
+        let attention = database
+            .sessions(
+                "today",
+                SessionListFilters {
+                    attention_only: true,
+                    ..SessionListFilters::default()
+                },
+                0,
+                10,
+            )
+            .expect("attention filter");
+        assert_eq!(attention.total, 1);
+        assert_eq!(attention.items[0].title, "beta title");
+
+        let project = database
+            .sessions(
+                "today",
+                SessionListFilters {
+                    project: Some("proj-one"),
+                    model: Some("model-a"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                10,
+            )
+            .expect("project and model filter");
+        assert_eq!(project.total, 2);
+
+        let page = database
+            .sessions("today", SessionListFilters::default(), 0, 2)
+            .expect("page 0");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.page_size, 2);
+        let page_two = database
+            .sessions("today", SessionListFilters::default(), 1, 2)
+            .expect("page 1");
+        assert_eq!(page_two.items.len(), 1);
+    }
+
+    #[test]
     fn excludes_external_evidence_from_most_edited_file() {
         assert!(is_routine_edit_path("[external]/transcript.md"));
         assert!(!is_routine_edit_path("src/pages/InsightsPage.tsx"));
@@ -4114,7 +4288,7 @@ mod concurrency_tests {
             .expect("older session should persist");
 
         let sessions = database
-            .sessions("today", None, None, 0, 10)
+            .sessions("today", SessionListFilters::default(), 0, 10)
             .expect("today sessions should load");
         assert_eq!(sessions.total, 1);
         assert_eq!(sessions.items[0].title, "current conversation");
@@ -4603,7 +4777,7 @@ mod concurrency_tests {
                             }
                             1 => {
                                 database
-                                    .sessions("all", None, None, 0, 100)
+                                    .sessions("all", SessionListFilters::default(), 0, 100)
                                     .expect("sessions query");
                             }
                             2 => {

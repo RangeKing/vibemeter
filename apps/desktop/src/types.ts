@@ -266,6 +266,22 @@ export interface SessionsResponse {
   total: number;
   page: number;
   pageSize: number;
+  models: string[];
+  projects: string[];
+}
+
+export interface SessionListQuery {
+  range: string;
+  agent?: string;
+  search?: string;
+  model?: string;
+  project?: string;
+  verificationState?: string;
+  attentionOnly?: boolean;
+  codeOnly?: boolean;
+  commitOnly?: boolean;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface EvidenceReference {
@@ -453,33 +469,6 @@ export interface VctiProfile {
   missingCapabilities: string[];
   structureAnalysisEnabled: boolean;
   gitEvidenceEnabled: boolean;
-}
-
-export interface PlaybookItem {
-  id: string;
-  title: string;
-  body: string;
-  category: string;
-  projectLabel?: string;
-  taskType?: string;
-  sourceReviewId?: string;
-  sourceFindingId?: string;
-  sourceExcluded: boolean;
-  applied: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface SavePlaybookRequest {
-  id?: string;
-  title: string;
-  body: string;
-  category: string;
-  projectLabel?: string;
-  taskType?: string;
-  sourceReviewId?: string;
-  sourceFindingId?: string;
-  applied: boolean;
 }
 
 export interface ProjectControl {

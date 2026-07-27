@@ -29,6 +29,8 @@ describe("localization resources", () => {
   it("does not expose the retired review workspace", () => {
     expect("reviews" in zhCN.navigation).toBe(false);
     expect("reviews" in enUS.navigation).toBe(false);
+    expect("playbook" in zhCN.navigation).toBe(false);
+    expect("playbook" in enUS.navigation).toBe(false);
     expect("deepReview" in zhCN.settings).toBe(false);
     expect("deepReview" in enUS.settings).toBe(false);
   });

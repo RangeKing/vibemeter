@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "../components/RangePicker";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "../components/ui";
@@ -9,10 +9,7 @@ import { formatCompact, formatDateTime, formatDuration, tokenTotal } from "../li
 import { useUiStore } from "../store";
 import type { Locale, SessionDetail, SessionSummary } from "../types";
 
-function needsAttention(session: SessionSummary): boolean {
-  return session.errors >= 3 || session.retries >= 2 || (session.activeSeconds >= 1_800 && session.filesTouched > 0 && session.verificationState !== "verified");
-}
-
+const PAGE_SIZE = 50;
 const phaseKeys = new Set(["understand", "inspect", "edit", "verify", "fix", "plan", "execute"]);
 
 function formatPhaseTime(value: string | undefined, locale: Locale): string | undefined {
@@ -27,7 +24,10 @@ function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; loc
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
   const split = useMutation({
     mutationFn: () => api.splitSession(detail.id),
-    onSuccess: async () => { await client.invalidateQueries({ queryKey: ["session", detail.id] }); await client.invalidateQueries({ queryKey: ["today"] }); },
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["session", detail.id] });
+      await client.invalidateQueries({ queryKey: ["sessions"] });
+    },
   });
   return (
     <aside className="replay-panel">
@@ -89,6 +89,7 @@ export function SessionsPage({ locale }: { locale: Locale }) {
   const range = useUiStore((state) => state.range);
   const selectedId = useUiStore((state) => state.selectedSessionId);
   const selectSession = useUiStore((state) => state.selectSession);
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [agent, setAgent] = useState("");
   const [model, setModel] = useState("");
@@ -97,40 +98,69 @@ export function SessionsPage({ locale }: { locale: Locale }) {
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [codeOnly, setCodeOnly] = useState(false);
   const [commitOnly, setCommitOnly] = useState(false);
-  const query = useQuery({ queryKey: ["sessions", range, agent, search], queryFn: () => api.sessions(range, agent || undefined, search || undefined, 0, 200) });
-  const detail = useQuery({ queryKey: ["session", selectedId], queryFn: () => api.sessionDetail(selectedId ?? ""), enabled: Boolean(selectedId) });
+  const [page, setPage] = useState(0);
+  const [items, setItems] = useState<SessionSummary[]>([]);
+
   useEffect(() => {
-    // Entering the ledger should discover transcript growth immediately instead
-    // of waiting for the next background indexing interval.
+    const handle = window.setTimeout(() => setSearch(searchInput.trim()), 250);
+    return () => window.clearTimeout(handle);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPage(0);
+    setItems([]);
+  }, [range, agent, search, model, project, state, attentionOnly, codeOnly, commitOnly]);
+
+  const query = useQuery({
+    queryKey: ["sessions", range, agent, search, model, project, state, attentionOnly, codeOnly, commitOnly, page],
+    queryFn: () => api.sessions({
+      range,
+      agent: agent || undefined,
+      search: search || undefined,
+      model: model || undefined,
+      project: project || undefined,
+      verificationState: state || undefined,
+      attentionOnly,
+      codeOnly,
+      commitOnly,
+      page,
+      pageSize: PAGE_SIZE,
+    }),
+  });
+  const detail = useQuery({ queryKey: ["session", selectedId], queryFn: () => api.sessionDetail(selectedId ?? ""), enabled: Boolean(selectedId) });
+
+  useEffect(() => {
     void api.refreshIndex(false);
   }, []);
-  const projects = useMemo(() => [...new Set((query.data?.items ?? []).map((item) => item.projectLabel).filter(Boolean))].sort(), [query.data?.items]);
-  const models = useMemo(() => [...new Set((query.data?.items ?? []).map((item) => item.model).filter((item): item is string => Boolean(item)))].sort(), [query.data?.items]);
-  const items = useMemo(() => (query.data?.items ?? []).filter((item) =>
-    (!project || item.projectLabel === project)
-    && (!model || item.model === model)
-    && (!state || item.verificationState === state)
-    && (!attentionOnly || needsAttention(item))
-    && (!codeOnly || item.filesTouched > 0)
-    && (!commitOnly || item.hasCommit)), [attentionOnly, codeOnly, commitOnly, model, project, query.data?.items, state]);
+
+  useEffect(() => {
+    if (!query.data) return;
+    setItems((current) => (query.data.page === 0 ? query.data.items : [...current, ...query.data.items.filter((item) => !current.some((existing) => existing.id === item.id))]));
+  }, [query.data]);
+
+  const models = query.data?.models ?? [];
+  const projects = query.data?.projects ?? [];
+  const total = query.data?.total ?? 0;
+  const hasMore = items.length < total;
+  const loadingMore = query.isFetching && page > 0;
 
   return (
     <div className={`page sessions-page ${selectedId ? "showing-replay" : ""}`}>
       {!selectedId ? <>
         <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
         <div className="session-toolbar">
-          <label className="search-field"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("sessions.search")} />{search ? <button onClick={() => setSearch("")} aria-label={t("actions.clear")}><X size={14} /></button> : null}</label>
+          <label className="search-field"><Search size={16} /><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder={t("sessions.search")} />{searchInput ? <button onClick={() => setSearchInput("")} aria-label={t("actions.clear")}><X size={14} /></button> : null}</label>
           <select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t("sessions.allAgents")}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="kimi-code">Kimi Code</option><option value="cursor">Cursor</option><option value="openclaw">OpenClaw</option><option value="hermes">Hermes</option></select>
-          <select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{t("sessions.allModels")}</option>{models.map((item) => <option key={item}>{item}</option>)}</select>
-          <select value={project} onChange={(event) => setProject(event.target.value)}><option value="">{t("sessions.allProjects")}</option>{projects.map((item) => <option key={item}>{item}</option>)}</select>
+          <select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{t("sessions.allModels")}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select>
+          <select value={project} onChange={(event) => setProject(event.target.value)}><option value="">{t("sessions.allProjects")}</option>{projects.map((item) => <option key={item} value={item}>{item}</option>)}</select>
           <select value={state} onChange={(event) => setState(event.target.value)}><option value="">{t("sessions.allStates")}</option><option value="verified">{t("sessions.verification.verified")}</option><option value="unverified">{t("sessions.verification.unverified")}</option><option value="not-applicable">{t("sessions.verification.not-applicable")}</option></select>
           <label className="filter-check"><input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />{t("sessions.attentionOnly")}</label>
           <label className="filter-check"><input type="checkbox" checked={codeOnly} onChange={(event) => setCodeOnly(event.target.checked)} />{t("sessions.codeOnly")}</label>
           <label className="filter-check"><input type="checkbox" checked={commitOnly} onChange={(event) => setCommitOnly(event.target.checked)} />{t("sessions.commitOnly")}</label>
-          <span className="result-count">{t("sessions.resultCount", { count: items.length })}</span>
+          <span className="result-count">{t("sessions.resultCount", { count: total, shown: items.length })}</span>
         </div>
         <section className="session-ledger">
-          {query.isLoading ? <LoadingState /> : query.isError ? <ErrorState retry={() => void query.refetch()} /> : items.length === 0 ? <EmptyState title={t("sessions.emptyTitle")} body={t("sessions.emptyBody")} /> : items.map((session) => (
+          {query.isLoading && page === 0 ? <LoadingState /> : query.isError ? <ErrorState retry={() => void query.refetch()} /> : items.length === 0 ? <EmptyState title={t("sessions.emptyTitle")} body={t("sessions.emptyBody")} /> : items.map((session) => (
             <button className="session-ledger-row" key={session.id} onClick={() => selectSession(session.id)}>
               <span className="session-date">{formatDateTime(session.startedAt, locale)}</span>
               <AgentBadge agent={session.agent} model={session.model} />
@@ -142,6 +172,13 @@ export function SessionsPage({ locale }: { locale: Locale }) {
             </button>
           ))}
         </section>
+        {hasMore ? (
+          <div className="session-pagination">
+            <button className="button secondary" disabled={loadingMore} onClick={() => setPage((current) => current + 1)}>
+              {loadingMore ? t("actions.refreshing") : t("sessions.loadMore")}
+            </button>
+          </div>
+        ) : null}
       </> : detail.isLoading ? <LoadingState /> : detail.isError || !detail.data ? <ErrorState retry={() => void detail.refetch()} /> : <SessionReplay detail={detail.data} locale={locale} onClose={() => selectSession(undefined)} />}
     </div>
   );

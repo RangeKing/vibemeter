@@ -20,8 +20,8 @@ use crate::errors::{AppError, AppResult};
 use crate::models::{
     ComparisonItem, ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse,
     LiveSnapshot, MenuBarSnapshot, OverviewResponse, PhraseCloudResponse, PlaybookItem,
-    ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail, SessionsResponse,
-    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
+    ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail, SessionListFilters,
+    SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -148,12 +148,32 @@ async fn get_sessions(
     range: String,
     agent: Option<String>,
     search: Option<String>,
-    page: u64,
-    page_size: u64,
+    model: Option<String>,
+    project: Option<String>,
+    verification_state: Option<String>,
+    attention_only: Option<bool>,
+    code_only: Option<bool>,
+    commit_only: Option<bool>,
+    page: Option<u64>,
+    page_size: Option<u64>,
 ) -> AppResult<SessionsResponse> {
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        database.sessions(&range, agent.as_deref(), search.as_deref(), page, page_size)
+        database.sessions(
+            &range,
+            SessionListFilters {
+                agent: agent.as_deref(),
+                search: search.as_deref(),
+                model: model.as_deref(),
+                project: project.as_deref(),
+                verification_state: verification_state.as_deref(),
+                attention_only: attention_only.unwrap_or(false),
+                code_only: code_only.unwrap_or(false),
+                commit_only: commit_only.unwrap_or(false),
+            },
+            page.unwrap_or(0),
+            page_size.unwrap_or(50),
+        )
     })
     .await
     .map_err(|error| AppError::InvalidRequest(error.to_string()))?

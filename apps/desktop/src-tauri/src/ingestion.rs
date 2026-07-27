@@ -2,7 +2,7 @@ use crate::adapters::{claude, codex, common, cursor, kimi, openclaw};
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
-use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, TokenUsage};
+use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, SessionListFilters, TokenUsage};
 use crate::privacy::stable_hash;
 use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
@@ -641,7 +641,15 @@ mod tests {
         assert!(parse_source_file(&database, &source, false).expect("reparse mismatched source"));
 
         let kimi_sessions = database
-            .sessions("all", Some("kimi-code"), None, 0, 10)
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("kimi-code"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                10,
+            )
             .expect("kimi sessions");
         assert_eq!(kimi_sessions.total, 1);
         assert_eq!(
@@ -651,7 +659,15 @@ mod tests {
         assert_eq!(kimi_sessions.items[0].usage.total(), 400);
         assert_eq!(
             database
-                .sessions("all", Some("claude-code"), None, 0, 10)
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some("claude-code"),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    10,
+                )
                 .expect("claude sessions")
                 .total,
             0

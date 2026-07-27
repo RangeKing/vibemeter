@@ -96,7 +96,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
   const [notice, setNotice] = useState<string>();
   const sessions = useQuery({
     queryKey: ["share-sessions", range],
-    queryFn: () => api.sessions(range, undefined, undefined, 0, 80),
+    queryFn: () => api.sessions({ range, page: 0, pageSize: 80 }),
     enabled: sessionTemplate,
   });
   const deferredRequest = useDeferredValue(request);

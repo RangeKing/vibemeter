@@ -638,6 +638,20 @@ pub struct SessionsResponse {
     pub total: u64,
     pub page: u64,
     pub page_size: u64,
+    pub models: Vec<String>,
+    pub projects: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionListFilters<'a> {
+    pub agent: Option<&'a str>,
+    pub search: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub project: Option<&'a str>,
+    pub verification_state: Option<&'a str>,
+    pub attention_only: bool,
+    pub code_only: bool,
+    pub commit_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

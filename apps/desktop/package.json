@@ -23,7 +23,6 @@
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
     "@tauri-apps/plugin-autostart": "^2.5.0",
     "@tauri-apps/plugin-opener": "^2.5.0",
-    "clsx": "^2.1.1",
     "echarts": "^6.1.0",
     "i18next": "^26.3.6",
     "lucide-react": "^0.468.0",
@@ -33,7 +32,6 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24.10.10",
@@ -42,7 +40,6 @@
     "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-react": "^6.0.1",
     "jsdom": "^27.4.0",
-    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vite": "^8.1.5",
     "vitest": "^4.1.10"
