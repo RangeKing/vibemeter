@@ -9,7 +9,7 @@ import { useUiStore } from "../store";
 import type { ShareRenderRequest } from "../types";
 import { ShareStudioPage } from "./ShareStudioPage";
 
-const { exportShare, previewShare, saveDialog } = vi.hoisted(() => ({
+const { exportShare, previewShare, saveDialog, sessionsApi } = vi.hoisted(() => ({
   exportShare: vi.fn(),
   previewShare: vi.fn(async (request: ShareRenderRequest) => ({
     svg: `<svg data-range="${request.range}" />`,
@@ -20,11 +20,18 @@ const { exportShare, previewShare, saveDialog } = vi.hoisted(() => ({
     modelHash: request.range,
   })),
   saveDialog: vi.fn(async () => "/tmp/vibemeter-share.png"),
+  sessionsApi: vi.fn(async () => ({
+    items: [
+      { id: "session-one", title: "修复 Notch", model: "gpt-5.6-sol", agent: "codex", projectLabel: "vibemeter" },
+      { id: "session-two", title: "完善 VCTI", model: "claude-opus", agent: "claude-code", projectLabel: "vibemeter" },
+    ],
+    total: 2,
+  })),
 }));
 
 vi.mock("../lib/api", () => ({
   api: {
-    sessions: vi.fn(async () => ({ items: [], total: 0 })),
+    sessions: sessionsApi,
     previewShare,
     exportShare,
     renderSharePng: vi.fn(),
@@ -56,6 +63,7 @@ describe("ShareStudioPage range controls", () => {
     exportShare.mockClear();
     previewShare.mockClear();
     saveDialog.mockClear();
+    sessionsApi.mockClear();
     useUiStore.setState({ range: "year" });
   });
 
@@ -78,8 +86,6 @@ describe("ShareStudioPage range controls", () => {
     renderShare();
 
     expect(screen.getAllByRole("button", { name: /^D[1-4]/ })).toHaveLength(4);
-    expect(screen.queryByText("复盘分享")).toBeNull();
-    expect(screen.queryByRole("button", { name: /每日复盘/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /每周回顾/ })).toBeNull();
   });
 
@@ -94,6 +100,22 @@ describe("ShareStudioPage range controls", () => {
       expect.objectContaining({ range: "year" }),
       "png",
       "/tmp/vibemeter-share.png",
+    ));
+  });
+
+  it("shows the session picker beside the selected recap template and previews the chosen session", async () => {
+    renderShare();
+
+    fireEvent.click(screen.getByRole("button", { name: /^D4/ }));
+    const picker = await screen.findByRole("combobox", { name: "选择单次会话" });
+    expect(screen.getByText("预览和导出都会使用这里选中的会话。")).toBeTruthy();
+    await screen.findByRole("option", { name: "完善 VCTI · vibemeter" });
+    await waitFor(() => expect((picker as HTMLSelectElement).disabled).toBe(false));
+
+    fireEvent.change(picker, { target: { value: "session-two" } });
+
+    await waitFor(() => expect(previewShare).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: "session-recap", sessionId: "session-two" }),
     ));
   });
 });

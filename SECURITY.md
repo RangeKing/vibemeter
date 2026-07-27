@@ -11,7 +11,6 @@ Security-sensitive areas include:
 - Unix socket permissions and payload bounds;
 - 90-day raw live-event retention;
 - secret detection and Share Guard;
-- deep-review payload construction;
 - provider authentication reuse;
 - read-only source handling.
 

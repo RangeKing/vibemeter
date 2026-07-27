@@ -39,7 +39,7 @@ The managed script sends bounded events only to `~/.vibemeter/vibemeter.sock`, w
 
 ## Optional features
 
-Git evidence, prompt-structure analysis, API-based deep review, and Cursor Dashboard usage require separate user choices. Account-level Cursor usage is kept separate from local session evidence and does not affect local VCTI.
+Git evidence, prompt-structure analysis, and Cursor Dashboard usage require separate user choices. Account-level Cursor usage is kept separate from local session evidence and does not affect local VCTI.
 
 ## Export boundary
 

@@ -1,10 +1,11 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import {
   ArrowUpRight,
   Check,
   CircleAlert,
   Clock3,
+  PanelTop,
   RadioTower,
   RefreshCw,
   ShieldCheck,
@@ -12,7 +13,7 @@ import {
   Waves,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { AgentBadge, ErrorState, LoadingState } from "../components/ui";
+import { AgentBadge, ErrorState, LoadingState, Toggle } from "../components/ui";
 import { api } from "../lib/api";
 import { agentName, formatTime } from "../lib/format";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
@@ -74,6 +75,16 @@ export function LivePage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const client = useQueryClient();
   const snapshot = useLiveSnapshot();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const setNotch = useMutation({
+    mutationFn: (enabled: boolean) => api.setSetting("notchEnabled", String(enabled)),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["settings"] }),
+        client.invalidateQueries({ queryKey: ["menu-snapshot"] }),
+      ]);
+    },
+  });
   const repair = useMutation({
     mutationFn: api.repairLiveHooks,
     onSuccess: async () => {
@@ -93,10 +104,21 @@ export function LivePage({ locale }: { locale: Locale }) {
           <h1>{t("live.title")}</h1>
           <p>{t("live.description")}</p>
         </div>
-        <div className={`live-signal-summary state-${data.hookStatus.state}`}>
-          <span className="live-orbit"><i /><i /><i /></span>
-          <div><strong>{data.activeCount}</strong><span>{t("live.activeAgents")}</span></div>
-          <small>{data.hookStatus.socketReady ? t("live.socketReady") : t("live.socketUnavailable")}</small>
+        <div className="live-hero-side">
+          <div className={`live-signal-summary state-${data.hookStatus.state}`}>
+            <span className="live-orbit"><i /><i /><i /></span>
+            <div><strong>{data.activeCount}</strong><span>{t("live.activeAgents")}</span></div>
+            <small>{data.hookStatus.socketReady ? t("live.socketReady") : t("live.socketUnavailable")}</small>
+          </div>
+          <div className="live-notch-control">
+            <span><PanelTop size={15} /><span><strong>{t("live.notchControl")}</strong><small>{t("live.notchControlBody")}</small></span></span>
+            <Toggle
+              checked={settings.data?.notchEnabled === "true"}
+              disabled={settings.isLoading || setNotch.isPending}
+              onCheckedChange={(value) => setNotch.mutate(value)}
+              label={t("live.notchControl")}
+            />
+          </div>
         </div>
       </header>
 

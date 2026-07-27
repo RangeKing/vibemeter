@@ -2,18 +2,18 @@ use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::export_localization as loc;
 use crate::models::{
-    ComparisonItem, ExportRequest, ExportResult, IndexStatus, OverviewResponse, PhraseCloud,
-    PhraseCloudResponse, SessionDetail, SharePreview, ShareRenderRequest, TaskSummary,
-    VctiEvidenceItem, VctiProfile,
+    ComparisonItem, ExportRequest, ExportResult, IndexStatus, OverviewResponse,
+    PhraseCloudResponse, SessionDetail, SharePreview, ShareRenderRequest, VctiEvidenceItem,
+    VctiProfile,
 };
 use crate::privacy;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use uuid::Uuid;
 
-const TEMPLATE_VERSION: &str = "15.0.0";
+const TEMPLATE_VERSION: &str = "16.0.0";
 const SAVITZKY_GOLAY_7: [f64; 7] = [
     -2.0 / 21.0,
     3.0 / 21.0,
@@ -96,7 +96,6 @@ struct ShareData {
     overview: OverviewResponse,
     comparison: Vec<ComparisonItem>,
     session: Option<SessionDetail>,
-    tasks: Vec<TaskSummary>,
     vcti: Option<VctiProfile>,
     phrases: Option<PhraseCloudResponse>,
 }
@@ -105,10 +104,7 @@ pub fn preview(database: &Database, request: ShareRenderRequest) -> AppResult<Sh
     validate_request(&request)?;
     let data = load_data(database, &request)?;
     let mut findings = privacy::inspect_share(&request);
-    if (is_review_template(&request.template_id) || data.session.is_some())
-        && (!data.tasks.is_empty() || data.session.is_some())
-        && !request.privacy_reviewed
-    {
+    if data.session.is_some() && !request.privacy_reviewed {
         findings.retain(|finding| finding.id != "safe");
         findings.push(crate::models::ShareGuardFinding {
             id: "source-title-review".into(),
@@ -174,37 +170,30 @@ pub fn png_bytes(database: &Database, request: ShareRenderRequest) -> AppResult<
 
 fn load_data(database: &Database, request: &ShareRenderRequest) -> AppResult<ShareData> {
     let overview = database.overview(&request.range, IndexStatus::default())?;
-    let session_id = matches!(
-        request.template_id.as_str(),
-        "session-recap" | "session-breakdown" | "ship-card"
-    )
-    .then(|| {
-        request
-            .session_id
-            .as_ref()
-            .filter(|value| !value.trim().is_empty())
-            .cloned()
-            .or_else(|| {
-                overview
-                    .recent_sessions
-                    .iter()
-                    .find(|item| {
-                        item.files_touched > 0 || item.lines_added + item.lines_deleted > 0
-                    })
-                    .or_else(|| overview.recent_sessions.first())
-                    .map(|item| item.id.clone())
-            })
-    })
-    .flatten();
+    let session_id = matches!(request.template_id.as_str(), "session-recap")
+        .then(|| {
+            request
+                .session_id
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+                .or_else(|| {
+                    overview
+                        .recent_sessions
+                        .iter()
+                        .find(|item| {
+                            item.files_touched > 0 || item.lines_added + item.lines_deleted > 0
+                        })
+                        .or_else(|| overview.recent_sessions.first())
+                        .map(|item| item.id.clone())
+                })
+        })
+        .flatten();
     let mut session = session_id
         .map(|id| database.session_detail(&id))
         .transpose()?;
     if let Some(detail) = session.as_mut() {
         detail.summary.title = crate::privacy::clean_display_title(&detail.summary.title);
-    }
-    let mut tasks = database.tasks(&request.range)?;
-    for task in tasks.iter_mut() {
-        task.title = crate::privacy::clean_display_title(&task.title);
     }
     let comparison = database.comparison(&request.range)?;
     let vcti = (request.template_id == "vcti-card")
@@ -217,7 +206,6 @@ fn load_data(database: &Database, request: &ShareRenderRequest) -> AppResult<Sha
         overview,
         comparison,
         session,
-        tasks,
         vcti,
         phrases,
     })
@@ -229,10 +217,6 @@ fn validate_request(request: &ShareRenderRequest) -> AppResult<()> {
         "developer-wrapped",
         "agent-comparison",
         "session-recap",
-        "daily-review",
-        "session-breakdown",
-        "weekly-recap",
-        "ship-card",
         "vcti-card",
         "catchphrases",
     ]
@@ -248,13 +232,6 @@ fn validate_request(request: &ShareRenderRequest) -> AppResult<()> {
         return Err(AppError::InvalidRequest("unknown share locale".into()));
     }
     Ok(())
-}
-
-fn is_review_template(template_id: &str) -> bool {
-    matches!(
-        template_id,
-        "daily-review" | "session-breakdown" | "weekly-recap" | "ship-card"
-    )
 }
 
 fn dimensions(aspect_ratio: &str) -> AppResult<(u32, u32)> {
@@ -310,12 +287,6 @@ fn render(request: &ShareRenderRequest, data: &ShareData, width: u32, height: u3
         "session-recap" => {
             render_session_recap_card(&mut svg, request, data, width, height, palette)
         }
-        "daily-review" => render_daily_review_card(&mut svg, request, data, width, height, palette),
-        "session-breakdown" => {
-            render_session_breakdown_card(&mut svg, request, data, width, height, palette)
-        }
-        "weekly-recap" => render_weekly_recap_card(&mut svg, request, data, width, height, palette),
-        "ship-card" => render_ship_card(&mut svg, request, data, width, height, palette),
         "vcti-card" => render_vcti_card(&mut svg, request, data, width, height, palette),
         "catchphrases" => render_catchphrases_card(&mut svg, request, data, width, height, palette),
         _ => {}
@@ -337,6 +308,7 @@ fn render_catchphrases_card(
 ) {
     let locale = loc::normalize_locale(&request.locale);
     let margin = if width > height { 92.0 } else { 78.0 };
+    let center_x = width as f64 / 2.0;
     let header_y = 74.0;
     rect(
         svg,
@@ -352,7 +324,7 @@ fn render_catchphrases_card(
         svg,
         margin + 34.0,
         header_y,
-        29.0,
+        36.0,
         720,
         palette.muted,
         loc::text(locale, "label.catchphrases"),
@@ -362,7 +334,7 @@ fn render_catchphrases_card(
         svg,
         width as f64 - margin,
         header_y,
-        26.0,
+        32.0,
         560,
         palette.muted,
         &loc::format_range(locale, &request.range),
@@ -371,263 +343,297 @@ fn render_catchphrases_card(
 
     let default_title = loc::text(locale, "template.catchphrases");
     let title = custom_or(&request.title, default_title);
-    text_block_display(
+    let title_height = text_block_display_centered(
         svg,
-        margin,
+        center_x,
         154.0,
         width as f64 - margin * 2.0,
-        if width > height { 62.0 } else { 68.0 },
+        if width > height { 76.0 } else { 82.0 },
         720,
         palette.text,
         title,
         2,
     );
     let subtitle = custom_or(&request.summary, loc::text(locale, "catchphrases.subtitle"));
-    text_block(
+    let subtitle_y = 154.0 + title_height + 10.0;
+    let subtitle_height = text_block_centered(
         svg,
-        margin,
-        220.0,
+        center_x,
+        subtitle_y,
         width as f64 - margin * 2.0,
-        25.0,
-        500,
+        32.0,
+        540,
         palette.muted,
         subtitle,
         2,
     );
+    let panel_top = (subtitle_y + subtitle_height + 30.0).max(300.0);
 
-    let Some(phrases) = data.phrases.as_ref() else {
-        render_empty(svg, request, width, height, palette);
+    let Some(champion) = data
+        .phrases
+        .as_ref()
+        .and_then(|phrases| phrases.agents.items.first())
+    else {
+        render_catchphrase_empty(svg, locale, width, height, margin, panel_top, palette);
         return;
     };
     let landscape = width as f64 / height as f64 > 1.18;
-    let panel_top = 300.0;
-    let panel_bottom = height as f64 - 184.0;
-    let gap = 24.0;
-    if landscape {
-        let panel_width = (width as f64 - margin * 2.0 - gap) / 2.0;
-        render_phrase_panel(
-            svg,
-            locale,
-            &phrases.user,
-            None,
-            margin,
-            panel_top,
-            panel_width,
-            panel_bottom - panel_top,
-            palette,
-            false,
-        );
-        render_phrase_panel(
-            svg,
-            locale,
-            &phrases.agents,
-            Some(phrases),
-            margin + panel_width + gap,
-            panel_top,
-            panel_width,
-            panel_bottom - panel_top,
-            palette,
-            true,
-        );
-    } else {
-        let panel_height = (panel_bottom - panel_top - gap) / 2.0;
-        render_phrase_panel(
-            svg,
-            locale,
-            &phrases.user,
-            None,
-            margin,
-            panel_top,
-            width as f64 - margin * 2.0,
-            panel_height,
-            palette,
-            false,
-        );
-        render_phrase_panel(
-            svg,
-            locale,
-            &phrases.agents,
-            Some(phrases),
-            margin,
-            panel_top + panel_height + gap,
-            width as f64 - margin * 2.0,
-            panel_height,
-            palette,
-            true,
-        );
-    }
-    text(
-        svg,
-        margin,
-        height as f64 - 145.0,
-        20.0,
-        520,
-        palette.muted,
-        loc::text(locale, "catchphrases.method"),
-        None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_phrase_panel(
-    svg: &mut String,
-    locale: &str,
-    cloud: &PhraseCloud,
-    response: Option<&PhraseCloudResponse>,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    palette: Palette,
-    agent_cloud: bool,
-) {
-    panel(svg, x, y, width, height, palette);
-    let title = if agent_cloud {
-        loc::text(locale, "catchphrases.agent")
-    } else {
-        loc::text(locale, "catchphrases.mine")
+    let panel_bottom = height as f64 - 220.0;
+    let panel_width = width as f64 - margin * 2.0;
+    let panel_height = panel_bottom - panel_top;
+    let agent = champion.dominant_agent.as_deref().unwrap_or("unknown");
+    let (badge_background, badge_foreground) = phrase_agent_style(agent, palette.dark);
+    let agent = champion.dominant_agent.as_deref().map(agent_label);
+    let source = match (&champion.dominant_model, agent) {
+        (Some(model), Some(agent)) if !model.is_empty() => format!("{model} · {agent}"),
+        (Some(model), _) if !model.is_empty() => model.clone(),
+        (_, Some(agent)) => agent,
+        _ => loc::text(locale, "catchphrases.unknown-source").to_string(),
     };
-    text(
-        svg,
-        x + 34.0,
-        y + 54.0,
-        30.0,
-        710,
-        palette.text,
-        title,
-        None,
-    );
-    text(
-        svg,
-        x + width - 34.0,
-        y + 53.0,
-        20.0,
-        560,
-        palette.muted,
-        &loc::format_sessions(locale, cloud.sample_sessions),
-        Some("end"),
-    );
-    line(
-        svg,
-        x + 34.0,
-        y + 76.0,
-        x + width - 34.0,
-        y + 76.0,
-        palette.hairline,
-        1.0,
-        None,
-    );
-    if cloud.status != "ready" || cloud.items.is_empty() {
+    let repeats = format!("{}×", loc::format_number(locale, champion.occurrences));
+    let sessions = if locale == "zh-CN" {
+        format!(
+            "横跨 {}",
+            loc::format_sessions(locale, champion.session_count)
+        )
+    } else {
+        format!(
+            "across {}",
+            loc::format_sessions(locale, champion.session_count)
+        )
+    };
+    panel(svg, margin, panel_top, panel_width, panel_height, palette);
+    let inner_x = margin + if landscape { 64.0 } else { 58.0 };
+    let inner_width = panel_width - if landscape { 128.0 } else { 116.0 };
+    let phrase_length = champion.phrase.chars().count();
+    let phrase_font = if phrase_length <= 6 {
+        if landscape { 180.0 } else { 210.0 }
+    } else if phrase_length <= 12 {
+        if landscape { 145.0 } else { 170.0 }
+    } else if landscape {
+        110.0
+    } else {
+        128.0
+    };
+    let quoted_phrase = format!("“{}”", champion.phrase);
+    if landscape {
+        let divider_x = inner_x + inner_width * 0.64;
+        let left_center = inner_x + (divider_x - inner_x) / 2.0;
+        let right_center = divider_x + (inner_x + inner_width - divider_x) / 2.0;
+        let top_y = panel_top + 72.0;
         text(
             svg,
-            x + width / 2.0,
-            y + height / 2.0,
-            28.0,
-            650,
+            left_center,
+            top_y,
+            31.0,
+            720,
             palette.muted,
-            loc::text(locale, "catchphrases.insufficient"),
+            loc::text(locale, "catchphrases.champion"),
             Some("middle"),
         );
-        return;
-    }
-
-    let content_left = x + 34.0;
-    let content_right = x + width - 34.0;
-    let mut cursor_x = content_left;
-    let legend_space = if agent_cloud { 67.0 } else { 24.0 };
-    let content_bottom = y + height - legend_space;
-    let font_scale = (width / 1_000.0).clamp(0.85, 2.25);
-    let horizontal_gap = 11.0 * font_scale.min(1.7);
-    let vertical_gap = 12.0 * font_scale.min(1.7);
-    let horizontal_padding = 34.0 * font_scale.min(1.7);
-    let mut cursor_y = y + 105.0 + 60.0 * font_scale;
-    let mut row_height = 0.0_f64;
-    for item in &cloud.items {
-        let font_size = (25.0 + item.weight * 35.0) * font_scale;
-        let display = truncate_phrase(&item.phrase, 34);
-        let token_width = (measure_text(&display, font_size) + horizontal_padding)
-            .min(content_right - content_left);
-        let token_height = font_size * 1.34;
-        if cursor_x + token_width > content_right {
-            cursor_x = content_left;
-            cursor_y += row_height + vertical_gap;
-            row_height = 0.0;
-        }
-        if cursor_y + token_height > content_bottom {
-            break;
-        }
-        let (background, foreground) = if agent_cloud {
-            phrase_agent_style(
-                item.dominant_agent.as_deref().unwrap_or("unknown"),
-                palette.dark,
-            )
-        } else {
-            (palette.tile, palette.text)
-        };
+        let badge_width = (measure_text(&source, 29.0) + 44.0).min((divider_x - inner_x) * 0.78);
         rect(
             svg,
-            cursor_x,
-            cursor_y - font_size,
-            token_width,
-            token_height,
-            token_height * 0.28,
-            background,
+            left_center - badge_width / 2.0,
+            top_y + 28.0,
+            badge_width,
+            56.0,
+            18.0,
+            badge_background,
             None,
         );
         text(
             svg,
-            cursor_x + 17.0,
-            cursor_y,
-            font_size,
-            (570.0 + item.weight * 150.0) as u16,
-            foreground,
-            &display,
+            left_center,
+            top_y + 66.0,
+            29.0,
+            680,
+            badge_foreground,
+            &source,
+            Some("middle"),
+        );
+        let quote_y = panel_top + panel_height * 0.48;
+        text_block_display_centered(
+            svg,
+            left_center,
+            quote_y,
+            (divider_x - inner_x) * 0.86,
+            phrase_font,
+            760,
+            palette.text,
+            &quoted_phrase,
+            2,
+        );
+        line(
+            svg,
+            divider_x,
+            panel_top + 64.0,
+            divider_x,
+            panel_top + panel_height - 64.0,
+            palette.hairline,
+            1.0,
             None,
         );
-        cursor_x += token_width + horizontal_gap;
-        row_height = row_height.max(token_height);
+        text(
+            svg,
+            right_center,
+            quote_y - 28.0,
+            104.0,
+            780,
+            badge_foreground,
+            &repeats,
+            Some("middle"),
+        );
+        text(
+            svg,
+            right_center,
+            quote_y + 42.0,
+            35.0,
+            680,
+            palette.text,
+            &sessions,
+            Some("middle"),
+        );
+        text_block_centered(
+            svg,
+            right_center,
+            quote_y + 122.0,
+            (inner_x + inner_width - divider_x) * 0.84,
+            39.0,
+            600,
+            palette.muted,
+            loc::text(locale, "catchphrases.roast"),
+            3,
+        );
+    } else {
+        let panel_center = margin + panel_width / 2.0;
+        let label_y = panel_top + (panel_height * 0.07).clamp(76.0, 138.0);
+        text(
+            svg,
+            panel_center,
+            label_y,
+            32.0,
+            720,
+            palette.muted,
+            loc::text(locale, "catchphrases.champion"),
+            Some("middle"),
+        );
+        let badge_width = (measure_text(&source, 30.0) + 46.0).min(inner_width * 0.72);
+        rect(
+            svg,
+            panel_center - badge_width / 2.0,
+            label_y + 30.0,
+            badge_width,
+            58.0,
+            19.0,
+            badge_background,
+            None,
+        );
+        text(
+            svg,
+            panel_center,
+            label_y + 69.0,
+            30.0,
+            680,
+            badge_foreground,
+            &source,
+            Some("middle"),
+        );
+        text_block_display_centered(
+            svg,
+            panel_center,
+            panel_top + panel_height * 0.30,
+            inner_width * 0.88,
+            phrase_font,
+            760,
+            palette.text,
+            &quoted_phrase,
+            3,
+        );
+        let evidence_y = panel_top + panel_height * 0.62;
+        line(
+            svg,
+            panel_center - inner_width * 0.34,
+            evidence_y - 56.0,
+            panel_center + inner_width * 0.34,
+            evidence_y - 56.0,
+            palette.hairline,
+            1.0,
+            None,
+        );
+        text(
+            svg,
+            panel_center,
+            evidence_y,
+            if width == height { 142.0 } else { 132.0 },
+            780,
+            badge_foreground,
+            &repeats,
+            Some("middle"),
+        );
+        text(
+            svg,
+            panel_center,
+            evidence_y + 72.0,
+            39.0,
+            680,
+            palette.text,
+            &sessions,
+            Some("middle"),
+        );
+        text_block_centered(
+            svg,
+            panel_center,
+            panel_top + panel_height * 0.83,
+            inner_width * 0.82,
+            48.0,
+            600,
+            palette.muted,
+            loc::text(locale, "catchphrases.roast"),
+            2,
+        );
     }
-    if agent_cloud && let Some(response) = response {
-        let mut legend_x = content_left;
-        let legend_y = y + height - 30.0;
-        for item in response.legend.iter().take(6) {
-            let (background, _) = phrase_agent_style(&item.agent, palette.dark);
-            rect(
-                svg,
-                legend_x,
-                legend_y - 11.0,
-                14.0,
-                14.0,
-                4.0,
-                background,
-                None,
-            );
-            text(
-                svg,
-                legend_x + 22.0,
-                legend_y + 1.0,
-                17.0,
-                570,
-                palette.muted,
-                &agent_label(&item.agent),
-                None,
-            );
-            legend_x += measure_text(&agent_label(&item.agent), 17.0) + 50.0;
-            if legend_x > content_right - 120.0 {
-                break;
-            }
-        }
-    }
+    text_block_centered(
+        svg,
+        center_x,
+        height as f64 - 164.0,
+        width as f64 - margin * 2.0,
+        26.0,
+        560,
+        palette.muted,
+        loc::text(locale, "catchphrases.method"),
+        2,
+    );
 }
 
-fn truncate_phrase(value: &str, maximum: usize) -> String {
-    let mut characters = value.chars();
-    let visible = characters.by_ref().take(maximum).collect::<String>();
-    if characters.next().is_some() {
-        format!("{visible}…")
-    } else {
-        visible
-    }
+fn render_catchphrase_empty(
+    svg: &mut String,
+    locale: &str,
+    width: u32,
+    height: u32,
+    margin: f64,
+    panel_top: f64,
+    palette: Palette,
+) {
+    let panel_height = height as f64 - panel_top - 220.0;
+    panel(
+        svg,
+        margin,
+        panel_top,
+        width as f64 - margin * 2.0,
+        panel_height,
+        palette,
+    );
+    text(
+        svg,
+        width as f64 / 2.0,
+        panel_top + panel_height / 2.0,
+        38.0,
+        650,
+        palette.muted,
+        loc::text(locale, "catchphrases.insufficient"),
+        Some("middle"),
+    );
 }
 
 fn phrase_agent_style(agent: &str, dark: bool) -> (&'static str, &'static str) {
@@ -1045,7 +1051,11 @@ fn render_vcti_card(
             let chart_width = panel_width - 144.0;
             let slot_width = chart_width / profile.dimensions.len().min(18) as f64;
             let chart_y = fingerprint_y + 66.0;
-            let chart_height = fingerprint_height - 102.0;
+            let label_font_size = if locale == "zh-CN" { 13.0 } else { 12.0 };
+            let label_band_height = if locale == "zh-CN" { 62.0 } else { 84.0 };
+            let label_y = fingerprint_y + fingerprint_height - 18.0;
+            let chart_bottom = label_y - label_band_height;
+            let chart_height = (chart_bottom - chart_y).max(36.0);
             for (index, dimension) in profile.dimensions.iter().take(18).enumerate() {
                 let bar_width = (slot_width * 0.38).clamp(12.0, 34.0);
                 let bar_x = chart_x + slot_width * (index as f64 + 0.5) - bar_width / 2.0;
@@ -1070,15 +1080,16 @@ fn render_vcti_card(
                     accent,
                     None,
                 );
-                text(
+                rotated_text(
                     svg,
-                    chart_x + slot_width * (index as f64 + 0.5),
-                    fingerprint_y + fingerprint_height - 20.0,
-                    14.0,
+                    chart_x + slot_width * (index as f64 + 0.5) - 4.0,
+                    label_y,
+                    label_font_size,
                     620,
                     palette.muted,
-                    &format!("{:02}", index + 1),
-                    Some("middle"),
+                    vcti_dimension_name(locale, &dimension.id),
+                    -50.0,
+                    "start",
                 );
             }
         }
@@ -1526,6 +1537,47 @@ fn vcti_score_name(locale: &str, id: &str) -> &'static str {
         (_, "debugDepth") => "DEBUG DEPTH",
         (_, "shipping") => "SHIPPING",
         _ => "TOOL NOMAD",
+    }
+}
+
+fn vcti_dimension_name(locale: &str, id: &str) -> &'static str {
+    match (locale, id) {
+        ("zh-CN", "requirementClarity") => "目标清晰",
+        ("zh-CN", "exploration") => "探索倾向",
+        ("zh-CN", "scopeDrift") => "范围漂移",
+        ("zh-CN", "delegation") => "Agent 放权",
+        ("zh-CN", "humanIntervention") => "人工介入",
+        ("zh-CN", "parallelOrchestration") => "并行编排",
+        ("zh-CN", "diffReview") => "Diff 审查",
+        ("zh-CN", "automatedVerification") => "自动验证",
+        ("zh-CN", "rollbackAwareness") => "回滚意识",
+        ("zh-CN", "rootCause") => "根因深挖",
+        ("zh-CN", "localFix") => "局部修复",
+        ("zh-CN", "automation") => "自动化",
+        ("zh-CN", "firstResultSpeed") => "首次响应",
+        ("zh-CN", "iterationGranularity") => "迭代粒度",
+        ("zh-CN", "shippingTendency") => "交付倾向",
+        ("zh-CN", "toolSwitching") => "工具切换",
+        ("zh-CN", "costRouting") => "成本路由",
+        ("zh-CN", "contextReuse") => "上下文复用",
+        (_, "requirementClarity") => "Clarity",
+        (_, "exploration") => "Exploration",
+        (_, "scopeDrift") => "Scope drift",
+        (_, "delegation") => "Delegation",
+        (_, "humanIntervention") => "Intervention",
+        (_, "parallelOrchestration") => "Parallel",
+        (_, "diffReview") => "Diff review",
+        (_, "automatedVerification") => "Verification",
+        (_, "rollbackAwareness") => "Rollback",
+        (_, "rootCause") => "Root cause",
+        (_, "localFix") => "Local fix",
+        (_, "automation") => "Automation",
+        (_, "firstResultSpeed") => "First result",
+        (_, "iterationGranularity") => "Iteration",
+        (_, "shippingTendency") => "Shipping",
+        (_, "toolSwitching") => "Tool switch",
+        (_, "costRouting") => "Cost route",
+        _ => "Context reuse",
     }
 }
 
@@ -2922,1041 +2974,6 @@ fn most_active_date(overview: &OverviewResponse) -> Option<String> {
         .map(|(date, _)| date)
 }
 
-fn render_daily_review_card(
-    svg: &mut String,
-    request: &ShareRenderRequest,
-    data: &ShareData,
-    width: u32,
-    height: u32,
-    palette: Palette,
-) {
-    if data.tasks.is_empty() {
-        render_empty(svg, request, width, height, palette);
-        return;
-    }
-    let margin = if width > height { 82.0 } else { 76.0 };
-    let verified = data
-        .tasks
-        .iter()
-        .filter(|task| task.has_commit || task.verification_state == "verified")
-        .count() as u64;
-    let title_key = format!("template.{}", request.template_id);
-    let title = custom_or(&request.title, loc::text(&request.locale, &title_key));
-    let summary = custom_or_owned(
-        &request.summary,
-        loc::daily_review_summary(&request.locale, data.tasks.len() as u64, verified),
-    );
-    let content_top = render_flow_header(svg, request, title, &summary, margin, width, palette);
-    let panel_width = width as f64 - margin * 2.0;
-    let wide = width >= height;
-    let square = width == height;
-    let tall = height as f64 / width as f64 >= 1.45;
-    let reason = data
-        .tasks
-        .iter()
-        .flat_map(|task| task.review_reason_keys.iter())
-        .next()
-        .map(String::as_str);
-    let files_changed = data
-        .tasks
-        .iter()
-        .map(|task| task.files_changed)
-        .sum::<u64>();
-    let draw = |svg: &mut String, panel_y: f64| -> f64 {
-        let pad = 0.0;
-        let gap = 14.0;
-        let x0 = margin + pad;
-        let inner_width = panel_width - pad * 2.0;
-        let mut cy = panel_y + pad;
-
-        let hero_w = if wide {
-            inner_width * 0.42
-        } else {
-            inner_width
-        };
-        let side_w = if wide {
-            inner_width - hero_w - gap
-        } else {
-            inner_width
-        };
-        let hero_h = if !wide {
-            if tall { 400.0 } else { 430.0 }
-        } else if square {
-            390.0
-        } else {
-            230.0
-        };
-        bento_tile(svg, x0, cy, hero_w, hero_h, "url(#bento-hero)", palette);
-        text(
-            svg,
-            x0 + 24.0,
-            cy + hero_h - if wide && !square { 62.0 } else { 72.0 },
-            if wide && !square { 146.0 } else { 210.0 },
-            720,
-            palette.accent,
-            &loc::format_number(&request.locale, data.tasks.len() as u64),
-            Some("d"),
-        );
-        text(
-            svg,
-            x0 + 24.0,
-            cy + hero_h - 22.0,
-            42.0,
-            600,
-            palette.text,
-            loc::text(&request.locale, "metric.tasks"),
-            None,
-        );
-
-        let side_x = if wide { x0 + hero_w + gap } else { x0 };
-        let side_y = if wide { cy } else { cy + hero_h + gap };
-        let metrics = [
-            (
-                loc::text(&request.locale, "metric.verified"),
-                loc::format_number(&request.locale, verified),
-            ),
-            (
-                loc::text(&request.locale, "metric.files"),
-                loc::format_number(&request.locale, files_changed),
-            ),
-        ];
-        let tile_h = if wide {
-            (hero_h - gap) / 2.0
-        } else if tall {
-            190.0
-        } else {
-            210.0
-        };
-        for (index, (label, value)) in metrics.iter().enumerate() {
-            let tile_y = side_y + index as f64 * (tile_h + gap);
-            bento_tile(
-                svg,
-                side_x,
-                tile_y,
-                side_w,
-                tile_h,
-                bento_fill(index + 1, palette),
-                palette,
-            );
-            text(
-                svg,
-                side_x + 22.0,
-                tile_y + 46.0,
-                36.0,
-                560,
-                palette.muted,
-                label,
-                None,
-            );
-            text(
-                svg,
-                side_x + 22.0,
-                tile_y + tile_h - 12.0,
-                if tile_h < 140.0 { 58.0 } else { 78.0 },
-                720,
-                palette.accent,
-                value,
-                Some("d"),
-            );
-        }
-
-        cy = if wide {
-            cy + hero_h
-        } else {
-            side_y + 2.0 * tile_h + gap
-        };
-        cy += 28.0;
-        text(
-            svg,
-            x0,
-            cy + 29.0,
-            36.0,
-            680,
-            palette.muted,
-            loc::text(&request.locale, "label.outcomes"),
-            None,
-        );
-        cy += 42.0;
-        let row_height = if !wide {
-            if tall { 210.0 } else { 230.0 }
-        } else if square {
-            250.0
-        } else {
-            138.0
-        };
-        let rows = data.tasks.len().min(if wide && !square { 3 } else { 4 });
-        render_task_rows(
-            svg,
-            request,
-            &data.tasks[..rows],
-            x0,
-            cy,
-            inner_width,
-            row_height,
-            palette,
-        );
-        cy += rows as f64 * (row_height + 12.0) + 16.0;
-
-        let suggestion_height = if !wide {
-            if tall { 260.0 } else { 300.0 }
-        } else if square {
-            330.0
-        } else {
-            150.0
-        };
-        bento_tile(
-            svg,
-            x0,
-            cy,
-            inner_width,
-            suggestion_height,
-            palette.tile,
-            palette,
-        );
-        text(
-            svg,
-            x0 + 26.0,
-            cy + 48.0,
-            36.0,
-            700,
-            palette.accent,
-            loc::text(&request.locale, "label.suggestion"),
-            None,
-        );
-        let _ = flow_text(
-            svg,
-            x0 + 26.0,
-            cy + 68.0,
-            inner_width - 52.0,
-            48.0,
-            560,
-            palette.text,
-            loc::review_reason(&request.locale, reason),
-            2,
-            false,
-        );
-        cy + suggestion_height
-    };
-    framed_card(svg, content_top, height, 150.0, draw);
-}
-
-fn render_session_breakdown_card(
-    svg: &mut String,
-    request: &ShareRenderRequest,
-    data: &ShareData,
-    width: u32,
-    height: u32,
-    palette: Palette,
-) {
-    let Some(session) = &data.session else {
-        render_empty(svg, request, width, height, palette);
-        return;
-    };
-    let margin = if width > height { 92.0 } else { 84.0 };
-    let title_key = format!("template.{}", request.template_id);
-    let title = custom_or(&request.title, loc::text(&request.locale, &title_key));
-    let summary = custom_or_owned(
-        &request.summary,
-        loc::session_breakdown_summary(
-            &request.locale,
-            &agent_label(&session.summary.agent),
-            session.phases.len() as u64,
-        ),
-    );
-    let content_top = render_flow_header(svg, request, title, &summary, margin, width, palette);
-    let panel_width = width as f64 - margin * 2.0;
-    let title_size = if width > height { 80.0 } else { 92.0 };
-    let phase_count = session.phases.len().clamp(1, 5);
-    let draw = |svg: &mut String, panel_y: f64| -> f64 {
-        let x = margin;
-        let content_w = panel_width;
-        let portrait = height >= width;
-        let available = (height as f64 - panel_y - 170.0).max(620.0);
-        let hero_height = if portrait {
-            (available * 0.35).clamp(620.0, 820.0)
-        } else {
-            (available * 0.38).clamp(460.0, 560.0)
-        };
-        bento_tile(
-            svg,
-            x,
-            panel_y,
-            content_w,
-            hero_height,
-            "url(#bento-hero)",
-            palette,
-        );
-        text(
-            svg,
-            x + 30.0,
-            panel_y + 50.0,
-            36.0,
-            700,
-            palette.muted,
-            loc::text(&request.locale, "label.outcomes"),
-            None,
-        );
-        let _ = flow_text(
-            svg,
-            x + 30.0,
-            panel_y + 62.0,
-            content_w - 60.0,
-            title_size,
-            680,
-            palette.text,
-            &session.summary.title,
-            if portrait { 3 } else { 2 },
-            true,
-        );
-        let status = session
-            .task
-            .as_ref()
-            .map(|task| task.status.as_str())
-            .unwrap_or(session.summary.verification_state.as_str());
-        rect(
-            svg,
-            x + 30.0,
-            panel_y + hero_height - 70.0,
-            400.0,
-            58.0,
-            32.0,
-            palette.surface_strong,
-            None,
-        );
-        text(
-            svg,
-            x + 52.0,
-            panel_y + hero_height - 29.0,
-            30.0,
-            700,
-            palette.accent,
-            loc::status(&request.locale, status),
-            None,
-        );
-        let mut cy = panel_y + hero_height + 18.0;
-        text(
-            svg,
-            x,
-            cy + 30.0,
-            36.0,
-            700,
-            palette.muted,
-            loc::text(&request.locale, "label.process"),
-            None,
-        );
-        cy += 44.0;
-        let phase_height = if portrait {
-            (available * 0.39).clamp(420.0, 820.0)
-        } else {
-            (available * 0.32).clamp(320.0, 460.0)
-        };
-        let phase_width =
-            (content_w - 12.0 * phase_count.saturating_sub(1) as f64) / phase_count as f64;
-        for (index, phase) in session.phases.iter().take(5).enumerate() {
-            let phase_x = x + index as f64 * (phase_width + 12.0);
-            let phase_label = loc::phase(&request.locale, &phase.phase_key);
-            let preferred_phase_size = if portrait { 60.0 } else { 44.0 };
-            let phase_label_width = phase_width - 32.0;
-            let phase_label_size =
-                if measure_text(phase_label, preferred_phase_size) > phase_label_width {
-                    (preferred_phase_size * phase_label_width
-                        / measure_text(phase_label, preferred_phase_size))
-                    .max(34.0)
-                } else {
-                    preferred_phase_size
-                };
-            bento_tile(
-                svg,
-                phase_x,
-                cy,
-                phase_width,
-                phase_height,
-                bento_fill(index, palette),
-                palette,
-            );
-            text(
-                svg,
-                phase_x + 16.0,
-                cy + 68.0,
-                54.0,
-                700,
-                palette.accent,
-                &format!("{:02}", index + 1),
-                Some("n"),
-            );
-            text_block_display(
-                svg,
-                phase_x + 16.0,
-                cy + phase_height * 0.62,
-                phase_label_width,
-                phase_label_size,
-                620,
-                palette.text,
-                phase_label,
-                1,
-            );
-            text_with_opacity(
-                svg,
-                phase_x + phase_width - 18.0,
-                cy + phase_height - 18.0,
-                phase_width.min(phase_height) * 0.42,
-                720,
-                palette.accent,
-                &format!("{:02}", index + 1),
-                "end",
-                "0.12",
-                "d",
-            );
-        }
-        cy += phase_height + 16.0;
-        let metrics_y = cy;
-        let metrics_height = if portrait {
-            (available * 0.22).clamp(240.0, 420.0)
-        } else {
-            (available * 0.18).clamp(220.0, 280.0)
-        };
-        render_evidence_metrics(
-            svg,
-            request,
-            session,
-            x,
-            metrics_y,
-            content_w,
-            metrics_height,
-            palette,
-        );
-        metrics_y + metrics_height
-    };
-    framed_card(svg, content_top, height, 150.0, draw);
-}
-
-fn render_weekly_recap_card(
-    svg: &mut String,
-    request: &ShareRenderRequest,
-    data: &ShareData,
-    width: u32,
-    height: u32,
-    palette: Palette,
-) {
-    if data.tasks.is_empty() {
-        render_empty(svg, request, width, height, palette);
-        return;
-    }
-    let margin = if width > height { 92.0 } else { 84.0 };
-    let verified = data
-        .tasks
-        .iter()
-        .filter(|task| task.has_commit || task.verification_state == "verified")
-        .count() as u64;
-    let projects = data
-        .tasks
-        .iter()
-        .map(|task| task.project_label.as_str())
-        .filter(|value| !value.is_empty())
-        .collect::<HashSet<_>>()
-        .len() as u64;
-    let title_key = format!("template.{}", request.template_id);
-    let title = custom_or(&request.title, loc::text(&request.locale, &title_key));
-    let summary = custom_or_owned(
-        &request.summary,
-        loc::weekly_review_summary(&request.locale, data.tasks.len() as u64, verified),
-    );
-    let content_top = render_flow_header(svg, request, title, &summary, margin, width, palette);
-    let panel_width = width as f64 - margin * 2.0;
-    let tiles = [
-        (
-            loc::text(&request.locale, "metric.tasks"),
-            loc::format_number(&request.locale, data.tasks.len() as u64),
-        ),
-        (
-            loc::text(&request.locale, "metric.verified"),
-            loc::format_number(&request.locale, verified),
-        ),
-        (
-            loc::text(&request.locale, "metric.projects"),
-            loc::format_number(&request.locale, projects),
-        ),
-    ];
-    let portrait = width <= height;
-    let square = width == height;
-    let tall = height as f64 / width as f64 >= 1.45;
-    let task_limit = if portrait { 4 } else { 2 };
-    let row_height = if tall {
-        280.0
-    } else if square {
-        275.0
-    } else if portrait {
-        310.0
-    } else {
-        142.0
-    };
-    let reason = data
-        .tasks
-        .iter()
-        .flat_map(|task| task.review_reason_keys.iter())
-        .next()
-        .map(String::as_str);
-    let draw = |svg: &mut String, panel_y: f64| -> f64 {
-        let x = margin;
-        let content_w = panel_width;
-        let mut cy = panel_y;
-        let metric_height = if tall {
-            400.0
-        } else if square {
-            350.0
-        } else if portrait {
-            380.0
-        } else {
-            204.0
-        };
-        let metric_gap = 14.0;
-        let hero_width = content_w * if portrait { 0.58 } else { 0.48 };
-        let side_x = x + hero_width + metric_gap;
-        let side_width = content_w - hero_width - metric_gap;
-        bento_tile(
-            svg,
-            x,
-            cy,
-            hero_width,
-            metric_height,
-            "url(#bento-hero)",
-            palette,
-        );
-        text(
-            svg,
-            x + 30.0,
-            cy + if portrait { 58.0 } else { 43.0 },
-            if portrait { 38.0 } else { 34.0 },
-            620,
-            palette.muted,
-            tiles[0].0,
-            None,
-        );
-        text(
-            svg,
-            x + 30.0,
-            cy + if portrait {
-                metric_height * 0.78
-            } else {
-                metric_height - 16.0
-            },
-            if portrait { 184.0 } else { 132.0 },
-            720,
-            palette.accent,
-            &tiles[0].1,
-            Some("d"),
-        );
-        let side_height = (metric_height - metric_gap) / 2.0;
-        for (index, (label, value)) in tiles.iter().skip(1).enumerate() {
-            let tile_y = cy + index as f64 * (side_height + metric_gap);
-            bento_tile(
-                svg,
-                side_x,
-                tile_y,
-                side_width,
-                side_height,
-                bento_fill(index + 1, palette),
-                palette,
-            );
-            text(
-                svg,
-                side_x + 24.0,
-                tile_y + if portrait { 50.0 } else { 39.0 },
-                if portrait { 36.0 } else { 33.0 },
-                580,
-                palette.muted,
-                label,
-                None,
-            );
-            text(
-                svg,
-                side_x + 24.0,
-                tile_y + side_height - if portrait { 14.0 } else { 6.0 },
-                if portrait { 96.0 } else { 66.0 },
-                720,
-                palette.accent,
-                value,
-                Some("d"),
-            );
-        }
-        cy += metric_height + 20.0;
-        text(
-            svg,
-            x,
-            cy + 30.0,
-            36.0,
-            700,
-            palette.muted,
-            loc::text(&request.locale, "label.outcomes"),
-            None,
-        );
-        cy += 44.0;
-        let rows = data.tasks.len().min(task_limit);
-        render_task_rows(
-            svg,
-            request,
-            &data.tasks[..rows],
-            x,
-            cy,
-            content_w,
-            row_height,
-            palette,
-        );
-        cy += rows as f64 * (row_height + 12.0) + 16.0;
-        let suggestion_height = if tall {
-            340.0
-        } else if square {
-            285.0
-        } else if portrait {
-            320.0
-        } else {
-            158.0
-        };
-        bento_tile(
-            svg,
-            x,
-            cy,
-            content_w,
-            suggestion_height,
-            palette.tile,
-            palette,
-        );
-        text(
-            svg,
-            x + 28.0,
-            cy + 50.0,
-            36.0,
-            700,
-            palette.accent,
-            loc::text(&request.locale, "label.next-week"),
-            None,
-        );
-        let _ = flow_text(
-            svg,
-            x + 28.0,
-            cy + 70.0,
-            content_w - 56.0,
-            48.0,
-            560,
-            palette.text,
-            loc::review_reason(&request.locale, reason),
-            2,
-            false,
-        );
-        cy + suggestion_height
-    };
-    framed_card(svg, content_top, height, 150.0, draw);
-}
-
-fn render_ship_card(
-    svg: &mut String,
-    request: &ShareRenderRequest,
-    data: &ShareData,
-    width: u32,
-    height: u32,
-    palette: Palette,
-) {
-    let Some(session) = &data.session else {
-        render_empty(svg, request, width, height, palette);
-        return;
-    };
-    let margin = if width > height { 92.0 } else { 84.0 };
-    let title_key = format!("template.{}", request.template_id);
-    let title = custom_or(&request.title, loc::text(&request.locale, &title_key));
-    let summary = custom_or_owned(
-        &request.summary,
-        loc::ship_summary(
-            &request.locale,
-            &agent_label(&session.summary.agent),
-            session.summary.files_touched,
-            session.git_evidence.commits.len() as u64,
-        ),
-    );
-    let content_top = render_flow_header(svg, request, title, &summary, margin, width, palette);
-    let panel_width = width as f64 - margin * 2.0;
-    let title_size = if width > height { 86.0 } else { 98.0 };
-    let tall = height as f64 / width as f64 >= 1.45;
-    let square = width == height;
-    let draw = |svg: &mut String, panel_y: f64| -> f64 {
-        let x = margin;
-        let content_w = panel_width;
-        let hero_height = if width > height {
-            360.0
-        } else if tall {
-            650.0
-        } else if square {
-            520.0
-        } else {
-            460.0
-        };
-        bento_tile(
-            svg,
-            x,
-            panel_y,
-            content_w,
-            hero_height,
-            "url(#bento-hero)",
-            palette,
-        );
-        agent_mark(
-            svg,
-            x + 30.0,
-            panel_y + 28.0,
-            &session.summary.agent,
-            96.0,
-            palette,
-        );
-        if request.show_model
-            && let Some(model) = &session.summary.model
-        {
-            text(
-                svg,
-                x + 150.0,
-                panel_y + 88.0,
-                36.0,
-                580,
-                palette.muted,
-                model,
-                None,
-            );
-        }
-        text(
-            svg,
-            x + 32.0,
-            panel_y + 158.0,
-            38.0,
-            700,
-            palette.muted,
-            loc::text(&request.locale, "label.outcomes"),
-            None,
-        );
-        let _ = flow_text(
-            svg,
-            x + 32.0,
-            panel_y + 188.0,
-            content_w - 64.0,
-            title_size,
-            690,
-            palette.text,
-            &session.summary.title,
-            if width > height { 2 } else { 3 },
-            true,
-        );
-        let evidence_y = panel_y + hero_height + 14.0;
-        let evidence_height = if tall {
-            206.0
-        } else if square {
-            182.0
-        } else {
-            160.0
-        };
-        bento_tile(
-            svg,
-            x,
-            evidence_y,
-            content_w,
-            evidence_height,
-            palette.tile,
-            palette,
-        );
-        text(
-            svg,
-            x + 28.0,
-            evidence_y + 54.0,
-            38.0,
-            700,
-            palette.accent,
-            loc::text(&request.locale, "label.evidence"),
-            None,
-        );
-        let evidence = session
-            .git_evidence
-            .commits
-            .first()
-            .map(|commit| commit.subject.as_str())
-            .unwrap_or_else(|| loc::status(&request.locale, &session.summary.verification_state));
-        let _ = flow_text(
-            svg,
-            x + 28.0,
-            evidence_y + 78.0,
-            content_w - 56.0,
-            50.0,
-            580,
-            palette.text,
-            evidence,
-            2,
-            false,
-        );
-        let metrics_y = evidence_y + evidence_height + 14.0;
-        let metrics_height = if tall {
-            184.0
-        } else if square {
-            162.0
-        } else {
-            140.0
-        };
-        render_evidence_metrics(
-            svg,
-            request,
-            session,
-            x,
-            metrics_y,
-            content_w,
-            metrics_height,
-            palette,
-        );
-        let metrics_bottom = metrics_y + metrics_height;
-        if width > height || session.phases.is_empty() {
-            return metrics_bottom;
-        }
-
-        let process_y = metrics_bottom + 16.0;
-        let process_height =
-            (height as f64 - process_y - 170.0).max(if tall { 360.0 } else { 520.0 });
-        text(
-            svg,
-            x,
-            process_y + 31.0,
-            36.0,
-            700,
-            palette.muted,
-            loc::text(&request.locale, "label.process"),
-            None,
-        );
-        let phases = session.phases.iter().take(4).collect::<Vec<_>>();
-        let grid_y = process_y + 48.0;
-        let grid_height = (process_height - 48.0).max(280.0);
-        let columns = phases.len().clamp(1, 2);
-        let rows = phases.len().div_ceil(columns).max(1);
-        let gap = 14.0;
-        let phase_width = (content_w - gap * columns.saturating_sub(1) as f64) / columns as f64;
-        let phase_height = (grid_height - gap * rows.saturating_sub(1) as f64) / rows as f64;
-        for (index, phase) in phases.iter().enumerate() {
-            let column = index % columns;
-            let row = index / columns;
-            let phase_x = x + column as f64 * (phase_width + gap);
-            let phase_y = grid_y + row as f64 * (phase_height + gap);
-            bento_tile(
-                svg,
-                phase_x,
-                phase_y,
-                phase_width,
-                phase_height,
-                bento_fill(index, palette),
-                palette,
-            );
-            text(
-                svg,
-                phase_x + 28.0,
-                phase_y + 70.0,
-                54.0,
-                720,
-                palette.accent,
-                &format!("{:02}", index + 1),
-                Some("n"),
-            );
-            text_block_display(
-                svg,
-                phase_x + 28.0,
-                phase_y + phase_height * 0.58,
-                phase_width - 56.0,
-                if phase_height > 360.0 { 82.0 } else { 64.0 },
-                680,
-                palette.text,
-                loc::phase(&request.locale, &phase.phase_key),
-                2,
-            );
-            text_with_opacity(
-                svg,
-                phase_x + phase_width - 24.0,
-                phase_y + phase_height - 22.0,
-                phase_width.min(phase_height) * 0.38,
-                720,
-                palette.accent,
-                &format!("{:02}", index + 1),
-                "end",
-                "0.12",
-                "d",
-            );
-        }
-        process_y + process_height
-    };
-    framed_card(svg, content_top, height, 150.0, draw);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_task_rows(
-    svg: &mut String,
-    request: &ShareRenderRequest,
-    tasks: &[TaskSummary],
-    x: f64,
-    y: f64,
-    width: f64,
-    row_height: f64,
-    palette: Palette,
-) {
-    for (index, task) in tasks.iter().enumerate() {
-        let row_y = y + index as f64 * (row_height + 12.0);
-        bento_tile(
-            svg,
-            x,
-            row_y,
-            width,
-            row_height,
-            bento_fill(index + 1, palette),
-            palette,
-        );
-        rect(
-            svg,
-            x,
-            row_y,
-            8.0,
-            row_height,
-            4.0,
-            if task.has_commit || task.verification_state == "verified" {
-                palette.positive
-            } else if task.worth_reviewing {
-                palette.claude
-            } else {
-                palette.accent
-            },
-            None,
-        );
-        text(
-            svg,
-            x + 28.0,
-            row_y + 52.0,
-            36.0,
-            700,
-            palette.muted,
-            &format!("{:02}", index + 1),
-            Some("n"),
-        );
-        text_block_display(
-            svg,
-            x + 88.0,
-            row_y + if row_height < 160.0 { 53.0 } else { 64.0 },
-            width * 0.62,
-            if row_height < 160.0 { 38.0 } else { 48.0 },
-            650,
-            palette.text,
-            &task.title,
-            2,
-        );
-        text(
-            svg,
-            x + width - 26.0,
-            row_y + 50.0,
-            34.0,
-            680,
-            if task.has_commit || task.verification_state == "verified" {
-                palette.positive
-            } else {
-                palette.muted
-            },
-            loc::status(&request.locale, &task.status),
-            Some("end"),
-        );
-        text(
-            svg,
-            x + width - 26.0,
-            row_y + row_height - 20.0,
-            32.0,
-            560,
-            palette.muted,
-            &format!(
-                "{} · +{} / −{}",
-                loc::format_number(&request.locale, task.files_changed),
-                loc::format_number(&request.locale, task.lines_added),
-                loc::format_number(&request.locale, task.lines_deleted)
-            ),
-            Some("end"),
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_evidence_metrics(
-    svg: &mut String,
-    request: &ShareRenderRequest,
-    session: &SessionDetail,
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    palette: Palette,
-) {
-    let values = [
-        (
-            loc::text(&request.locale, "metric.duration"),
-            loc::format_duration(&request.locale, session.summary.active_seconds),
-        ),
-        (
-            loc::text(&request.locale, "metric.tokens"),
-            loc::format_number(&request.locale, session.summary.usage.total()),
-        ),
-        (
-            loc::text(&request.locale, "metric.files"),
-            loc::format_number(&request.locale, session.summary.files_touched),
-        ),
-        (
-            loc::text(&request.locale, "metric.commits"),
-            loc::format_number(&request.locale, session.git_evidence.commits.len() as u64),
-        ),
-    ];
-    let gap = 12.0;
-    let cell_width = (width - gap * (values.len() - 1) as f64) / values.len() as f64;
-    for (index, (label, value)) in values.iter().enumerate() {
-        let cell_x = x + index as f64 * (cell_width + gap);
-        bento_tile(
-            svg,
-            cell_x,
-            y,
-            cell_width,
-            height,
-            bento_fill(index, palette),
-            palette,
-        );
-        text(
-            svg,
-            cell_x + 20.0,
-            y + 53.0,
-            38.0,
-            600,
-            palette.muted,
-            label,
-            None,
-        );
-        let preferred_size = if height < 150.0 {
-            60.0
-        } else if height < 190.0 {
-            72.0
-        } else if height < 280.0 {
-            88.0
-        } else {
-            104.0
-        };
-        let available_width = cell_width - 40.0;
-        let measured_width = measure_text(value, preferred_size);
-        let value_size = if measured_width > available_width {
-            (preferred_size * available_width / measured_width).max(28.0)
-        } else {
-            preferred_size
-        };
-        text_block_display(
-            svg,
-            cell_x + 20.0,
-            y + height - 18.0,
-            cell_width - 40.0,
-            value_size,
-            700,
-            palette.accent,
-            value,
-            1,
-        );
-    }
-}
-
 fn render_flow_header(
     svg: &mut String,
     request: &ShareRenderRequest,
@@ -3971,10 +2988,6 @@ fn render_flow_header(
         "developer-wrapped" => "label.developer-wrapped",
         "agent-comparison" => "label.agent-comparison",
         "session-recap" => "label.session-recap",
-        "daily-review" => "label.daily-review",
-        "session-breakdown" => "label.session-breakdown",
-        "weekly-recap" => "label.weekly-recap",
-        "ship-card" => "label.ship-card",
         _ => "label.real-data",
     };
     let eyebrow = loc::text(&request.locale, eyebrow_key);
@@ -4043,32 +3056,6 @@ where
 
 /// Baseline-aware text block: `top` is the top edge of the block; returns the
 /// bottom edge (after descenders). Keeps flow layouts free of magic offsets.
-#[allow(clippy::too_many_arguments)]
-fn flow_text(
-    svg: &mut String,
-    x: f64,
-    top: f64,
-    width: f64,
-    size: f64,
-    weight: u16,
-    fill: &str,
-    value: &str,
-    max_lines: usize,
-    display: bool,
-) -> f64 {
-    let baseline = top + size * 0.82;
-    let height = if display {
-        text_block_display(
-            svg, x, baseline, width, size, weight, fill, value, max_lines,
-        )
-    } else {
-        text_block(
-            svg, x, baseline, width, size, weight, fill, value, max_lines,
-        )
-    };
-    top + height + size * 0.28
-}
-
 fn header(
     svg: &mut String,
     request: &ShareRenderRequest,
@@ -4083,10 +3070,6 @@ fn header(
         "developer-wrapped" => "label.developer-wrapped",
         "agent-comparison" => "label.agent-comparison",
         "session-recap" => "label.session-recap",
-        "daily-review" => "label.daily-review",
-        "session-breakdown" => "label.session-breakdown",
-        "weekly-recap" => "label.weekly-recap",
-        "ship-card" => "label.ship-card",
         _ => "label.real-data",
     };
     let eyebrow = loc::text(&request.locale, eyebrow_key);
@@ -4242,27 +3225,20 @@ fn render_brand(
 ) {
     let y = height as f64 - 78.0;
     let x = if width > height { 92.0 } else { 84.0 };
-    circle(svg, x + 19.0, y - 8.0, 19.0, "url(#tg-accent)", None);
-    path(
+    let emphasized = request.template_id == "catchphrases";
+    let icon_size = if emphasized { 54.0 } else { 46.0 };
+    let icon_y = y - if emphasized { 40.0 } else { 34.0 };
+    write!(
         svg,
-        &format!(
-            "M {} {} L {} {} L {} {}",
-            x + 8.0,
-            y - 5.0,
-            x + 17.0,
-            y + 4.0,
-            x + 31.0,
-            y - 17.0
-        ),
-        "#FFFFFF",
-        4.0,
-        "none",
-    );
+        "<defs><clipPath id=\"vibemeter-brand-icon\"><rect x=\"{x:.1}\" y=\"{icon_y:.1}\" width=\"{icon_size:.1}\" height=\"{icon_size:.1}\" rx=\"11\"/></clipPath></defs><image href=\"{}\" x=\"{x:.1}\" y=\"{icon_y:.1}\" width=\"{icon_size:.1}\" height=\"{icon_size:.1}\" clip-path=\"url(#vibemeter-brand-icon)\" preserveAspectRatio=\"xMidYMid slice\"/>",
+        vibemeter_brand_icon_data_uri(),
+    )
+    .ok();
     text(
         svg,
-        x + 54.0,
+        x + if emphasized { 70.0 } else { 62.0 },
         y,
-        28.0,
+        if emphasized { 34.0 } else { 28.0 },
         650,
         palette.text,
         "VibeMeter",
@@ -4272,12 +3248,17 @@ fn render_brand(
         svg,
         width as f64 - x,
         y,
-        24.0,
+        if emphasized { 30.0 } else { 24.0 },
         460,
         palette.muted,
         loc::text(&request.locale, "brand.tagline"),
         Some("end"),
     );
+}
+
+fn vibemeter_brand_icon_data_uri() -> String {
+    let bytes = include_bytes!("../icons/128x128.png");
+    format!("data:image/png;base64,{}", BASE64_STANDARD.encode(bytes))
 }
 
 fn panel(svg: &mut String, x: f64, y: f64, width: f64, height: f64, palette: Palette) {
@@ -4438,6 +3419,7 @@ fn text(
     let (anchor, class) = match anchor_or_class {
         Some("end") => ("end", ""),
         Some("middle") => ("middle", ""),
+        Some("d-middle") => ("middle", "d"),
         Some("n") => ("start", "n"),
         Some("d") => ("start", "d"),
         Some("dn") => ("start", "d n"),
@@ -4447,7 +3429,7 @@ fn text(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn text_with_opacity(
+fn rotated_text(
     svg: &mut String,
     x: f64,
     y: f64,
@@ -4455,11 +3437,15 @@ fn text_with_opacity(
     weight: u16,
     fill: &str,
     value: &str,
+    angle: f64,
     anchor: &str,
-    opacity: &str,
-    class: &str,
 ) {
-    write!(svg, "<text x=\"{x:.1}\" y=\"{y:.1}\" font-size=\"{size:.1}\" font-weight=\"{weight}\" fill=\"{fill}\" text-anchor=\"{anchor}\" opacity=\"{opacity}\" class=\"{class}\">{}</text>", xml(value)).ok();
+    write!(
+        svg,
+        "<text x=\"{x:.1}\" y=\"{y:.1}\" font-size=\"{size:.1}\" font-weight=\"{weight}\" fill=\"{fill}\" text-anchor=\"{anchor}\" transform=\"rotate({angle:.1} {x:.1} {y:.1})\">{}</text>",
+        xml(value)
+    )
+    .ok();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4513,6 +3499,62 @@ fn text_block_display(
             fill,
             line_value,
             Some("d"),
+        );
+    }
+    lines.len().max(1) as f64 * size * 1.24
+}
+
+#[allow(clippy::too_many_arguments)]
+fn text_block_centered(
+    svg: &mut String,
+    center_x: f64,
+    y: f64,
+    width: f64,
+    size: f64,
+    weight: u16,
+    fill: &str,
+    value: &str,
+    max_lines: usize,
+) -> f64 {
+    let lines = wrap_text(value, width, size, max_lines);
+    for (index, line_value) in lines.iter().enumerate() {
+        text(
+            svg,
+            center_x,
+            y + index as f64 * size * 1.24,
+            size,
+            weight,
+            fill,
+            line_value,
+            Some("middle"),
+        );
+    }
+    lines.len().max(1) as f64 * size * 1.24
+}
+
+#[allow(clippy::too_many_arguments)]
+fn text_block_display_centered(
+    svg: &mut String,
+    center_x: f64,
+    y: f64,
+    width: f64,
+    size: f64,
+    weight: u16,
+    fill: &str,
+    value: &str,
+    max_lines: usize,
+) -> f64 {
+    let lines = wrap_text(value, width, size, max_lines);
+    for (index, line_value) in lines.iter().enumerate() {
+        text(
+            svg,
+            center_x,
+            y + index as f64 * size * 1.24,
+            size,
+            weight,
+            fill,
+            line_value,
+            Some("d-middle"),
         );
     }
     lines.len().max(1) as f64 * size * 1.24
@@ -4724,6 +3766,19 @@ mod tests {
     }
 
     #[test]
+    fn vcti_fingerprint_uses_readable_dimension_labels() {
+        assert_eq!(
+            vcti_dimension_name("zh-CN", "requirementClarity"),
+            "目标清晰"
+        );
+        assert_eq!(
+            vcti_dimension_name("en-US", "parallelOrchestration"),
+            "Parallel"
+        );
+        assert_ne!(vcti_dimension_name("zh-CN", "contextReuse"), "18");
+    }
+
+    #[test]
     fn savitzky_golay_preserves_expected_usage_shapes() {
         let constant = savitzky_golay_smooth(&[5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]);
         assert!(constant.iter().all(|value| (*value - 5.0).abs() < 1e-10));
@@ -4736,7 +3791,7 @@ mod tests {
     }
 
     #[test]
-    fn catchphrase_share_keeps_exact_titles_and_honest_empty_state() {
+    fn catchphrase_share_uses_a_champion_frame_and_honest_empty_state() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database = Database::open(directory.path().join("vibemeter.sqlite")).expect("database");
         let request = ShareRenderRequest {
@@ -4759,11 +3814,67 @@ mod tests {
             privacy_reviewed: true,
         };
         let result = preview(&database, request).expect("preview");
-        assert!(result.svg.contains("我的口头禅"));
-        assert!(result.svg.contains("Agent 的口头禅"));
+        assert!(result.svg.contains("它最离不开的一句"));
         assert!(result.svg.contains("至少需要两个会话重复同一句短语"));
         let png = render_png_bytes(&result.svg).expect("png");
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn catchphrase_share_promotes_one_model_attributed_verbal_tic() {
+        use crate::models::{AgentKind, ParseState, PhraseAggregate};
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let database = Database::open(directory.path().join("vibemeter.sqlite")).expect("database");
+        let date = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        for (index, occurrences) in [3_u64, 1_u64].into_iter().enumerate() {
+            let id = format!("phrase-share-{index}");
+            let mut state = ParseState::new(AgentKind::Codex, id.clone());
+            state.started_at = Some(format!("{date}T02:00:00Z"));
+            state.ended_at = Some(format!("{date}T02:10:00Z"));
+            state.current_model = Some("gpt-5.4".into());
+            state.phrase_counts.insert(
+                "agent".into(),
+                PhraseAggregate {
+                    date: date.clone(),
+                    role: "agent".into(),
+                    phrase: "我会先检查".into(),
+                    occurrences,
+                },
+            );
+            database
+                .persist_parse_state(&id, 1, 1, 1, &state)
+                .expect("phrase session");
+        }
+        let request = ShareRenderRequest {
+            template_id: "catchphrases".into(),
+            locale: "zh-CN".into(),
+            aspect_ratio: "1:1".into(),
+            theme: "light".into(),
+            range: "30d".into(),
+            session_id: None,
+            compare_ids: Vec::new(),
+            title: String::new(),
+            summary: String::new(),
+            project_name: String::new(),
+            metrics: Vec::new(),
+            show_brand: true,
+            show_model: false,
+            show_cost: false,
+            show_project: false,
+            show_behavior_evidence: false,
+            privacy_reviewed: true,
+        };
+        let result = preview(&database, request).expect("preview");
+        assert!(result.svg.contains("我会先检查"));
+        assert!(result.svg.contains("gpt-5.4 · Codex"));
+        assert!(result.svg.contains("4×"));
+        assert!(result.svg.contains("横跨 2 个会话"));
+        assert!(result.svg.contains("不说这句，看来就没法开工。"));
+        assert!(!result.svg.contains("我的口头禅"));
     }
 
     // Renders every template against a real DB copy so cards can be inspected visually.
@@ -4780,10 +3891,6 @@ mod tests {
             "developer-wrapped",
             "agent-comparison",
             "session-recap",
-            "daily-review",
-            "session-breakdown",
-            "weekly-recap",
-            "ship-card",
             "vcti-card",
             "catchphrases",
         ];

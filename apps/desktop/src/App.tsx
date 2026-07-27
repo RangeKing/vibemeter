@@ -11,7 +11,6 @@ import { api } from "./lib/api";
 import { DataPage } from "./pages/DataPage";
 import { InsightsPage } from "./pages/InsightsPage";
 import { LivePage } from "./pages/LivePage";
-import { ReviewsPage } from "./pages/ReviewsPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ShareStudioPage } from "./pages/ShareStudioPage";
@@ -24,7 +23,7 @@ function systemLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 
-const pages: PageKey[] = ["data", "live", "sessions", "reviews", "insights", "vcti", "share", "sources", "settings"];
+const pages: PageKey[] = ["data", "live", "insights", "sessions", "vcti", "share", "sources", "settings"];
 
 export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const { i18n } = useTranslation();
@@ -45,11 +44,23 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   }, [settings.data?.theme]);
 
   useEffect(() => {
+    if (surface !== "main" || !index.data?.finishedAt) return;
+    void Promise.all([
+      client.invalidateQueries({ queryKey: ["sources"] }),
+      client.invalidateQueries({ queryKey: ["overview"] }),
+      client.invalidateQueries({ queryKey: ["tasks"] }),
+      client.invalidateQueries({ queryKey: ["sessions"] }),
+      client.invalidateQueries({ queryKey: ["session"] }),
+      client.invalidateQueries({ queryKey: ["share-sessions"] }),
+    ]);
+  }, [client, index.data?.finishedAt, surface]);
+
+  useEffect(() => {
     if (surface !== "main") return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<string>("navigate", (event) => {
-      const legacyMap: Record<string, PageKey> = { overview: "data", today: "data", compare: "insights", playbook: "reviews" };
+      const legacyMap: Record<string, PageKey> = { overview: "data", today: "data", compare: "insights", playbook: "insights", reviews: "insights" };
       const target = legacyMap[event.payload] ?? event.payload;
       if (pages.includes(target as PageKey)) setPage(target as PageKey);
     }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; });
@@ -81,7 +92,6 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
       case "live": return <LivePage locale={locale} />;
       case "data": return <DataPage locale={locale} />;
       case "sessions": return <SessionsPage locale={locale} />;
-      case "reviews": return <ReviewsPage locale={locale} />;
       case "insights": return <InsightsPage locale={locale} />;
       case "vcti": return <VctiPage locale={locale} />;
       case "share": return <ShareStudioPage locale={locale} />;

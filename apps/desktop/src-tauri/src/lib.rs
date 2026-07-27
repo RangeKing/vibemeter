@@ -1,6 +1,5 @@
 mod adapters;
 pub mod database;
-mod deep_review;
 pub mod errors;
 pub mod export;
 mod export_localization;
@@ -13,20 +12,16 @@ mod phrases;
 mod pricing;
 mod privacy;
 mod providers;
-mod review_engine;
-mod review_localization;
 mod tray;
 mod vcti;
 
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    ComparisonItem, DeepReviewPreview, DeepReviewRequest, ExportRequest, ExportResult,
-    GenerateReviewRequest, HookStatus, IndexStatus, InsightsResponse, LiveSnapshot,
-    MenuBarSnapshot, OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl,
-    ProviderUsage, ReviewDocument, ReviewsResponse, SavePlaybookRequest, SessionDetail,
-    SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, TodayResponse,
-    UpdateReviewRequest, VctiProfile,
+    ComparisonItem, ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse,
+    LiveSnapshot, MenuBarSnapshot, OverviewResponse, PhraseCloudResponse, PlaybookItem,
+    ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail, SessionsResponse,
+    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -97,12 +92,26 @@ fn set_notch_expanded(app: AppHandle, expanded: bool) -> AppResult<()> {
 }
 
 #[tauri::command]
-async fn get_today(state: State<'_, AppState>) -> AppResult<TodayResponse> {
-    let database = state.database.clone();
-    let index_status = current_index_status(&state);
-    tauri::async_runtime::spawn_blocking(move || database.today(index_status))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+fn get_notch_state() -> tray::NotchUiState {
+    tray::notch_state()
+}
+
+#[tauri::command]
+fn set_notch_pinned(app: AppHandle, pinned: bool) -> AppResult<()> {
+    tray::set_notch_pinned(&app, pinned)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+#[tauri::command]
+fn set_notch_activity(app: AppHandle, has_activity: bool) -> AppResult<()> {
+    tray::set_notch_activity(&app, has_activity)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+#[tauri::command]
+fn set_notch_layout(app: AppHandle, left_wing_width: f64, expanded_height: f64) -> AppResult<()> {
+    tray::set_notch_layout(&app, left_wing_width, expanded_height)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
 #[tauri::command]
@@ -216,149 +225,6 @@ fn export_text_file(path: String, content: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-async fn get_reviews(
-    state: State<'_, AppState>,
-    review_type: Option<String>,
-    target_id: Option<String>,
-) -> AppResult<ReviewsResponse> {
-    let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        database.reviews(review_type.as_deref(), target_id.as_deref())
-    })
-    .await
-    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
-async fn generate_review(
-    state: State<'_, AppState>,
-    request: GenerateReviewRequest,
-) -> AppResult<ReviewDocument> {
-    let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.generate_review(&request))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
-async fn preview_deep_review(
-    state: State<'_, AppState>,
-    task_id: String,
-    locale: String,
-    mode: String,
-    provider: String,
-    model: Option<String>,
-) -> AppResult<DeepReviewPreview> {
-    deep_review::validate_route(&mode, &provider, model.as_deref())?;
-    let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let (title, payload) = database.deep_review_payload(&task_id, &locale)?;
-        let payload_hash = deep_review::payload_hash(
-            &task_id,
-            &locale,
-            &mode,
-            &provider,
-            model.as_deref(),
-            &payload,
-        );
-        Ok(DeepReviewPreview {
-            task_id,
-            title,
-            mode,
-            provider,
-            model,
-            character_count: payload.chars().count() as u64,
-            payload,
-            payload_hash,
-            network_required: true,
-            privacy_notes: vec![
-                "deepReview.privacy.bounded".into(),
-                "deepReview.privacy.noTranscript".into(),
-                "deepReview.privacy.noSecrets".into(),
-            ],
-        })
-    })
-    .await
-    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
-async fn generate_deep_review(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    request: DeepReviewRequest,
-) -> AppResult<ReviewDocument> {
-    deep_review::validate_route(&request.mode, &request.provider, request.model.as_deref())?;
-    let database = state.database.clone();
-    let work_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-        .join("DeepReview");
-    tauri::async_runtime::spawn_blocking(move || {
-        let (fallback_title, payload) =
-            database.deep_review_payload(&request.task_id, &request.locale)?;
-        let current_hash = deep_review::payload_hash(
-            &request.task_id,
-            &request.locale,
-            &request.mode,
-            &request.provider,
-            request.model.as_deref(),
-            &payload,
-        );
-        if current_hash != request.payload_hash {
-            return Err(AppError::InvalidRequest(
-                "deep review evidence changed; preview it again".into(),
-            ));
-        }
-        let (generated_title, content) = deep_review::run(
-            &request.mode,
-            &request.provider,
-            request.model.as_deref(),
-            &request.locale,
-            &payload,
-            &work_dir,
-        )?;
-        database.save_deep_review(
-            &request.task_id,
-            &request.locale,
-            if generated_title.trim().is_empty() {
-                fallback_title
-            } else {
-                generated_title
-            },
-            content,
-        )
-    })
-    .await
-    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
-async fn accept_review(state: State<'_, AppState>, id: String) -> AppResult<()> {
-    let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.accept_review(&id))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
-async fn update_review(state: State<'_, AppState>, request: UpdateReviewRequest) -> AppResult<()> {
-    let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.update_review(&request))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
-async fn delete_review(state: State<'_, AppState>, id: String) -> AppResult<()> {
-    let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.delete_review(&id))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
-}
-
-#[tauri::command]
 async fn get_insights(state: State<'_, AppState>, range: String) -> AppResult<InsightsResponse> {
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || database.insights(&range))
@@ -445,6 +311,18 @@ async fn get_sources(state: State<'_, AppState>) -> AppResult<Vec<SourceStatus>>
 }
 
 #[tauri::command]
+async fn set_source_selected(
+    state: State<'_, AppState>,
+    agent: String,
+    selected: bool,
+) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.set_source_selected(&agent, selected))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
 fn get_index_status(state: State<'_, AppState>) -> IndexStatus {
     current_index_status(&state)
 }
@@ -472,11 +350,6 @@ async fn get_menu_bar_snapshot(state: State<'_, AppState>) -> AppResult<MenuBarS
     let index_status = current_index_status(&state);
     tauri::async_runtime::spawn_blocking(move || {
         let (today_usage, today_cost_usd, heatmap) = database.today_and_heatmap(28)?;
-        let today_tasks = database.tasks("today")?;
-        let worth_reviewing = today_tasks
-            .iter()
-            .filter(|task| task.worth_reviewing)
-            .count() as u64;
         Ok(MenuBarSnapshot {
             generated_at: Utc::now().to_rfc3339(),
             today_usage,
@@ -484,8 +357,6 @@ async fn get_menu_bar_snapshot(state: State<'_, AppState>) -> AppResult<MenuBarS
             heatmap,
             providers,
             index_status,
-            today_tasks: today_tasks.into_iter().take(3).collect(),
-            worth_reviewing,
         })
     })
     .await
@@ -528,9 +399,6 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("vctiPromptStructure", "true"),
             ("retentionDays", "365"),
             ("launchAtLogin", "false"),
-            ("deepReviewMode", "cli"),
-            ("deepReviewProvider", "codex"),
-            ("deepReviewModel", ""),
             ("liveHooksEnabled", "true"),
             ("notchEnabled", "true"),
             ("menuBarEnabled", "true"),
@@ -591,15 +459,6 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),
-        "deepReviewMode" => matches!(value, "cli" | "api"),
-        "deepReviewProvider" => matches!(value, "codex" | "claude" | "openai" | "anthropic"),
-        "deepReviewModel" => {
-            value.len() <= 96
-                && value.chars().all(|character| {
-                    character.is_ascii_alphanumeric()
-                        || matches!(character, '-' | '_' | '.' | ':' | '/')
-                })
-        }
         _ => return Err(AppError::InvalidRequest("unknown setting".into())),
     };
     if valid {
@@ -611,6 +470,8 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
 
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> AppResult<()> {
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| AppError::InvalidRequest("main window is unavailable".into()))?;
@@ -627,6 +488,8 @@ fn show_main_window(app: AppHandle) -> AppResult<()> {
 
 #[tauri::command]
 fn show_settings_window(app: AppHandle) -> AppResult<()> {
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| AppError::InvalidRequest("main window is unavailable".into()))?;
@@ -688,7 +551,10 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
+    let builder = builder
         .setup(|app| {
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_autostart::init(
@@ -732,7 +598,13 @@ pub fn run() {
             let menu_bar_enabled = database
                 .setting("menuBarEnabled")?
                 .is_none_or(|value| value == "true");
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::setup(app, notch_enabled, menu_bar_enabled)?;
+            #[cfg(target_os = "macos")]
+            if std::env::var_os("VIBEMETER_PREVIEW_NOTCH").is_none() {
+                app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            }
 
             #[cfg(debug_assertions)]
             if std::env::var_os("VIBEMETER_PREVIEW_MENUBAR").is_some()
@@ -746,6 +618,18 @@ pub fn run() {
                     let _ = menubar.set_position(tauri::PhysicalPosition::new(500, 80));
                     let _ = menubar.show();
                     let _ = menubar.set_focus();
+                }
+            }
+            #[cfg(debug_assertions)]
+            if std::env::var_os("VIBEMETER_PREVIEW_NOTCH").is_some() {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.hide();
+                }
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                let _ = tray::set_notch_activity(app.handle(), true);
+                let _ = tray::set_notch_expanded(app.handle(), true);
+                if std::env::var_os("VIBEMETER_PREVIEW_NOTCH_PINNED").is_some() {
+                    let _ = tray::set_notch_pinned(app.handle(), true);
                 }
             }
 
@@ -790,6 +674,9 @@ pub fn run() {
             {
                 api.prevent_close();
                 let _ = window.hide();
+                let _ = window
+                    .app_handle()
+                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
             if window.label() == "menubar"
                 && let WindowEvent::Focused(false) = event
@@ -805,7 +692,10 @@ pub fn run() {
             uninstall_live_hooks,
             jump_to_live_session,
             set_notch_expanded,
-            get_today,
+            get_notch_state,
+            set_notch_pinned,
+            set_notch_activity,
+            set_notch_layout,
             get_tasks,
             merge_tasks,
             split_session,
@@ -816,13 +706,6 @@ pub fn run() {
             export_share,
             render_share_png,
             export_text_file,
-            get_reviews,
-            generate_review,
-            preview_deep_review,
-            generate_deep_review,
-            accept_review,
-            update_review,
-            delete_review,
             get_insights,
             get_vcti_profile,
             get_playbook,
@@ -833,6 +716,7 @@ pub fn run() {
             include_project,
             clear_local_data,
             get_sources,
+            set_source_selected,
             get_index_status,
             refresh_index,
             get_menu_bar_snapshot,

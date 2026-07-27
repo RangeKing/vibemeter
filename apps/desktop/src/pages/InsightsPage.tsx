@@ -1,14 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, CircleDot, Clock3, FileCode2, Lightbulb, Scale } from "lucide-react";
+import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "../components/RangePicker";
 import { BehaviorStreams } from "../components/BehaviorStreams";
+import { CatchphraseClouds } from "../components/CatchphraseClouds";
 import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { EmptyState, ErrorState, LoadingState, PageHeader } from "../components/ui";
 import { api } from "../lib/api";
 import { agentName, formatCompact, formatDuration, formatPercent, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
 import type { InsightStat, Locale } from "../types";
+
+const COMPARISON_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--agent-cursor)",
+  "var(--warning)",
+  "var(--agent-hermes)",
+  "var(--red)",
+  "var(--chart-4)",
+];
 
 function splitEvidenceLabel(label: string): [string, string] {
   const divider = label.lastIndexOf(" · ");
@@ -37,6 +50,11 @@ export function InsightsPage({ locale }: { locale: Locale }) {
   const setPage = useUiStore((state) => state.setPage);
   const selectSession = useUiStore((state) => state.selectSession);
   const query = useQuery({ queryKey: ["insights", range], queryFn: () => api.insights(range) });
+  const phrases = useQuery({
+    queryKey: ["phrase-cloud", range],
+    queryFn: () => api.phraseCloud(range),
+    refetchInterval: 30_000,
+  });
   if (query.isLoading) return <LoadingState />;
   if (query.isError || !query.data) return <ErrorState retry={() => void query.refetch()} />;
   const data = query.data;
@@ -52,6 +70,12 @@ export function InsightsPage({ locale }: { locale: Locale }) {
         <p>{lowSample ? t("insights.insufficient.detail") : t("insights.minimum", { count: data.minimumSampleSize })}</p>
         <div className="baseline-track"><span style={{ width: `${Math.min(100, (sampleSize / data.minimumSampleSize) * 100)}%` }} /></div>
       </section>
+
+      {phrases.data ? <CatchphraseClouds data={phrases.data} locale={locale} /> : phrases.isError ? (
+        <section className="catchphrase-section">
+          <ErrorState retry={() => void phrases.refetch()} />
+        </section>
+      ) : null}
 
       <CursorAccountUsagePanel locale={locale} range={range} compact />
 
@@ -137,9 +161,15 @@ export function InsightsPage({ locale }: { locale: Locale }) {
       <section className="comparison-ledger">
         <header className="section-heading"><div><span className="section-index">04</span><h2>{t("insights.comparison")}</h2></div><Scale size={18} /></header>
         <div className="comparison-list">
-          {data.comparison.slice(0, 8).map((item) => (
-            <div key={item.id}>
-              <span><strong>{item.label}</strong><small>{item.groupKind}</small></span>
+          {data.comparison.slice(0, 8).map((item, index) => (
+            <div
+              key={item.id}
+              style={{ "--comparison-color": COMPARISON_COLORS[index] } as CSSProperties}
+            >
+              <span className="comparison-label">
+                <strong><i className="comparison-dot" />{item.label}</strong>
+                <small>{item.groupKind}</small>
+              </span>
               <div className="comparison-bar"><i style={{ width: `${(tokenTotal(item.usage) / maxTokens) * 100}%` }} /></div>
               <span><strong>{formatCompact(tokenTotal(item.usage), locale)}</strong><small>{t("metrics.tokens")}</small></span>
             </div>

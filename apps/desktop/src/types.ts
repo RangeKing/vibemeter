@@ -1,16 +1,12 @@
 export type Locale = "en-US" | "zh-CN";
 export type Theme = "light" | "dark" | "system";
 export type RangeKey = "today" | "7d" | "30d" | "90d" | "180d" | "year" | "all";
-export type PageKey = "live" | "data" | "sessions" | "reviews" | "insights" | "vcti" | "share" | "sources" | "settings";
+export type PageKey = "live" | "data" | "sessions" | "insights" | "vcti" | "share" | "sources" | "settings";
 export type ShareTemplate =
   | "usage-overview"
   | "developer-wrapped"
   | "agent-comparison"
   | "session-recap"
-  | "daily-review"
-  | "session-breakdown"
-  | "weekly-recap"
-  | "ship-card"
   | "vcti-card"
   | "catchphrases";
 export type AspectRatio = "1:1" | "2:3" | "3:2" | "3:4" | "4:3" | "4:5" | "16:9" | "9:16";
@@ -175,13 +171,21 @@ export interface PhraseAgentCount {
   sessionCount: number;
 }
 
+export interface PhraseModelCount {
+  model: string;
+  occurrences: number;
+  sessionCount: number;
+}
+
 export interface PhraseCloudItem {
   phrase: string;
   occurrences: number;
   sessionCount: number;
   weight: number;
   dominantAgent?: string;
+  dominantModel?: string;
   agents: PhraseAgentCount[];
+  models: PhraseModelCount[];
 }
 
 export interface PhraseCloud {
@@ -245,6 +249,18 @@ export interface LiveSnapshot {
   hookStatus: HookStatus;
 }
 
+export interface NotchUiState {
+  available: boolean;
+  expanded: boolean;
+  pinned: boolean;
+  hasActivity: boolean;
+  hardwareWidth: number;
+  hardwareHeight: number;
+  leftWingWidth: number;
+  rightWingWidth: number;
+  expandedHeight: number;
+}
+
 export interface SessionsResponse {
   items: SessionSummary[];
   total: number;
@@ -282,23 +298,6 @@ export interface TaskSummary {
   reviewReasonKeys: string[];
   primarySessionId?: string;
   sourceExcluded: boolean;
-}
-
-export interface TodayInsight {
-  id: string;
-  tier: string;
-  messageKey: string;
-  value?: number;
-  evidence: EvidenceReference[];
-}
-
-export interface TodayResponse {
-  date: string;
-  tasks: TaskSummary[];
-  worthReviewing: TaskSummary[];
-  insights: TodayInsight[];
-  totals: OverviewTotals;
-  indexStatus: IndexStatus;
 }
 
 export interface CanonicalEvent {
@@ -374,64 +373,6 @@ export interface ComparisonItem {
   costCoverage: number;
   usageShare: number;
 }
-
-export interface ReviewContent {
-  outcome: string;
-  whatHappened: string;
-  whatWorked: string;
-  friction: string;
-  lessons: string;
-  nextRun: string;
-}
-
-export interface ReviewFinding {
-  id: string;
-  ruleId: string;
-  tier: string;
-  title: string;
-  detail: string;
-  evidence: EvidenceReference[];
-}
-
-export interface ReviewDocument {
-  id: string;
-  reviewType: "task" | "session" | "daily" | "weekly";
-  targetId: string;
-  locale: Locale;
-  version: number;
-  status: string;
-  title: string;
-  content: ReviewContent;
-  findings: ReviewFinding[];
-  userEdited: boolean;
-  sourceExcluded: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface DeepReviewPreview {
-  taskId: string;
-  title: string;
-  mode: "cli" | "api";
-  provider: string;
-  model?: string;
-  payload: string;
-  payloadHash: string;
-  characterCount: number;
-  networkRequired: boolean;
-  privacyNotes: string[];
-}
-
-export interface DeepReviewRequest {
-  taskId: string;
-  locale: Locale;
-  mode: "cli" | "api";
-  provider: string;
-  model?: string;
-  payloadHash: string;
-}
-
-export interface ReviewsResponse { items: ReviewDocument[] }
 
 export interface InsightItem {
   id: string;
@@ -551,6 +492,7 @@ export interface ProjectControl {
 export interface SourceStatus {
   agent: string;
   available: boolean;
+  selected: boolean;
   capabilityLevel: string;
   sessionCount: number;
   lastIndexedAt?: string;
@@ -609,8 +551,6 @@ export interface MenuBarSnapshot {
   heatmap: DailyUsagePoint[];
   providers: ProviderUsage[];
   indexStatus: IndexStatus;
-  todayTasks: TaskSummary[];
-  worthReviewing: number;
 }
 
 export interface ShareMetricInput { id: string; visible: boolean }
@@ -663,9 +603,6 @@ export interface AppSettings {
   gitReadAllowed: string;
   vctiPromptStructure: string;
   retentionDays: string;
-  deepReviewMode: "cli" | "api";
-  deepReviewProvider: "codex" | "claude" | "openai" | "anthropic";
-  deepReviewModel: string;
   liveHooksEnabled: string;
   notchEnabled: string;
   menuBarEnabled: string;

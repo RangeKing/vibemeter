@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { CloudCog, LockKeyhole, Settings2 } from "lucide-react";
+import { CloudCog, Settings2 } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
@@ -40,19 +40,7 @@ export function CursorAccountUsagePanel({
   const rangeLabel = t(`ranges.${range}`);
 
   if (settings.isLoading) return null;
-  if (!enabled) {
-    return (
-      <section className={`cursor-account-panel disabled ${compact ? "compact" : ""}`} aria-label={t("cursorUsage.title")}>
-        <div className="cursor-account-disabled-icon"><LockKeyhole size={18} /></div>
-        <div>
-          <span className="cursor-account-eyebrow">{t("cursorUsage.eyebrow")}</span>
-          <h2>{t("cursorUsage.disabledTitle")}</h2>
-          <p>{t("cursorUsage.disabledBody")}</p>
-        </div>
-        <button className="button secondary" onClick={() => void api.showSettings()}><Settings2 size={13} />{t("cursorUsage.openSettings")}</button>
-      </section>
-    );
-  }
+  if (!enabled) return null;
 
   if (providers.isLoading) {
     return (

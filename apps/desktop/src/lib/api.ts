@@ -2,22 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   ComparisonItem,
-  DeepReviewPreview,
-  DeepReviewRequest,
   ExportResult,
   InsightsResponse,
   IndexStatus,
   MenuBarSnapshot,
   LiveSnapshot,
+  NotchUiState,
   HookStatus,
   OverviewResponse,
   PhraseCloudResponse,
   PlaybookItem,
   ProjectControl,
   ProviderUsage,
-  ReviewContent,
-  ReviewDocument,
-  ReviewsResponse,
   SavePlaybookRequest,
   SessionDetail,
   SessionsResponse,
@@ -25,7 +21,6 @@ import type {
   ShareRenderRequest,
   SourceStatus,
   TaskSummary,
-  TodayResponse,
   VctiProfile,
 } from "../types";
 
@@ -37,7 +32,11 @@ export const api = {
   uninstallLiveHooks: () => invoke<HookStatus>("uninstall_live_hooks"),
   jumpToLiveSession: (id: string) => invoke<void>("jump_to_live_session", { id }),
   setNotchExpanded: (expanded: boolean) => invoke<void>("set_notch_expanded", { expanded }),
-  today: () => invoke<TodayResponse>("get_today"),
+  notchState: () => invoke<NotchUiState>("get_notch_state"),
+  setNotchPinned: (pinned: boolean) => invoke<void>("set_notch_pinned", { pinned }),
+  setNotchActivity: (hasActivity: boolean) => invoke<void>("set_notch_activity", { hasActivity }),
+  setNotchLayout: (leftWingWidth: number, expandedHeight: number) =>
+    invoke<void>("set_notch_layout", { leftWingWidth, expandedHeight }),
   tasks: (range: string) => invoke<TaskSummary[]>("get_tasks", { range }),
   mergeTasks: (taskIds: string[], title?: string) => invoke<string>("merge_tasks", { taskIds, title }),
   splitSession: (sessionId: string) => invoke<string>("split_session", { sessionId }),
@@ -46,6 +45,8 @@ export const api = {
   sessionDetail: (id: string) => invoke<SessionDetail>("get_session_detail", { id }),
   comparison: (range: string) => invoke<ComparisonItem[]>("get_comparison", { range }),
   sources: () => invoke<SourceStatus[]>("get_sources"),
+  setSourceSelected: (agent: string, selected: boolean) =>
+    invoke<void>("set_source_selected", { agent, selected }),
   indexStatus: () => invoke<IndexStatus>("get_index_status"),
   refreshIndex: (force = false) => invoke<boolean>("refresh_index", { force }),
   menuSnapshot: () => invoke<MenuBarSnapshot>("get_menu_bar_snapshot"),
@@ -59,18 +60,6 @@ export const api = {
     invoke<ExportResult>("export_share", { request: { ...render, format, path } }),
   renderSharePng: (request: ShareRenderRequest) => invoke<number[]>("render_share_png", { request }),
   exportTextFile: (path: string, content: string) => invoke<void>("export_text_file", { path, content }),
-  reviews: (reviewType?: string, targetId?: string) =>
-    invoke<ReviewsResponse>("get_reviews", { reviewType, targetId }),
-  generateReview: (reviewType: "task" | "session" | "daily" | "weekly", targetId: string, locale: string) =>
-    invoke<ReviewDocument>("generate_review", { request: { reviewType, targetId, locale } }),
-  previewDeepReview: (taskId: string, locale: string, mode: "cli" | "api", provider: string, model?: string) =>
-    invoke<DeepReviewPreview>("preview_deep_review", { taskId, locale, mode, provider, model: model || undefined }),
-  generateDeepReview: (request: DeepReviewRequest) =>
-    invoke<ReviewDocument>("generate_deep_review", { request }),
-  acceptReview: (id: string) => invoke<void>("accept_review", { id }),
-  updateReview: (id: string, title: string, content: ReviewContent) =>
-    invoke<void>("update_review", { request: { id, title, content } }),
-  deleteReview: (id: string) => invoke<void>("delete_review", { id }),
   insights: (range: string) => invoke<InsightsResponse>("get_insights", { range }),
   vctiProfile: () => invoke<VctiProfile>("get_vcti_profile"),
   playbook: (search?: string) => invoke<PlaybookItem[]>("get_playbook", { search }),

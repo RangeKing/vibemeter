@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 const MAX_PHRASES_PER_MESSAGE: usize = 180;
 const MAX_PERSISTED_PHRASES_PER_ROLE_DATE: usize = 240;
+const MAX_NGRAM_TOKENS: usize = 5;
 
 static JIEBA: Lazy<Jieba> = Lazy::new(Jieba::new);
 static CODE_BLOCK_RE: Lazy<Regex> =
@@ -29,6 +30,21 @@ static HIGH_ENTROPY_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\b[A-Za-z0-9_+/=-]{28,}\b").expect("high entropy token regex"));
 static MARKUP_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?s)<[^>]{1,240}>").expect("markup regex"));
+static CODEX_ATTACHMENT_WRAPPER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?ims)^\s*#\s*Files mentioned by the user:\s*.*?^\s*##\s*My request for Codex:\s*")
+        .expect("Codex attachment wrapper regex")
+});
+static CODEX_REQUEST_HEADING_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?im)^\s*#{1,6}\s*My request for Codex:\s*$").expect("Codex request heading regex")
+});
+static CHINESE_QUESTION_FRAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"你(?:是否)?(?P<verb>\p{Han}{2})(?P<body>[^。！？!?\n]{1,48})吗\s*[？?]?")
+        .expect("Chinese question frame regex")
+});
+static ENGLISH_QUESTION_FRAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:do|would|will|can)\s+you\s+(?P<verb>[a-z]{3,16})\b[^.!?\n]{1,80}\?")
+        .expect("English question frame regex")
+});
 
 static ENGLISH_STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
@@ -156,8 +172,9 @@ pub fn extract(text: &str) -> Vec<(String, u64)> {
     let clean = sanitize(text);
     let mut counts = HashMap::<String, u64>::new();
     let mut segment = Vec::<PhraseToken>::new();
+    let phrase_text = collect_sentence_frames(&clean, &mut counts);
 
-    for token in JIEBA.cut(&clean, false) {
+    for token in JIEBA.cut(&phrase_text, false) {
         if token.word.chars().all(char::is_whitespace) {
             continue;
         }
@@ -221,7 +238,10 @@ pub fn compact(state: &mut ParseState) {
 }
 
 fn sanitize(text: &str) -> String {
-    let without_code = CODE_BLOCK_RE.replace_all(text, " ");
+    let without_attachment_wrapper = CODEX_ATTACHMENT_WRAPPER_RE.replace_all(text, " ");
+    let without_request_heading =
+        CODEX_REQUEST_HEADING_RE.replace_all(&without_attachment_wrapper, " ");
+    let without_code = CODE_BLOCK_RE.replace_all(&without_request_heading, " ");
     let without_inline = INLINE_CODE_RE.replace_all(&without_code, " ");
     let without_urls = URL_RE.replace_all(&without_inline, " ");
     let without_paths = PATH_RE.replace_all(&without_urls, " ");
@@ -245,7 +265,7 @@ fn normalize_token(raw: &str) -> Option<PhraseToken> {
     }
     if text.chars().all(is_chinese) {
         let count = text.chars().count();
-        if count > 8 {
+        if count > 12 {
             return None;
         }
         return Some(PhraseToken {
@@ -279,7 +299,7 @@ fn normalize_token(raw: &str) -> Option<PhraseToken> {
 
 fn collect_segment(segment: &[PhraseToken], counts: &mut HashMap<String, u64>) {
     for start in 0..segment.len() {
-        for length in 1..=3 {
+        for length in 1..=MAX_NGRAM_TOKENS {
             let end = start + length;
             if end > segment.len() {
                 break;
@@ -301,9 +321,9 @@ fn collect_segment(segment: &[PhraseToken], counts: &mut HashMap<String, u64>) {
             };
             let characters = phrase.chars().count();
             let valid = match slice[0].kind {
-                TokenKind::Chinese => (2..=8).contains(&characters),
+                TokenKind::Chinese => (3..=12).contains(&characters),
                 TokenKind::English => {
-                    (length > 1 || phrase.len() >= 4)
+                    (2..=MAX_NGRAM_TOKENS).contains(&length)
                         && phrase.len() <= 72
                         && slice.iter().filter(|token| !token.stopword).count() >= 1
                 }
@@ -313,6 +333,31 @@ fn collect_segment(segment: &[PhraseToken], counts: &mut HashMap<String, u64>) {
             }
         }
     }
+}
+
+fn collect_sentence_frames(text: &str, counts: &mut HashMap<String, u64>) -> String {
+    let without_chinese_questions =
+        CHINESE_QUESTION_FRAME_RE.replace_all(text, |captures: &regex::Captures<'_>| {
+            if let Some(verb) = captures.name("verb") {
+                *counts
+                    .entry(format!("你{}……吗", verb.as_str()))
+                    .or_default() += 1;
+            }
+            " "
+        });
+    ENGLISH_QUESTION_FRAME_RE
+        .replace_all(
+            &without_chinese_questions,
+            |captures: &regex::Captures<'_>| {
+                if let Some(verb) = captures.name("verb") {
+                    *counts
+                        .entry(format!("do you {}…?", verb.as_str().to_ascii_lowercase()))
+                        .or_default() += 1;
+                }
+                " "
+            },
+        )
+        .into_owned()
 }
 
 fn local_date(timestamp: &str) -> String {
@@ -356,6 +401,53 @@ mod tests {
         assert!(values.contains("run tests"));
         assert!(!values.iter().any(|phrase| phrase.contains("private")));
         assert!(!values.iter().any(|phrase| phrase.contains("secret")));
+    }
+
+    #[test]
+    fn keeps_complete_verbal_tics_and_collapses_variable_questions() {
+        let phrases = extract(
+            "我会先检查当前状态。你接受这个模型归属规则吗？\
+             你是否接受把词云移到洞察页吗？",
+        );
+        let values = phrases
+            .iter()
+            .map(|(phrase, _)| phrase.as_str())
+            .collect::<HashSet<_>>();
+        assert!(values.contains("我会先"));
+        assert!(!values.contains("我会"));
+        assert!(values.contains("你接受……吗"));
+        assert!(!values.contains("接受"));
+    }
+
+    #[test]
+    fn extracts_an_english_question_frame_without_retaining_the_variable_body() {
+        let phrases = extract("Do you accept this model attribution rule?");
+        let values = phrases
+            .iter()
+            .map(|(phrase, _)| phrase.as_str())
+            .collect::<HashSet<_>>();
+        assert!(values.contains("do you accept…?"));
+        assert!(!values.iter().any(|phrase| phrase.contains("attribution")));
+    }
+
+    #[test]
+    fn removes_codex_transport_scaffolding_without_dropping_the_request() {
+        let phrases = extract(
+            "# Files mentioned by the user:\n\n\
+             ## screenshot.png: /tmp/screenshot.png\n\n\
+             ## My request for Codex:\n\
+             Please implement this plan.",
+        );
+        let values = phrases
+            .iter()
+            .map(|(phrase, _)| phrase.as_str())
+            .collect::<HashSet<_>>();
+        assert!(values.contains("please implement this plan"));
+        assert!(
+            !values
+                .iter()
+                .any(|phrase| phrase.contains("my request") || phrase.contains("codex"))
+        );
     }
 
     #[test]

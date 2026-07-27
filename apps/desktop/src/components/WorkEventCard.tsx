@@ -21,7 +21,7 @@ export function WorkEventCard({ task, locale, selected = false, onSelect, onOpen
       : t("task.singleSession");
 
   return (
-    <article className={`task-card event-card ${task.worthReviewing ? "needs-review" : ""}`}>
+    <article className={`task-card event-card ${task.worthReviewing ? "needs-attention" : ""}`}>
       <header>
         <span className="task-header-left">
           {onSelect ? <input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} aria-label={t("task.selected", { count: selected ? 1 : 0 })} /> : null}

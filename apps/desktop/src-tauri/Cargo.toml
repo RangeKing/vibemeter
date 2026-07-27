@@ -39,9 +39,11 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 walkdir = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 objc2 = "0.6.2"
-objc2-app-kit = { version = "0.3.2", features = ["NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSEvent", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace"] }
 objc2-foundation = "0.3.2"
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 [dev-dependencies]
 tempfile = "3"

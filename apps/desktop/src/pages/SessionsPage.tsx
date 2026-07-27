@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "../components/RangePicker";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "../components/ui";
@@ -9,7 +9,7 @@ import { formatCompact, formatDateTime, formatDuration, tokenTotal } from "../li
 import { useUiStore } from "../store";
 import type { Locale, SessionDetail, SessionSummary } from "../types";
 
-function deservesReview(session: SessionSummary): boolean {
+function needsAttention(session: SessionSummary): boolean {
   return session.errors >= 3 || session.retries >= 2 || (session.activeSeconds >= 1_800 && session.filesTouched > 0 && session.verificationState !== "verified");
 }
 
@@ -94,20 +94,25 @@ export function SessionsPage({ locale }: { locale: Locale }) {
   const [model, setModel] = useState("");
   const [project, setProject] = useState("");
   const [state, setState] = useState("");
-  const [worthOnly, setWorthOnly] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const [codeOnly, setCodeOnly] = useState(false);
   const [commitOnly, setCommitOnly] = useState(false);
   const query = useQuery({ queryKey: ["sessions", range, agent, search], queryFn: () => api.sessions(range, agent || undefined, search || undefined, 0, 200) });
   const detail = useQuery({ queryKey: ["session", selectedId], queryFn: () => api.sessionDetail(selectedId ?? ""), enabled: Boolean(selectedId) });
+  useEffect(() => {
+    // Entering the ledger should discover transcript growth immediately instead
+    // of waiting for the next background indexing interval.
+    void api.refreshIndex(false);
+  }, []);
   const projects = useMemo(() => [...new Set((query.data?.items ?? []).map((item) => item.projectLabel).filter(Boolean))].sort(), [query.data?.items]);
   const models = useMemo(() => [...new Set((query.data?.items ?? []).map((item) => item.model).filter((item): item is string => Boolean(item)))].sort(), [query.data?.items]);
   const items = useMemo(() => (query.data?.items ?? []).filter((item) =>
     (!project || item.projectLabel === project)
     && (!model || item.model === model)
     && (!state || item.verificationState === state)
-    && (!worthOnly || deservesReview(item))
+    && (!attentionOnly || needsAttention(item))
     && (!codeOnly || item.filesTouched > 0)
-    && (!commitOnly || item.hasCommit)), [codeOnly, commitOnly, model, project, query.data?.items, state, worthOnly]);
+    && (!commitOnly || item.hasCommit)), [attentionOnly, codeOnly, commitOnly, model, project, query.data?.items, state]);
 
   return (
     <div className={`page sessions-page ${selectedId ? "showing-replay" : ""}`}>
@@ -119,7 +124,7 @@ export function SessionsPage({ locale }: { locale: Locale }) {
           <select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{t("sessions.allModels")}</option>{models.map((item) => <option key={item}>{item}</option>)}</select>
           <select value={project} onChange={(event) => setProject(event.target.value)}><option value="">{t("sessions.allProjects")}</option>{projects.map((item) => <option key={item}>{item}</option>)}</select>
           <select value={state} onChange={(event) => setState(event.target.value)}><option value="">{t("sessions.allStates")}</option><option value="verified">{t("sessions.verification.verified")}</option><option value="unverified">{t("sessions.verification.unverified")}</option><option value="not-applicable">{t("sessions.verification.not-applicable")}</option></select>
-          <label className="filter-check"><input type="checkbox" checked={worthOnly} onChange={(event) => setWorthOnly(event.target.checked)} />{t("sessions.worthOnly")}</label>
+          <label className="filter-check"><input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />{t("sessions.attentionOnly")}</label>
           <label className="filter-check"><input type="checkbox" checked={codeOnly} onChange={(event) => setCodeOnly(event.target.checked)} />{t("sessions.codeOnly")}</label>
           <label className="filter-check"><input type="checkbox" checked={commitOnly} onChange={(event) => setCommitOnly(event.target.checked)} />{t("sessions.commitOnly")}</label>
           <span className="result-count">{t("sessions.resultCount", { count: items.length })}</span>

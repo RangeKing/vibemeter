@@ -2,17 +2,17 @@
 
 > Track your agents. Discover your coding type.
 
-VibeMeter is a local-first macOS activity tracker for AI coding. It shows live Claude Code and Codex status in the MacBook Notch and menu bar, turns local agent sessions into traceable analytics and reviews, and builds an evolving VCTI profile from observed behavior.
+VibeMeter is a local-first macOS activity tracker for AI coding. It shows live Claude Code and Codex status in the MacBook Notch and menu bar, turns local agent sessions into traceable analytics and replay, and builds an evolving VCTI profile from observed behavior.
 
 ![VibeMeter icon](vibemeter.png)
 
 ## Core surfaces
 
 - **Live:** See whether Claude Code or Codex is running, waiting, in error, or complete. Jump back to the source app or terminal without approving requests or sending prompts.
-- **Data:** Review sessions, tokens, time, cost, models, tools, activity, and work events. “My Catchphrases” and “Agent Catchphrases” are derived locally without an LLM.
+- **Data:** Review sessions, tokens, time, cost, models, tools, activity, and work events.
 - **VCTI:** Build an evidence-bound AI coding profile with explicit dimensions, confidence, and supporting behavior. Insufficient data stays insufficient.
 
-Sessions, Aftervibe post-session reviews, Insights, Share, Sources, and Settings remain available as secondary capabilities.
+Insights, Sessions, Share, Sources, and Settings remain available as secondary capabilities. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. Catchphrase evidence lives in Insights and is derived locally without an LLM. `aftervibe` remains only as a legacy database migration identifier.
 
 ## Live monitoring
 
@@ -22,20 +22,25 @@ After onboarding, VibeMeter can install managed local hooks for detected Claude 
 - an existing configuration is backed up before the first change;
 - the managed script sends events to a `0600` Unix socket under `~/.vibemeter`;
 - the Notch shows structured status only, never raw prompts, commands, code, paths, or tool output;
-- notifications are limited to waiting and error transitions while the source is in the background;
+- Codex phase refinement reads only event type, collaboration mode, tool name, and lifecycle timestamps—not prompts, responses, reasoning, code, paths, or tool arguments;
+- background waiting and error transitions send silent notifications; background CLI completion may notify, while Codex Desktop completion never receives a duplicate VibeMeter notification;
 - repair and uninstall touch only VibeMeter-managed entries.
 
-Notch and menu-bar visibility can be controlled independently. Macs without a physical Notch keep the menu-bar and main-window paths.
+The Notch disappears into the physical cutout while idle. During activity, a compact left wing shows Codex and Claude Code instance counts and the right wing shows one highest-priority state. Click or deliberately hover over the cutout/wings for about 300 ms to expand. A hover-opened panel collapses about 500 ms after exit; clicking elsewhere also collapses unless that expansion is temporarily pinned. Manual close and app restart reset the pin. Notch and menu-bar visibility can be controlled independently. Macs without a physical Notch keep the menu-bar and main-window paths.
 
 ## Catchphrases
 
-Historical source text is scanned transiently in local memory. VibeMeter stores only derived phrase counts, session counts, and Agent attribution:
+Historical source text is scanned transiently in local memory. VibeMeter stores only derived phrase counts, session counts, and source attribution:
 
-- Chinese candidates contain 2–8 characters; English candidates contain 1–3 words;
+- Chinese candidates contain 3–12 characters; English candidates contain 2–5 words;
+- variable yes/no questions may be collapsed to a safe frame such as `你接受……吗` or `do you accept…?`; the variable body is not retained;
 - a phrase must repeat across multiple sessions;
 - code, paths, secret-like values, tool output, markup, punctuation-only tokens, and stopwords are filtered;
+- client-generated transport scaffolding, including Codex attachment manifests and `My request for Codex` headings, is filtered;
+- nested phrases with substantially overlapping session evidence are collapsed to the most complete expression;
+- each role exposes at most eight phrases;
 - font size represents frequency;
-- Agent phrase backgrounds identify the dominant source, with a legend and hover attribution.
+- Agent phrase backgrounds identify the dominant source; attribution prefers the recorded model and falls back to the Agent.
 
 Raw live-hook envelopes are retained for at most 90 days. Long-term VCTI and activity features use derived metrics.
 
@@ -46,7 +51,6 @@ Raw live-hook envelopes are retained for at most 90 days. Long-term VCTI and act
 - First launch copies the aftervibe database when available, otherwise the legacy TokenGraph database, using SQLite online backup.
 - Git evidence and account-level Cursor usage remain opt-in and separate from local VCTI/session analytics.
 - Share Guard blocks secret-like strings and absolute paths before export.
-- Deep review sends only the bounded payload shown on its confirmation screen.
 
 See [docs/privacy.md](docs/privacy.md) and [docs/vibemeter-migration.md](docs/vibemeter-migration.md).
 

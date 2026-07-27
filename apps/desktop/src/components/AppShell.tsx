@@ -1,7 +1,6 @@
 import {
   BarChart3,
   Database,
-  FileSearch2,
   History,
   Lightbulb,
   ScanFace,
@@ -23,9 +22,8 @@ const primary: Array<{ id: PageKey; icon: typeof Sparkles }> = [
 ];
 
 const history: Array<{ id: PageKey; icon: typeof Sparkles }> = [
-  { id: "sessions", icon: History },
-  { id: "reviews", icon: FileSearch2 },
   { id: "insights", icon: Lightbulb },
+  { id: "sessions", icon: History },
 ];
 
 const utility: Array<{ id: PageKey; icon: typeof Sparkles }> = [

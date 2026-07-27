@@ -4,12 +4,8 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         ("zh-CN", "template.developer-wrapped") => "开发者阶段回顾",
         ("zh-CN", "template.agent-comparison") => "Agent 对比",
         ("zh-CN", "template.session-recap") => "会话用量回顾",
-        ("zh-CN", "template.daily-review") => "每日复盘",
-        ("zh-CN", "template.session-breakdown") => "会话拆解",
-        ("zh-CN", "template.weekly-recap") => "每周回顾",
-        ("zh-CN", "template.ship-card") => "交付卡",
         ("zh-CN", "template.vcti-card") => "VCTI 人格身份卡",
-        ("zh-CN", "template.catchphrases") => "口头禅",
+        ("zh-CN", "template.catchphrases") => "它最离不开的一句",
         ("zh-CN", "metric.sessions") => "会话",
         ("zh-CN", "metric.duration") => "使用时长",
         ("zh-CN", "metric.tokens") => "Token 总量",
@@ -41,23 +37,20 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         ("zh-CN", "label.real-data") => "本机真实数据",
         ("zh-CN", "label.observed") => "已观测",
         ("zh-CN", "label.estimated") => "估算",
-        ("zh-CN", "label.daily-review") => "01 / 今日复盘",
         ("zh-CN", "label.usage-overview") => "DATA 01 / 使用概览",
         ("zh-CN", "label.developer-wrapped") => "DATA 02 / 开发者回顾",
         ("zh-CN", "label.agent-comparison") => "DATA 03 / AGENT 对比",
         ("zh-CN", "label.session-recap") => "DATA 04 / 会话用量",
-        ("zh-CN", "label.session-breakdown") => "02 / 过程证据",
-        ("zh-CN", "label.weekly-recap") => "03 / 本周脉络",
-        ("zh-CN", "label.ship-card") => "04 / 交付回执",
         ("zh-CN", "label.vcti-card") => "VCTI / 真实行为人格",
-        ("zh-CN", "label.catchphrases") => "VOICE / 口头禅画像",
+        ("zh-CN", "label.catchphrases") => "VOICE / 抓包现场",
         ("zh-CN", "catchphrases.mine") => "我的口头禅",
         ("zh-CN", "catchphrases.agent") => "Agent 的口头禅",
-        ("zh-CN", "catchphrases.subtitle") => {
-            "真实会话中反复出现的短语，构成你与 Agent 的协作声纹。"
-        }
+        ("zh-CN", "catchphrases.subtitle") => "从真实会话里，抓出 Agent 反复套用的那句话。",
+        ("zh-CN", "catchphrases.champion") => "冠军口癖",
+        ("zh-CN", "catchphrases.roast") => "不说这句，看来就没法开工。",
+        ("zh-CN", "catchphrases.unknown-source") => "Agent 未记录",
         ("zh-CN", "catchphrases.method") => {
-            "字号代表频次 · Agent 底色代表主要来源 · 仅保留本机派生计数"
+            "原话 · 重复次数 · 跨会话统计 · 模型优先归因 · 仅在本机派生"
         }
         ("zh-CN", "catchphrases.insufficient") => "至少需要两个会话重复同一句短语",
         ("zh-CN", "label.focused-build") => "一次有证据的 Vibe Coding 交付",
@@ -86,18 +79,14 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         ("zh-CN", "reason.none") => "延续已有验证节奏，并保留可追溯的交付证据。",
         ("zh-CN", "empty.title") => "所选范围暂无有效会话",
         ("zh-CN", "empty.body") => "调整统计范围，或等待本地数据完成索引。",
-        ("zh-CN", "brand.tagline") => "复盘你的 Vibe Coding。",
+        ("zh-CN", "brand.tagline") => "量化你的 Vibe Coding。",
 
         (_, "template.usage-overview") => "Usage Overview",
         (_, "template.developer-wrapped") => "Developer Wrapped",
         (_, "template.agent-comparison") => "Agent Comparison",
         (_, "template.session-recap") => "Session Recap",
-        (_, "template.daily-review") => "Daily Review",
-        (_, "template.session-breakdown") => "Session Breakdown",
-        (_, "template.weekly-recap") => "Weekly Recap",
-        (_, "template.ship-card") => "Ship Card",
         (_, "template.vcti-card") => "VCTI Identity Card",
-        (_, "template.catchphrases") => "Catchphrases",
+        (_, "template.catchphrases") => "The line it can't quit",
         (_, "metric.sessions") => "Sessions",
         (_, "metric.duration") => "Time with agents",
         (_, "metric.tokens") => "Total tokens",
@@ -133,19 +122,16 @@ pub fn text(locale: &str, key: &str) -> &'static str {
         (_, "label.developer-wrapped") => "DATA 02 / DEVELOPER WRAPPED",
         (_, "label.agent-comparison") => "DATA 03 / AGENT COMPARISON",
         (_, "label.session-recap") => "DATA 04 / SESSION USAGE",
-        (_, "label.daily-review") => "01 / DAILY REVIEW",
-        (_, "label.session-breakdown") => "02 / PROCESS EVIDENCE",
-        (_, "label.weekly-recap") => "03 / WEEKLY THREAD",
-        (_, "label.ship-card") => "04 / SHIP RECEIPT",
         (_, "label.vcti-card") => "VCTI / BEHAVIOR IDENTITY",
-        (_, "label.catchphrases") => "VOICE / CATCHPHRASE FINGERPRINT",
+        (_, "label.catchphrases") => "VOICE / CAUGHT IN THE ACT",
         (_, "catchphrases.mine") => "My Catchphrases",
         (_, "catchphrases.agent") => "Agent Catchphrases",
-        (_, "catchphrases.subtitle") => {
-            "Repeated phrases from real sessions become a fingerprint of how you and your agents work."
-        }
+        (_, "catchphrases.subtitle") => "The line your agent keeps recycling across real sessions.",
+        (_, "catchphrases.champion") => "CHAMPION VERBAL TIC",
+        (_, "catchphrases.roast") => "Apparently, work cannot start until it says this.",
+        (_, "catchphrases.unknown-source") => "Agent not recorded",
         (_, "catchphrases.method") => {
-            "Size shows frequency · Agent color shows the dominant source · Derived locally"
+            "Exact line · repeats · sessions · model-first attribution · derived locally"
         }
         (_, "catchphrases.insufficient") => "A phrase must repeat across at least two sessions",
         (_, "label.focused-build") => "An evidence-backed vibe coding delivery",
@@ -325,101 +311,6 @@ pub fn session_recap_summary(locale: &str, agent: &str, tokens: u64) -> String {
             format_number(locale, tokens)
         )
     }
-}
-
-pub fn daily_review_summary(locale: &str, tasks: u64, verified: u64) -> String {
-    if normalize_locale(locale) == "zh-CN" {
-        format!(
-            "今天识别出 {} 项任务，其中 {} 项具备验证或提交证据。",
-            grouped(tasks, ','),
-            grouped(verified, ',')
-        )
-    } else {
-        format!(
-            "{} task threads today; {} carry verification or commit evidence.",
-            grouped(tasks, ','),
-            grouped(verified, ',')
-        )
-    }
-}
-
-pub fn weekly_review_summary(locale: &str, tasks: u64, verified: u64) -> String {
-    if normalize_locale(locale) == "zh-CN" {
-        format!(
-            "本周识别出 {} 项任务，{} 项留下了可追溯结果。",
-            grouped(tasks, ','),
-            grouped(verified, ',')
-        )
-    } else {
-        format!(
-            "{} task threads this week; {} left traceable results.",
-            grouped(tasks, ','),
-            grouped(verified, ',')
-        )
-    }
-}
-
-pub fn session_breakdown_summary(locale: &str, agent: &str, phases: u64) -> String {
-    if normalize_locale(locale) == "zh-CN" {
-        format!(
-            "沿真实事件还原与 {agent} 协作的 {} 个过程阶段。",
-            grouped(phases, ',')
-        )
-    } else {
-        format!(
-            "{} observed process phases reconstructed from the work with {agent}.",
-            grouped(phases, ',')
-        )
-    }
-}
-
-pub fn ship_summary(locale: &str, agent: &str, files: u64, commits: u64) -> String {
-    if normalize_locale(locale) == "zh-CN" {
-        format!(
-            "与 {agent} 完成的交付：{} 个文件，{} 条匹配提交。",
-            grouped(files, ','),
-            grouped(commits, ',')
-        )
-    } else {
-        format!(
-            "Delivered with {agent}: {} files and {} matching commits.",
-            grouped(files, ','),
-            grouped(commits, ',')
-        )
-    }
-}
-
-pub fn status(locale: &str, value: &str) -> &'static str {
-    let key = match value {
-        "verified" => "status.verified",
-        "changed" | "unverified" => "status.changed",
-        "blocked" => "status.blocked",
-        _ => "status.unverified",
-    };
-    text(locale, key)
-}
-
-pub fn phase(locale: &str, value: &str) -> &'static str {
-    let key = match value {
-        "prompt" | "understand" => "phase.understand",
-        "explore" => "phase.explore",
-        "edit" => "phase.edit",
-        "verify" => "phase.verify",
-        "recover" => "phase.recover",
-        _ => "phase.other",
-    };
-    text(locale, key)
-}
-
-pub fn review_reason(locale: &str, value: Option<&str>) -> &'static str {
-    let key = match value {
-        Some("today.reason.highTokenLowOutput") => "reason.highTokenLowOutput",
-        Some("today.reason.repeatedFileEdits") => "reason.repeatedFileEdits",
-        Some("today.reason.repeatedErrors") => "reason.repeatedErrors",
-        Some("today.reason.longWithoutVerification") => "reason.longWithoutVerification",
-        _ => "reason.none",
-    };
-    text(locale, key)
 }
 
 fn compact_decimal(value: f64, suffix: &str) -> String {

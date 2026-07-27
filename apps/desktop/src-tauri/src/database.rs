@@ -1,18 +1,15 @@
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     AgentKind, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem, CoverageNotice,
-    DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, GenerateReviewRequest,
-    GitCommitEvidence, GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem,
-    InsightStat, InsightsResponse, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount,
-    PhraseCloud, PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PlaybookItem,
-    ProcessPhase, ProjectControl, Provenance, ReviewContent, ReviewDocument, ReviewFinding,
-    ReviewsResponse, SavePlaybookRequest, SessionDetail, SessionSummary, SessionsResponse,
-    SourceStatus, TaskSummary, TodayInsight, TodayResponse, TokenUsage, UpdateReviewRequest,
-    VctiProfile,
+    DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, GitCommitEvidence,
+    GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat,
+    InsightsResponse, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount, PhraseCloud,
+    PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
+    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionSummary,
+    SessionsResponse, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
 };
-use crate::review_engine::{self, ReviewEvidence};
-use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
-use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
+use chrono::{DateTime, Duration, Local, Utc};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -395,6 +392,11 @@ CREATE TABLE IF NOT EXISTS live_session_metrics (
 PRAGMA user_version = 8;
 "#;
 
+const MIGRATION_V9: &str = r#"
+ALTER TABLE sources ADD COLUMN selected INTEGER NOT NULL DEFAULT 1;
+PRAGMA user_version = 9;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -439,6 +441,9 @@ impl Database {
         }
         if version < 8 {
             connection.execute_batch(MIGRATION_V8)?;
+        }
+        if version < 9 {
+            connection.execute_batch(MIGRATION_V9)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -773,6 +778,26 @@ impl Database {
         Ok(())
     }
 
+    pub fn set_source_selected(&self, agent: &str, selected: bool) -> AppResult<()> {
+        if !matches!(
+            agent,
+            "claude-code" | "codex" | "kimi-code" | "cursor" | "openclaw" | "hermes"
+        ) {
+            return Err(AppError::InvalidRequest("unknown data source".into()));
+        }
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE sources SET selected=?1 WHERE agent=?2 AND available=1",
+            params![selected, agent],
+        )?;
+        if changed == 0 {
+            return Err(AppError::InvalidRequest(
+                "data source is not available on this Mac".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn prune_evidence(&self) -> AppResult<()> {
         let connection = self.connect()?;
         let days = connection
@@ -985,7 +1010,11 @@ impl Database {
         let recent_sessions =
             query_session_rows(&connection, &start_timestamp, None, None, 0, 8)?.0;
         let warning_count = connection.query_row(
-            "SELECT COALESCE(SUM(count), 0) FROM parser_warnings",
+            "SELECT COALESCE(SUM(count), 0) FROM parser_warnings
+             WHERE NOT EXISTS(SELECT 1 FROM sources)
+                OR agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )",
             [],
             |row| read_u64(row, 0),
         )?;
@@ -1117,6 +1146,58 @@ impl Database {
             "DELETE FROM live_events WHERE expires_at<?1",
             params![Utc::now().to_rfc3339()],
         )?;
+        Ok(removed as u64)
+    }
+
+    pub fn purge_misattributed_cursor_live_events(&self) -> AppResult<u64> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let cursor_marker = "\"cursor_version\"";
+        transaction.execute(
+            "DELETE FROM live_session_metrics
+             WHERE agent='claude-code'
+               AND source_session_id IN (
+                   SELECT DISTINCT source_session_id
+                   FROM live_events
+                   WHERE agent='claude-code'
+                     AND instr(payload_json, ?1)>0
+               )",
+            params![cursor_marker],
+        )?;
+        let removed = transaction.execute(
+            "DELETE FROM live_events
+             WHERE agent='claude-code'
+               AND instr(payload_json, ?1)>0",
+            params![cursor_marker],
+        )?;
+        transaction.commit()?;
+        Ok(removed as u64)
+    }
+
+    pub fn purge_codex_memory_live_events(&self) -> AppResult<u64> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let memory_marker = "/.codex/memories";
+        transaction.execute(
+            "DELETE FROM live_session_metrics
+             WHERE agent='codex'
+               AND source_session_id IN (
+                   SELECT DISTINCT source_session_id
+                   FROM live_events
+                   WHERE agent='codex'
+                     AND project_label='memories'
+                     AND instr(payload_json, ?1)>0
+               )",
+            params![memory_marker],
+        )?;
+        let removed = transaction.execute(
+            "DELETE FROM live_events
+             WHERE agent='codex'
+               AND project_label='memories'
+               AND instr(payload_json, ?1)>0",
+            params![memory_marker],
+        )?;
+        transaction.commit()?;
         Ok(removed as u64)
     }
 
@@ -1252,59 +1333,6 @@ impl Database {
         Ok(profile)
     }
 
-    pub fn today(&self, index_status: IndexStatus) -> AppResult<TodayResponse> {
-        let connection = self.connect()?;
-        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
-        let start_timestamp = format!("{date}T00:00:00Z");
-        let tasks = query_tasks(&connection, &start_timestamp, 24)?;
-        let worth_reviewing = tasks
-            .iter()
-            .filter(|task| task.worth_reviewing)
-            .take(4)
-            .cloned()
-            .collect::<Vec<_>>();
-        let totals = query_overview_totals(&connection, &start_timestamp, &date)?;
-        let mut insights = Vec::new();
-        if let Some(task) = tasks.iter().find(|task| task.has_commit) {
-            insights.push(TodayInsight {
-                id: "verified-delivery".into(),
-                tier: "fact".into(),
-                message_key: "today.insight.verifiedDelivery".into(),
-                value: None,
-                evidence: vec![EvidenceReference {
-                    kind: "task".into(),
-                    id: task.id.clone(),
-                    label: task.title.clone(),
-                }],
-            });
-        }
-        if let Some(task) = worth_reviewing.first() {
-            insights.push(TodayInsight {
-                id: "review-focus".into(),
-                tier: "inference".into(),
-                message_key: task
-                    .review_reason_keys
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "today.insight.reviewFocus".into()),
-                value: None,
-                evidence: vec![EvidenceReference {
-                    kind: "task".into(),
-                    id: task.id.clone(),
-                    label: task.title.clone(),
-                }],
-            });
-        }
-        Ok(TodayResponse {
-            date,
-            tasks,
-            worth_reviewing,
-            insights,
-            totals,
-            index_status,
-        })
-    }
-
     pub fn tasks(&self, range: &str) -> AppResult<Vec<TaskSummary>> {
         let connection = self.connect()?;
         query_tasks(
@@ -1406,268 +1434,6 @@ impl Database {
         )?;
         transaction.commit()?;
         Ok(task_id)
-    }
-
-    pub fn reviews(
-        &self,
-        review_type: Option<&str>,
-        target_id: Option<&str>,
-    ) -> AppResult<ReviewsResponse> {
-        let connection = self.connect()?;
-        let mut statement = connection.prepare(
-            "SELECT id, review_type, target_id, locale, version, status, title,
-                    outcome, what_happened, what_worked, friction, lessons,
-                    next_run, user_edited, source_excluded, created_at, updated_at
-             FROM reviews
-             WHERE (?1='' OR review_type=?1) AND (?2='' OR target_id=?2)
-             ORDER BY updated_at DESC, version DESC",
-        )?;
-        let mut items = statement
-            .query_map(
-                params![review_type.unwrap_or(""), target_id.unwrap_or("")],
-                review_from_row,
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        for review in &mut items {
-            review.findings = query_review_findings(&connection, &review.id)?;
-        }
-        Ok(ReviewsResponse { items })
-    }
-
-    pub fn generate_review(&self, request: &GenerateReviewRequest) -> AppResult<ReviewDocument> {
-        if !matches!(request.locale.as_str(), "en-US" | "zh-CN") {
-            return Err(AppError::InvalidRequest("unsupported review locale".into()));
-        }
-        if !matches!(
-            request.review_type.as_str(),
-            "task" | "session" | "daily" | "weekly"
-        ) {
-            return Err(AppError::InvalidRequest("unsupported review type".into()));
-        }
-        let mut connection = self.connect()?;
-        let evidence =
-            query_review_evidence(&connection, &request.review_type, &request.target_id)?;
-        let (title, content, findings) =
-            review_engine::generate(&request.locale, &request.review_type, &evidence);
-        persist_review_document(
-            &mut connection,
-            &request.review_type,
-            &request.target_id,
-            &request.locale,
-            title,
-            content,
-            findings,
-        )
-    }
-
-    pub fn deep_review_payload(&self, task_id: &str, locale: &str) -> AppResult<(String, String)> {
-        if !matches!(locale, "en-US" | "zh-CN") {
-            return Err(AppError::InvalidRequest("unsupported review locale".into()));
-        }
-        let connection = self.connect()?;
-        let (title, project_label, session_count) = connection
-            .query_row(
-                "SELECT title, project_label,
-                    (SELECT COUNT(*) FROM task_sessions ts WHERE ts.task_id=tasks.id)
-                 FROM tasks WHERE id=?1",
-                params![task_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        read_u64(row, 2)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or_else(|| AppError::InvalidRequest("task not found".into()))?;
-
-        let mut session_statement = connection.prepare(
-            "SELECT s.agent, COALESCE(s.model,''), s.started_at,
-                    COALESCE(s.ended_at,''), COALESCE(s.prompt_excerpt,''),
-                    COALESCE(s.result_excerpt,''), s.tool_calls,
-                    s.verification_events, s.files_touched, s.lines_added,
-                    s.lines_deleted, s.errors, s.retries
-             FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id
-             WHERE ts.task_id=?1 ORDER BY s.started_at DESC LIMIT 30",
-        )?;
-        let sessions = session_statement
-            .query_map(params![task_id], |row| {
-                Ok(serde_json::json!({
-                    "agent": row.get::<_, String>(0)?,
-                    "model": row.get::<_, String>(1)?,
-                    "startedAt": row.get::<_, String>(2)?,
-                    "endedAt": row.get::<_, String>(3)?,
-                    "objective": row.get::<_, String>(4)?,
-                    "observedFinalResponse": row.get::<_, String>(5)?,
-                    "toolCalls": read_u64(row, 6)?,
-                    "verificationEvents": read_u64(row, 7)?,
-                    "filesTouched": read_u64(row, 8)?,
-                    "linesAdded": read_u64(row, 9)?,
-                    "linesDeleted": read_u64(row, 10)?,
-                    "errors": read_u64(row, 11)?,
-                    "retries": read_u64(row, 12)?,
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(session_statement);
-
-        let mut tool_statement = connection.prepare(
-            "SELECT tu.tool, SUM(tu.count) FROM tool_usage tu
-             JOIN task_sessions ts ON ts.session_id=tu.session_id
-             WHERE ts.task_id=?1 GROUP BY tu.tool ORDER BY 2 DESC LIMIT 20",
-        )?;
-        let tools = tool_statement
-            .query_map(params![task_id], |row| {
-                Ok(serde_json::json!({
-                    "name": row.get::<_, String>(0)?,
-                    "count": read_u64(row, 1)?,
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(tool_statement);
-
-        let mut file_statement = connection.prepare(
-            "SELECT fc.path, SUM(fc.lines_added), SUM(fc.lines_deleted),
-                    SUM(fc.modification_count)
-             FROM file_changes fc JOIN task_sessions ts ON ts.session_id=fc.session_id
-             WHERE ts.task_id=?1 GROUP BY fc.path ORDER BY 4 DESC LIMIT 30",
-        )?;
-        let files = file_statement
-            .query_map(params![task_id], |row| {
-                Ok(serde_json::json!({
-                    "path": row.get::<_, String>(0)?,
-                    "linesAdded": read_u64(row, 1)?,
-                    "linesDeleted": read_u64(row, 2)?,
-                    "observedEdits": read_u64(row, 3)?,
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(file_statement);
-
-        let mut commit_statement = connection.prepare(
-            "SELECT gc.subject, gc.committed_at FROM git_commits gc
-             JOIN task_sessions ts ON ts.session_id=gc.session_id
-             WHERE ts.task_id=?1 ORDER BY gc.committed_at DESC LIMIT 20",
-        )?;
-        let commits = commit_statement
-            .query_map(params![task_id], |row| {
-                Ok(serde_json::json!({
-                    "subject": row.get::<_, String>(0)?,
-                    "committedAt": row.get::<_, String>(1)?,
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let payload = serde_json::to_string_pretty(&serde_json::json!({
-            "reviewLanguage": locale,
-            "task": {
-                "title": title.clone(),
-                "project": project_label,
-                "sessionCount": session_count,
-                "includedSessionCount": sessions.len(),
-            },
-            "sessions": sessions,
-            "toolSummary": tools,
-            "fileSummary": files,
-            "commitSummary": commits,
-            "privacyBoundary": "Bounded excerpts and project-relative evidence only. No full transcripts, raw code, absolute paths, or credentials.",
-        }))?;
-        Ok((title, payload))
-    }
-
-    pub fn save_deep_review(
-        &self,
-        task_id: &str,
-        locale: &str,
-        title: String,
-        content: ReviewContent,
-    ) -> AppResult<ReviewDocument> {
-        let mut connection = self.connect()?;
-        persist_review_document(
-            &mut connection,
-            "task",
-            task_id,
-            locale,
-            title,
-            content,
-            Vec::new(),
-        )
-    }
-
-    pub fn accept_review(&self, id: &str) -> AppResult<()> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction()?;
-        let group = transaction
-            .query_row(
-                "SELECT review_type, target_id, locale FROM reviews WHERE id=?1",
-                params![id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or_else(|| AppError::InvalidRequest("review not found".into()))?;
-        transaction.execute(
-            "UPDATE reviews SET status='archived', updated_at=?4
-             WHERE review_type=?1 AND target_id=?2 AND locale=?3 AND status='current'",
-            params![group.0, group.1, group.2, Utc::now().to_rfc3339()],
-        )?;
-        transaction.execute(
-            "UPDATE reviews SET status='current', updated_at=?2 WHERE id=?1",
-            params![id, Utc::now().to_rfc3339()],
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    pub fn update_review(&self, request: &UpdateReviewRequest) -> AppResult<()> {
-        let connection = self.connect()?;
-        let changed = connection.execute(
-            "UPDATE reviews SET title=?2, outcome=?3, what_happened=?4,
-                what_worked=?5, friction=?6, lessons=?7, next_run=?8,
-                user_edited=1, updated_at=?9 WHERE id=?1",
-            params![
-                request.id,
-                request.title,
-                request.content.outcome,
-                request.content.what_happened,
-                request.content.what_worked,
-                request.content.friction,
-                request.content.lessons,
-                request.content.next_run,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-        if changed == 0 {
-            return Err(AppError::InvalidRequest("review not found".into()));
-        }
-        Ok(())
-    }
-
-    pub fn delete_review(&self, id: &str) -> AppResult<()> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction()?;
-        let exists = transaction
-            .query_row("SELECT 1 FROM reviews WHERE id=?1", params![id], |_| {
-                Ok(1u8)
-            })
-            .optional()?
-            .is_some();
-        if !exists {
-            return Err(AppError::InvalidRequest("review not found".into()));
-        }
-        transaction.execute(
-            "DELETE FROM review_findings WHERE review_id=?1",
-            params![id],
-        )?;
-        transaction.execute("DELETE FROM reviews WHERE id=?1", params![id])?;
-        transaction.commit()?;
-        Ok(())
     }
 
     pub fn playbook_items(&self, search: Option<&str>) -> AppResult<Vec<PlaybookItem>> {
@@ -2118,12 +1884,12 @@ impl Database {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
             "SELECT agent, available, capability_level, session_count, last_indexed_at,
-                    status, warning_count, path_hash
+                    status, warning_count, selected, path_hash
              FROM sources ORDER BY CASE agent WHEN 'claude-code' THEN 0 ELSE 1 END",
         )?;
         let mut items = statement
             .query_map([], |row| {
-                let path_hash: String = row.get(7)?;
+                let path_hash: String = row.get(8)?;
                 Ok(SourceStatus {
                     agent: row.get(0)?,
                     available: row.get::<_, i64>(1)? != 0,
@@ -2132,6 +1898,7 @@ impl Database {
                     last_indexed_at: row.get(4)?,
                     status: row.get(5)?,
                     warning_count: read_u64(row, 6)?,
+                    selected: row.get::<_, i64>(7)? != 0,
                     path_label: path_hash.chars().take(6).collect(),
                 })
             })?
@@ -2153,6 +1920,7 @@ impl Database {
                     last_indexed_at: None,
                     status: status.into(),
                     warning_count: 0,
+                    selected: false,
                     path_label: String::new(),
                 });
             }
@@ -2791,7 +2559,9 @@ fn query_phrase_cloud(
     struct PendingPhrase {
         occurrences: u64,
         session_count: u64,
+        session_ids: HashSet<String>,
         agents: BTreeMap<String, (u64, u64)>,
+        models: BTreeMap<String, (u64, u64)>,
     }
 
     let sample_sessions = connection.query_row(
@@ -2801,40 +2571,68 @@ fn query_phrase_cloud(
         |row| read_u64(row, 0),
     )?;
     let mut statement = connection.prepare(
-        "SELECT phrase, agent, COALESCE(SUM(occurrences), 0),
-                COUNT(DISTINCT session_id)
-         FROM phrase_usage
-         WHERE date>=?1 AND role=?2
-         GROUP BY phrase, agent
-         ORDER BY phrase, agent",
+        "SELECT p.phrase, p.agent, COALESCE(s.model, ''),
+                COALESCE(SUM(p.occurrences), 0),
+                COUNT(DISTINCT p.session_id),
+                GROUP_CONCAT(DISTINCT p.session_id)
+         FROM phrase_usage p
+         JOIN sessions s ON s.id=p.session_id
+         WHERE p.date>=?1 AND p.role=?2
+         GROUP BY p.phrase, p.agent, COALESCE(s.model, '')
+         ORDER BY p.phrase, p.agent, COALESCE(s.model, '')",
     )?;
     let rows = statement
         .query_map(params![start_date, role], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                read_u64(row, 2)?,
+                row.get::<_, String>(2)?,
                 read_u64(row, 3)?,
+                read_u64(row, 4)?,
+                row.get::<_, Option<String>>(5)?.unwrap_or_default(),
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut grouped = HashMap::<String, PendingPhrase>::new();
-    for (phrase, agent, occurrences, sessions) in rows {
+    for (phrase, agent, model, occurrences, sessions, session_ids) in rows {
         let item = grouped.entry(phrase).or_default();
         item.occurrences = item.occurrences.saturating_add(occurrences);
-        item.session_count = item.session_count.saturating_add(sessions);
-        item.agents.insert(agent, (occurrences, sessions));
+        for session_id in session_ids.split(',').filter(|value| !value.is_empty()) {
+            item.session_ids.insert(session_id.to_string());
+        }
+        let agent_counts = item.agents.entry(agent).or_default();
+        agent_counts.0 = agent_counts.0.saturating_add(occurrences);
+        agent_counts.1 = agent_counts.1.saturating_add(sessions);
+        if !model.is_empty() {
+            let model_counts = item.models.entry(model).or_default();
+            model_counts.0 = model_counts.0.saturating_add(occurrences);
+            model_counts.1 = model_counts.1.saturating_add(sessions);
+        }
+    }
+    for item in grouped.values_mut() {
+        item.session_count = item.session_ids.len() as u64;
     }
 
     let mut scored = grouped
         .into_iter()
-        .filter(|(_, item)| item.session_count >= 2 && item.occurrences >= 2)
-        .map(|(phrase, item)| {
-            let length_factor = 1.0 + (phrase.chars().count().min(12) as f64 / 12.0) * 0.08;
-            let score =
-                item.occurrences as f64 * (1.0 + (item.session_count as f64).ln()) * length_factor;
-            (phrase, item, score)
+        .filter_map(|(phrase, item)| {
+            if item.session_count < 2 || item.occurrences < 2 {
+                return None;
+            }
+            let voice_factor = phrase_voice_factor(&phrase)?;
+            let visible_length = phrase
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .count();
+            let length_factor = 1.0 + visible_length.min(12) as f64 * 0.16;
+            let frame_factor = if phrase.contains('…') { 1.22 } else { 1.0 };
+            let score = (item.occurrences as f64).ln_1p()
+                * (1.0 + (item.session_count as f64).ln())
+                * length_factor
+                * frame_factor
+                * voice_factor;
+            Some((phrase, item, score))
         })
         .collect::<Vec<_>>();
     scored.sort_by(|left, right| {
@@ -2845,15 +2643,113 @@ fn query_phrase_cloud(
             .then_with(|| right.1.occurrences.cmp(&left.1.occurrences))
             .then_with(|| left.0.cmp(&right.0))
     });
-    scored.truncate(32);
+    let remainder = if scored.len() > 128 {
+        scored.split_off(128)
+    } else {
+        Vec::new()
+    };
+    let mut selected = HashSet::<usize>::new();
+    let mut visited = vec![false; scored.len()];
+    for root in 0..scored.len() {
+        if visited[root] {
+            continue;
+        }
+        visited[root] = true;
+        let mut component = vec![root];
+        let mut cursor = 0;
+        while cursor < component.len() {
+            let current = component[cursor];
+            cursor += 1;
+            for candidate in 0..scored.len() {
+                if visited[candidate]
+                    || !nested_phrase_evidence_is_redundant(
+                        &scored[current].0,
+                        &scored[current].1.session_ids,
+                        scored[current].1.occurrences,
+                        &scored[candidate].0,
+                        &scored[candidate].1.session_ids,
+                        scored[candidate].1.occurrences,
+                    )
+                {
+                    continue;
+                }
+                visited[candidate] = true;
+                component.push(candidate);
+            }
+        }
+        let representative = component
+            .into_iter()
+            .max_by(|left, right| {
+                phrase_is_complete(&scored[*left].0)
+                    .cmp(&phrase_is_complete(&scored[*right].0))
+                    .then_with(|| {
+                        phrase_dedup_units(&scored[*left].0)
+                            .len()
+                            .cmp(&phrase_dedup_units(&scored[*right].0).len())
+                    })
+                    .then_with(|| scored[*left].2.total_cmp(&scored[*right].2))
+                    .then_with(|| {
+                        scored[*left]
+                            .1
+                            .occurrences
+                            .cmp(&scored[*right].1.occurrences)
+                    })
+                    .then_with(|| scored[*right].0.cmp(&scored[*left].0))
+            })
+            .expect("phrase component always has a representative");
+        selected.insert(representative);
+    }
+    scored = scored
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| selected.contains(&index).then_some(item))
+        .collect();
+    if scored.len() < 8 {
+        for candidate in remainder {
+            let redundant = scored.iter().any(|retained| {
+                nested_phrase_evidence_is_redundant(
+                    &candidate.0,
+                    &candidate.1.session_ids,
+                    candidate.1.occurrences,
+                    &retained.0,
+                    &retained.1.session_ids,
+                    retained.1.occurrences,
+                )
+            });
+            if !redundant {
+                scored.push(candidate);
+            }
+            if scored.len() >= 8 {
+                break;
+            }
+        }
+    }
+    scored.sort_by(|left, right| {
+        right
+            .2
+            .total_cmp(&left.2)
+            .then_with(|| right.1.session_count.cmp(&left.1.session_count))
+            .then_with(|| right.1.occurrences.cmp(&left.1.occurrences))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    scored.truncate(8);
 
-    let minimum = scored.last().map(|item| item.2).unwrap_or(0.0);
-    let maximum = scored.first().map(|item| item.2).unwrap_or(0.0);
+    let minimum = scored
+        .iter()
+        .map(|item| (item.1.occurrences as f64).ln_1p())
+        .reduce(f64::min)
+        .unwrap_or(0.0);
+    let maximum = scored
+        .iter()
+        .map(|item| (item.1.occurrences as f64).ln_1p())
+        .reduce(f64::max)
+        .unwrap_or(0.0);
     let items = scored
         .into_iter()
-        .map(|(phrase, item, score)| {
+        .map(|(phrase, item, _score)| {
+            let frequency = (item.occurrences as f64).ln_1p();
             let weight = if maximum > minimum {
-                0.36 + ((score - minimum) / (maximum - minimum)) * 0.64
+                0.36 + ((frequency - minimum) / (maximum - minimum)) * 0.64
             } else {
                 0.68
             };
@@ -2862,6 +2758,15 @@ fn query_phrase_cloud(
                 .into_iter()
                 .map(|(agent, (occurrences, session_count))| PhraseAgentCount {
                     agent,
+                    occurrences,
+                    session_count,
+                })
+                .collect::<Vec<_>>();
+            let models = item
+                .models
+                .into_iter()
+                .map(|(model, (occurrences, session_count))| PhraseModelCount {
+                    model,
                     occurrences,
                     session_count,
                 })
@@ -2878,13 +2783,27 @@ fn query_phrase_cloud(
             } else {
                 None
             };
+            let dominant_model = if role == "agent" {
+                models
+                    .iter()
+                    .max_by(|left, right| {
+                        left.occurrences
+                            .cmp(&right.occurrences)
+                            .then_with(|| right.model.cmp(&left.model))
+                    })
+                    .map(|item| item.model.clone())
+            } else {
+                None
+            };
             PhraseCloudItem {
                 phrase,
                 occurrences: item.occurrences,
                 session_count: item.session_count,
                 weight,
                 dominant_agent,
+                dominant_model,
                 agents,
+                models,
             }
         })
         .collect::<Vec<_>>();
@@ -2897,6 +2816,201 @@ fn query_phrase_cloud(
         sample_sessions,
         items,
     })
+}
+
+fn nested_phrase_evidence_is_redundant(
+    left_phrase: &str,
+    left_sessions: &HashSet<String>,
+    left_occurrences: u64,
+    right_phrase: &str,
+    right_sessions: &HashSet<String>,
+    right_occurrences: u64,
+) -> bool {
+    let left_units = phrase_dedup_units(left_phrase);
+    let right_units = phrase_dedup_units(right_phrase);
+    let nested = contiguous_units_contain(&left_units, &right_units)
+        || contiguous_units_contain(&right_units, &left_units);
+    if !nested || left_units == right_units {
+        return false;
+    }
+
+    let smaller_sessions = left_sessions.len().min(right_sessions.len());
+    if smaller_sessions < 2 {
+        return false;
+    }
+    let intersection = left_sessions.intersection(right_sessions).count();
+    let union = left_sessions.union(right_sessions).count();
+    let sessions_substantially_overlap =
+        intersection * 10 >= smaller_sessions * 9 && intersection * 100 >= union * 82;
+    let smaller_occurrences = left_occurrences.min(right_occurrences);
+    let larger_occurrences = left_occurrences.max(right_occurrences);
+    let occurrences_are_comparable = larger_occurrences > 0
+        && smaller_occurrences.saturating_mul(4) >= larger_occurrences.saturating_mul(3);
+    sessions_substantially_overlap && occurrences_are_comparable
+}
+
+fn phrase_dedup_units(phrase: &str) -> Vec<String> {
+    if phrase.chars().any(|character| {
+        matches!(
+            character,
+            '\u{3400}'..='\u{4DBF}'
+                | '\u{4E00}'..='\u{9FFF}'
+                | '\u{F900}'..='\u{FAFF}'
+        )
+    }) {
+        return phrase
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .map(|character| character.to_string())
+            .collect();
+    }
+    phrase
+        .split_whitespace()
+        .map(|token| {
+            token
+                .trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && character != '\''
+                })
+                .to_ascii_lowercase()
+        })
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn contiguous_units_contain(longer: &[String], shorter: &[String]) -> bool {
+    !shorter.is_empty()
+        && shorter.len() < longer.len()
+        && longer
+            .windows(shorter.len())
+            .any(|window| window == shorter)
+}
+
+fn phrase_is_complete(phrase: &str) -> bool {
+    let units = phrase_dedup_units(phrase);
+    let Some(last) = units.last() else {
+        return false;
+    };
+    !matches!(
+        last.as_str(),
+        "a" | "an"
+            | "the"
+            | "to"
+            | "for"
+            | "of"
+            | "and"
+            | "or"
+            | "with"
+            | "from"
+            | "in"
+            | "on"
+            | "at"
+            | "by"
+    )
+}
+
+fn phrase_voice_factor(phrase: &str) -> Option<f64> {
+    if phrase.contains('…') {
+        return Some(1.9);
+    }
+    let chinese_characters = phrase
+        .chars()
+        .filter(|character| {
+            matches!(
+                character,
+                '\u{3400}'..='\u{4DBF}'
+                    | '\u{4E00}'..='\u{9FFF}'
+                    | '\u{F900}'..='\u{FAFF}'
+            )
+        })
+        .count();
+    if chinese_characters > 0 {
+        if chinese_characters < 3 {
+            return None;
+        }
+        if [
+            "把", "按", "用", "对", "将", "在", "的", "地", "得", "和", "与", "及", "或", "为",
+            "向", "从", "给", "让", "这", "那", "我", "你",
+        ]
+        .iter()
+        .any(|suffix| phrase.ends_with(suffix))
+            || ["接下来", "我现在", "我已经", "现在我", "如果你"].contains(&phrase)
+        {
+            return None;
+        }
+        if phrase.starts_with("接下来我会") || phrase.starts_with("下一步我会") {
+            return Some(1.8);
+        }
+        if phrase.starts_with("我会先") {
+            return Some(1.75);
+        }
+        if phrase.starts_with("我会继续") || phrase.starts_with("如果你愿意") {
+            return Some(1.55);
+        }
+        if phrase.contains('我') || phrase.contains('你') {
+            return Some(1.3);
+        }
+        if [
+            "先", "继续", "已经", "现在", "可以", "需要", "建议", "直接", "确认", "验证", "检查",
+            "完成", "好的", "收到", "明白", "开始",
+        ]
+        .iter()
+        .any(|prefix| phrase.starts_with(prefix))
+        {
+            return Some(1.12);
+        }
+        None
+    } else {
+        let tokens = phrase
+            .split_whitespace()
+            .map(|token| {
+                token
+                    .trim_matches(|character: char| {
+                        !character.is_ascii_alphabetic() && character != '\''
+                    })
+                    .to_ascii_lowercase()
+            })
+            .filter(|token| !token.is_empty())
+            .collect::<Vec<_>>();
+        if tokens.len() < 2 {
+            return None;
+        }
+        if tokens.iter().any(|token| {
+            matches!(
+                token.as_str(),
+                "i" | "i'll" | "we" | "you" | "my" | "your" | "let" | "let's"
+            )
+        }) {
+            return Some(1.35);
+        }
+        if tokens.first().is_some_and(|token| {
+            matches!(
+                token.as_str(),
+                "first"
+                    | "next"
+                    | "now"
+                    | "okay"
+                    | "sure"
+                    | "please"
+                    | "run"
+                    | "check"
+                    | "verify"
+                    | "fix"
+                    | "update"
+                    | "continue"
+                    | "make"
+                    | "keep"
+                    | "use"
+                    | "open"
+                    | "review"
+                    | "test"
+                    | "confirm"
+                    | "try"
+            )
+        }) {
+            return Some(1.12);
+        }
+        None
+    }
 }
 
 fn query_overview_totals(
@@ -2913,7 +3027,14 @@ fn query_overview_totals(
                 COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN
                     input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + cache_write_1h_tokens
                 ELSE 0 END),0), COALESCE(SUM(errors),0)
-         FROM daily_usage WHERE date >= ?1",
+         FROM daily_usage
+         WHERE date >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )",
         params![start_date],
         |row| {
             Ok((
@@ -2940,7 +3061,14 @@ fn query_overview_totals(
                 COALESCE(MAX(longest_uninterrupted_seconds),0),
                 COALESCE(SUM(lines_added),0), COALESCE(SUM(lines_deleted),0),
                 COALESCE(SUM(retries),0)
-         FROM sessions WHERE started_at >= ?1",
+         FROM sessions s
+         WHERE s.started_at >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR s.agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )",
         params![start_timestamp],
         |row| {
             Ok((
@@ -2956,7 +3084,14 @@ fn query_overview_totals(
     let session_row = connection.query_row(
         "SELECT COUNT(*), COALESCE(SUM(active_seconds),0),
                 COUNT(DISTINCT substr(started_at,1,10)), COALESCE(SUM(errors),0)
-         FROM sessions WHERE started_at >= ?1",
+         FROM sessions s
+         WHERE s.started_at >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR s.agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )",
         params![start_timestamp],
         |row| {
             Ok((
@@ -2970,7 +3105,13 @@ fn query_overview_totals(
     let files_touched = connection.query_row(
         "SELECT COUNT(DISTINCT sf.file_hash)
          FROM session_files sf JOIN sessions s ON s.id=sf.session_id
-         WHERE s.started_at >= ?1",
+         WHERE s.started_at >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR s.agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )",
         params![start_timestamp],
         |result| read_u64(result, 0),
     )?;
@@ -3012,13 +3153,26 @@ fn query_daily(connection: &Connection, start_date: &str) -> AppResult<Vec<Daily
                    input_tokens, output_tokens, cache_read_tokens,
                    cache_write_tokens, cache_write_1h_tokens, reasoning_tokens,
                    active_seconds, tool_calls, errors, estimated_cost_usd
-            FROM daily_usage WHERE date >= ?1
+            FROM daily_usage
+            WHERE date >= ?1
+              AND (
+                    NOT EXISTS(SELECT 1 FROM sources)
+                    OR agent IN (
+                        SELECT agent FROM sources WHERE available=1 AND selected=1
+                    )
+              )
             UNION ALL
             SELECT s.id, substr(s.started_at,1,10), s.agent, COALESCE(NULLIF(s.model,''),'unknown'),
                    0, 0, 0, 0, 0, 0,
                    s.active_seconds, s.tool_calls, s.errors, s.estimated_cost_usd
             FROM sessions s
             WHERE s.started_at >= ?2
+              AND (
+                    NOT EXISTS(SELECT 1 FROM sources)
+                    OR s.agent IN (
+                        SELECT agent FROM sources WHERE available=1 AND selected=1
+                    )
+              )
               AND NOT EXISTS(SELECT 1 FROM daily_usage du WHERE du.session_id=s.id)
          )
          SELECT date, agent, model,
@@ -3043,7 +3197,14 @@ fn query_hourly(connection: &Connection, start_date: &str) -> AppResult<Vec<Hour
         "SELECT hour, agent, model,
                 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                 SUM(cache_write_tokens), SUM(cache_write_1h_tokens), SUM(reasoning_tokens)
-         FROM hourly_usage WHERE hour >= ?1
+         FROM hourly_usage
+         WHERE hour >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )
          GROUP BY hour, agent, model ORDER BY hour, agent, model",
     )?;
     Ok(statement
@@ -3299,7 +3460,14 @@ fn query_usage_distribution(
         "SELECT {id_expression}, {label_expression},
                 SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + cache_write_1h_tokens),
                 SUM(active_seconds)
-         FROM daily_usage WHERE date >= ?1
+         FROM daily_usage
+         WHERE date >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )
          GROUP BY {id_expression}, {label_expression}
          ORDER BY 3 DESC LIMIT 12"
     );
@@ -3322,6 +3490,12 @@ fn query_tools(connection: &Connection, start_timestamp: &str) -> AppResult<Vec<
         "SELECT tu.tool, SUM(tu.count)
          FROM tool_usage tu JOIN sessions s ON s.id=tu.session_id
          WHERE s.started_at >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR s.agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )
          GROUP BY tu.tool ORDER BY 2 DESC LIMIT 12",
     )?;
     Ok(statement
@@ -3436,130 +3610,6 @@ fn query_tasks(
     Ok(rows)
 }
 
-fn persist_review_document(
-    connection: &mut Connection,
-    review_type: &str,
-    target_id: &str,
-    locale: &str,
-    title: String,
-    content: ReviewContent,
-    findings: Vec<ReviewFinding>,
-) -> AppResult<ReviewDocument> {
-    let transaction = connection.transaction()?;
-    let version = transaction.query_row(
-        "SELECT COALESCE(MAX(version),0)+1 FROM reviews
-         WHERE review_type=?1 AND target_id=?2 AND locale=?3",
-        params![review_type, target_id, locale],
-        |row| read_u64(row, 0),
-    )?;
-    let status = if version > 1 { "draft" } else { "current" };
-    let id = uuid::Uuid::new_v4().to_string();
-    let now = Utc::now().to_rfc3339();
-    transaction.execute(
-        "INSERT INTO reviews(
-            id, review_type, target_id, locale, version, status, title,
-            outcome, what_happened, what_worked, friction, lessons,
-            next_run, user_edited, created_at, updated_at
-         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, ?14, ?14)",
-        params![
-            id,
-            review_type,
-            target_id,
-            locale,
-            sql_i64(version),
-            status,
-            title,
-            content.outcome,
-            content.what_happened,
-            content.what_worked,
-            content.friction,
-            content.lessons,
-            content.next_run,
-            now,
-        ],
-    )?;
-    for finding in &findings {
-        transaction.execute(
-            "INSERT INTO review_findings(
-                review_id, id, rule_id, tier, title, detail, evidence_json
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id,
-                finding.id,
-                finding.rule_id,
-                finding.tier,
-                finding.title,
-                finding.detail,
-                serde_json::to_string(&finding.evidence)?,
-            ],
-        )?;
-    }
-    transaction.commit()?;
-    Ok(ReviewDocument {
-        id,
-        review_type: review_type.into(),
-        target_id: target_id.into(),
-        locale: locale.into(),
-        version,
-        status: status.into(),
-        title,
-        content,
-        findings,
-        user_edited: false,
-        source_excluded: false,
-        created_at: now.clone(),
-        updated_at: now,
-    })
-}
-
-fn review_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewDocument> {
-    Ok(ReviewDocument {
-        id: row.get(0)?,
-        review_type: row.get(1)?,
-        target_id: row.get(2)?,
-        locale: row.get(3)?,
-        version: read_u64(row, 4)?,
-        status: row.get(5)?,
-        title: row.get(6)?,
-        content: ReviewContent {
-            outcome: row.get(7)?,
-            what_happened: row.get(8)?,
-            what_worked: row.get(9)?,
-            friction: row.get(10)?,
-            lessons: row.get(11)?,
-            next_run: row.get(12)?,
-        },
-        findings: Vec::new(),
-        user_edited: row.get::<_, i64>(13)? != 0,
-        source_excluded: row.get::<_, i64>(14)? != 0,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
-    })
-}
-
-fn query_review_findings(
-    connection: &Connection,
-    review_id: &str,
-) -> AppResult<Vec<ReviewFinding>> {
-    let mut statement = connection.prepare(
-        "SELECT id, rule_id, tier, title, detail, evidence_json
-         FROM review_findings WHERE review_id=?1 ORDER BY rowid",
-    )?;
-    Ok(statement
-        .query_map(params![review_id], |row| {
-            let evidence_json: String = row.get(5)?;
-            Ok(ReviewFinding {
-                id: row.get(0)?,
-                rule_id: row.get(1)?,
-                tier: row.get(2)?,
-                title: row.get(3)?,
-                detail: row.get(4)?,
-                evidence: serde_json::from_str(&evidence_json).unwrap_or_default(),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
 fn playbook_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybookItem> {
     Ok(PlaybookItem {
         id: row.get(0)?,
@@ -3574,217 +3624,6 @@ fn playbook_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PlaybookItem> 
         applied: row.get::<_, i64>(9)? != 0,
         created_at: row.get(10)?,
         updated_at: row.get(11)?,
-    })
-}
-
-fn query_review_evidence(
-    connection: &Connection,
-    review_type: &str,
-    target_id: &str,
-) -> AppResult<ReviewEvidence> {
-    let session_ids = match review_type {
-        "session" => connection
-            .query_row(
-                "SELECT id FROM sessions WHERE id=?1",
-                params![target_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .into_iter()
-            .collect::<Vec<_>>(),
-        "daily" => {
-            let mut statement = connection.prepare(
-                "SELECT id FROM sessions WHERE substr(started_at,1,10)=?1 ORDER BY started_at",
-            )?;
-            statement
-                .query_map(params![target_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        }
-        "weekly" => {
-            let start = NaiveDate::parse_from_str(target_id, "%Y-%m-%d")
-                .map_err(|_| AppError::InvalidRequest("invalid weekly review date".into()))?;
-            let end = (start + Duration::days(7)).format("%Y-%m-%d").to_string();
-            let start = start.format("%Y-%m-%d").to_string();
-            let mut statement = connection.prepare(
-                "SELECT id FROM sessions WHERE started_at>=?1 AND started_at<?2 ORDER BY started_at",
-            )?;
-            statement
-                .query_map(
-                    params![format!("{start}T00:00:00Z"), format!("{end}T00:00:00Z")],
-                    |row| row.get::<_, String>(0),
-                )?
-                .collect::<Result<Vec<_>, _>>()?
-        }
-        _ => {
-            let mut statement = connection.prepare(
-                "SELECT session_id FROM task_sessions WHERE task_id=?1 ORDER BY position",
-            )?;
-            statement
-                .query_map(params![target_id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?
-        }
-    };
-    if session_ids.is_empty() {
-        return Err(AppError::InvalidRequest(
-            "review target has no sessions".into(),
-        ));
-    }
-    let placeholders = std::iter::repeat_n("?", session_ids.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let aggregate_sql = format!(
-        "SELECT COUNT(*),
-            COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens+cache_write_1h_tokens),0),
-            COALESCE(SUM(active_seconds),0), COALESCE(SUM(files_touched),0),
-            COALESCE(SUM(lines_added),0), COALESCE(SUM(lines_deleted),0),
-            COALESCE(SUM(errors),0), COALESCE(SUM(retries),0),
-            COALESCE(SUM(verification_events),0), COALESCE(SUM(model_switches),0),
-            COALESCE(MAX(project_label),'')
-         FROM sessions WHERE id IN({placeholders})"
-    );
-    let aggregate = connection.query_row(
-        &aggregate_sql,
-        params_from_iter(session_ids.iter()),
-        |row| {
-            Ok((
-                read_u64(row, 0)?,
-                read_u64(row, 1)?,
-                read_u64(row, 2)?,
-                read_u64(row, 3)?,
-                read_u64(row, 4)?,
-                read_u64(row, 5)?,
-                read_u64(row, 6)?,
-                read_u64(row, 7)?,
-                read_u64(row, 8)?,
-                read_u64(row, 9)?,
-                row.get::<_, String>(10)?,
-            ))
-        },
-    )?;
-    let has_commit_sql =
-        format!("SELECT EXISTS(SELECT 1 FROM git_commits WHERE session_id IN({placeholders}))");
-    let has_commit = connection.query_row(
-        &has_commit_sql,
-        params_from_iter(session_ids.iter()),
-        |row| Ok(row.get::<_, i64>(0)? != 0),
-    )?;
-    let file_sql = format!(
-        "SELECT path, modification_count FROM file_changes
-         WHERE session_id IN({placeholders})
-         ORDER BY modification_count DESC LIMIT 1"
-    );
-    let max_file = connection
-        .query_row(&file_sql, params_from_iter(session_ids.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, read_u64(row, 1)?))
-        })
-        .optional()?;
-    let task_count_sql = format!(
-        "SELECT COUNT(DISTINCT task_id) FROM task_sessions WHERE session_id IN({placeholders})"
-    );
-    let task_count = connection.query_row(
-        &task_count_sql,
-        params_from_iter(session_ids.iter()),
-        |row| read_u64(row, 0),
-    )?;
-    let objective_sql = format!(
-        "SELECT DISTINCT prompt_excerpt FROM sessions
-         WHERE id IN({placeholders}) AND COALESCE(prompt_excerpt,'')<>''
-         ORDER BY started_at LIMIT 5"
-    );
-    let mut objective_statement = connection.prepare(&objective_sql)?;
-    let objectives = objective_statement
-        .query_map(params_from_iter(session_ids.iter()), |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(objective_statement);
-    let result_sql = format!(
-        "SELECT result_excerpt FROM sessions
-         WHERE id IN({placeholders}) AND COALESCE(result_excerpt,'')<>''
-         ORDER BY started_at DESC LIMIT 5"
-    );
-    let mut result_statement = connection.prepare(&result_sql)?;
-    let result_excerpts = result_statement
-        .query_map(params_from_iter(session_ids.iter()), |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(result_statement);
-    let commit_sql = format!(
-        "SELECT DISTINCT subject FROM git_commits
-         WHERE session_id IN({placeholders}) ORDER BY committed_at DESC LIMIT 8"
-    );
-    let mut commit_statement = connection.prepare(&commit_sql)?;
-    let commit_subjects = commit_statement
-        .query_map(params_from_iter(session_ids.iter()), |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(commit_statement);
-    let tools_sql = format!(
-        "SELECT tool, SUM(count) FROM tool_usage
-         WHERE session_id IN({placeholders}) GROUP BY tool ORDER BY 2 DESC LIMIT 6"
-    );
-    let mut tools_statement = connection.prepare(&tools_sql)?;
-    let top_tools = tools_statement
-        .query_map(params_from_iter(session_ids.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, read_u64(row, 1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(tools_statement);
-    let title = match review_type {
-        "session" => connection
-            .query_row(
-                "SELECT COALESCE(title,'') FROM sessions WHERE id=?1",
-                params![target_id],
-                |row| row.get(0),
-            )
-            .unwrap_or_default(),
-        "task" => connection
-            .query_row(
-                "SELECT title FROM tasks WHERE id=?1",
-                params![target_id],
-                |row| row.get(0),
-            )
-            .unwrap_or_default(),
-        _ => target_id.into(),
-    };
-    let mut task_tokens = query_tasks(connection, "1970-01-01T00:00:00Z", 10_000)?
-        .into_iter()
-        .map(|task| task.total_tokens)
-        .collect::<Vec<_>>();
-    task_tokens.sort_unstable();
-    let comparable_tasks = task_tokens.len() as u64;
-    let personal_high_token_threshold = if task_tokens.len() >= 20 {
-        let index = ((task_tokens.len() - 1) as f64 * 0.9).round() as usize;
-        task_tokens.get(index).copied()
-    } else {
-        None
-    };
-    Ok(ReviewEvidence {
-        target_id: target_id.into(),
-        title,
-        project_label: aggregate.10,
-        session_count: aggregate.0,
-        task_count,
-        total_tokens: aggregate.1,
-        active_seconds: aggregate.2,
-        files_changed: aggregate.3,
-        lines_added: aggregate.4,
-        lines_deleted: aggregate.5,
-        errors: aggregate.6,
-        retries: aggregate.7,
-        verification_events: aggregate.8,
-        has_commit,
-        max_file_path: max_file.as_ref().map(|value| value.0.clone()),
-        max_modification_count: max_file.map_or(0, |value| value.1),
-        model_switches: aggregate.9,
-        comparable_tasks,
-        personal_high_token_threshold,
-        objectives,
-        result_excerpts,
-        commit_subjects,
-        top_tools,
     })
 }
 
@@ -3904,7 +3743,7 @@ fn query_session_rows(
     let agent_filter = agent.unwrap_or("");
     let search_filter = search.unwrap_or("").trim();
     let search_pattern = format!("%{search_filter}%");
-    let base_where = "started_at >= ?1
+    let base_where = "COALESCE(ended_at, started_at) >= ?1
         AND (?2='' OR agent=?2)
         AND (?3='' OR COALESCE(title,'') LIKE ?4 OR COALESCE(model,'') LIKE ?4
             OR COALESCE(project_label,'') LIKE ?4
@@ -3925,7 +3764,7 @@ fn query_session_rows(
                 longest_uninterrupted_seconds, subagent_count,
                 EXISTS(SELECT 1 FROM git_commits gc WHERE gc.session_id=sessions.id)
          FROM sessions WHERE {base_where}
-         ORDER BY started_at DESC LIMIT ?5 OFFSET ?6"
+         ORDER BY COALESCE(ended_at, started_at) DESC, started_at DESC LIMIT ?5 OFFSET ?6"
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement
@@ -4036,7 +3875,13 @@ fn query_behavior_summary(
         "SELECT s.started_at, s.agent, s.parser_version, sb.behavior_json
          FROM sessions s
          LEFT JOIN session_behavior sb ON sb.session_id=s.id
-         WHERE s.started_at>=?1",
+         WHERE s.started_at>=?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR s.agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )",
     )?;
     let rows = statement
         .query_map(params![start_timestamp], |row| {
@@ -4241,6 +4086,243 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn lists_spanning_sessions_by_their_latest_activity() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("session-recency.sqlite"))
+            .expect("database should open");
+        let today = Local::now().date_naive();
+        let day = |offset: i64| {
+            (today - Duration::days(offset))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+
+        let mut spanning = ParseState::new(AgentKind::Codex, "spanning".into());
+        spanning.started_at = Some(format!("{}T08:00:00Z", day(2)));
+        spanning.ended_at = Some(format!("{}T09:30:00Z", day(0)));
+        spanning.title = Some("current conversation".into());
+        database
+            .persist_parse_state("spanning-file", 1, 1, 1, &spanning)
+            .expect("spanning session should persist");
+
+        let mut older = ParseState::new(AgentKind::Codex, "older".into());
+        older.started_at = Some(format!("{}T12:00:00Z", day(1)));
+        older.ended_at = Some(format!("{}T12:30:00Z", day(1)));
+        older.title = Some("older conversation".into());
+        database
+            .persist_parse_state("older-file", 1, 1, 1, &older)
+            .expect("older session should persist");
+
+        let sessions = database
+            .sessions("today", None, None, 0, 10)
+            .expect("today sessions should load");
+        assert_eq!(sessions.total, 1);
+        assert_eq!(sessions.items[0].title, "current conversation");
+    }
+
+    #[test]
+    fn selected_sources_persist_and_filter_the_data_overview() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("source-selection.sqlite"))
+            .expect("database should open");
+        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let make_state = |agent: AgentKind, id: &str, tokens: u64| {
+            let mut state = ParseState::new(agent, id.into());
+            state.started_at = Some(format!("{date}T02:00:00Z"));
+            state.ended_at = Some(format!("{date}T02:10:00Z"));
+            state.current_model = Some("fixture-model".into());
+            state.usage.input_tokens = tokens;
+            state.daily = HashMap::from([(
+                date.clone(),
+                DailyAggregate {
+                    usage: state.usage.clone(),
+                    active_seconds: 600,
+                    events: 1,
+                    ..DailyAggregate::default()
+                },
+            )]);
+            state
+        };
+
+        database
+            .persist_parse_state(
+                "codex-selection",
+                1,
+                1,
+                1,
+                &make_state(AgentKind::Codex, "codex-selection", 300),
+            )
+            .expect("Codex state should persist");
+        database
+            .persist_parse_state(
+                "claude-selection",
+                1,
+                1,
+                1,
+                &make_state(AgentKind::ClaudeCode, "claude-selection", 700),
+            )
+            .expect("Claude state should persist");
+        database
+            .upsert_source(AgentKind::Codex, "codex-path", true, "ready")
+            .expect("Codex source should persist");
+        database
+            .upsert_source(AgentKind::ClaudeCode, "claude-path", true, "ready")
+            .expect("Claude source should persist");
+
+        let initial = database
+            .overview("today", IndexStatus::default())
+            .expect("initial overview");
+        assert_eq!(initial.totals.usage.total(), 1_000);
+        assert_eq!(initial.agents.len(), 2);
+
+        database
+            .set_source_selected("codex", false)
+            .expect("Codex selection should update");
+        let sources = database.sources().expect("sources should load");
+        assert!(
+            !sources
+                .iter()
+                .find(|source| source.agent == "codex")
+                .expect("Codex source")
+                .selected
+        );
+
+        let filtered = database
+            .overview("today", IndexStatus::default())
+            .expect("filtered overview");
+        assert_eq!(filtered.totals.usage.total(), 700);
+        assert_eq!(filtered.agents.len(), 1);
+        assert_eq!(filtered.agents[0].label, "claude-code");
+    }
+
+    #[test]
+    fn removes_cursor_events_previously_misattributed_to_claude_code() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("live-cleanup.sqlite"))
+            .expect("database should open");
+        let received_at = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+
+        database
+            .record_live_event(
+                &received_at,
+                &expires_at,
+                "claude-code",
+                "cursor-session",
+                "sessionStart",
+                "CursorProject",
+                r#"{"cursor_version":"3.12.30","composer_mode":"agent"}"#,
+                "idle",
+            )
+            .expect("misattributed Cursor event should persist");
+        database
+            .record_live_event(
+                &received_at,
+                &expires_at,
+                "claude-code",
+                "real-claude-session",
+                "SessionStart",
+                "ClaudeProject",
+                r#"{"session_id":"real-claude-session"}"#,
+                "idle",
+            )
+            .expect("real Claude event should persist");
+
+        assert_eq!(
+            database
+                .purge_misattributed_cursor_live_events()
+                .expect("cleanup should succeed"),
+            1
+        );
+        let connection = database.connect().expect("database connection");
+        let cursor_events: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_events WHERE source_session_id='cursor-session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("Cursor event count");
+        let cursor_metrics: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_session_metrics
+                 WHERE source_session_id='cursor-session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("Cursor metric count");
+        let real_claude_events: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_events
+                 WHERE source_session_id='real-claude-session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("real Claude event count");
+        assert_eq!(cursor_events, 0);
+        assert_eq!(cursor_metrics, 0);
+        assert_eq!(real_claude_events, 1);
+    }
+
+    #[test]
+    fn removes_codex_memory_children_from_existing_live_metrics() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("memory-cleanup.sqlite"))
+            .expect("database should open");
+        let received_at = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        database
+            .record_live_event(
+                &received_at,
+                &expires_at,
+                "codex",
+                "memory-child",
+                "SessionStart",
+                "memories",
+                r#"{"payload":{"cwd":"/Users/test/.codex/memories"}}"#,
+                "running",
+            )
+            .expect("memory child should persist");
+        database
+            .record_live_event(
+                &received_at,
+                &expires_at,
+                "codex",
+                "real-session",
+                "SessionStart",
+                "project",
+                r#"{"payload":{"cwd":"/Users/test/Code/project"}}"#,
+                "running",
+            )
+            .expect("real session should persist");
+
+        assert_eq!(
+            database
+                .purge_codex_memory_live_events()
+                .expect("memory cleanup"),
+            1
+        );
+        let connection = database.connect().expect("database connection");
+        let memory_metrics: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_session_metrics
+                 WHERE source_session_id='memory-child'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("memory metric count");
+        let real_metrics: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_session_metrics
+                 WHERE source_session_id='real-session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("real metric count");
+        assert_eq!(memory_metrics, 0);
+        assert_eq!(real_metrics, 1);
+    }
+
+    #[test]
     fn preserves_each_source_file_when_agents_reuse_a_session_id() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("source-collision.sqlite"))
@@ -4284,6 +4366,14 @@ mod concurrency_tests {
             let mut state = ParseState::new(agent, id.into());
             state.started_at = Some(format!("{date}T02:00:00Z"));
             state.ended_at = Some(format!("{date}T02:10:00Z"));
+            state.current_model = Some(
+                match agent {
+                    AgentKind::Codex => "gpt-5.4",
+                    AgentKind::ClaudeCode => "claude-opus-4.6",
+                    _ => "unknown-model",
+                }
+                .into(),
+            );
             state.phrase_counts.insert(
                 "user".into(),
                 PhraseAggregate {
@@ -4300,6 +4390,15 @@ mod concurrency_tests {
                     role: "agent".into(),
                     phrase: "验证已经通过".into(),
                     occurrences: agent_occurrences,
+                },
+            );
+            state.phrase_counts.insert(
+                "agent-topic".into(),
+                PhraseAggregate {
+                    date: date.clone(),
+                    role: "agent".into(),
+                    phrase: "nature sustainability".into(),
+                    occurrences: 100,
                 },
             );
             state
@@ -4331,91 +4430,72 @@ mod concurrency_tests {
             response.agents.items[0].dominant_agent.as_deref(),
             Some("codex")
         );
+        assert_eq!(
+            response.agents.items[0].dominant_model.as_deref(),
+            Some("gpt-5.4")
+        );
         assert_eq!(response.agents.items[0].session_count, 2);
+        assert_eq!(response.agents.items[0].models.len(), 2);
+        assert!(
+            response
+                .agents
+                .items
+                .iter()
+                .all(|item| item.phrase != "nature sustainability")
+        );
     }
 
     #[test]
-    fn project_exclusion_purges_source_evidence_but_marks_user_authored_material() {
+    fn catchphrase_voice_gate_rejects_topics_and_incomplete_fragments() {
+        assert!(phrase_voice_factor("我会先").is_some());
+        assert!(phrase_voice_factor("接下来我会").is_some());
+        assert!(phrase_voice_factor("你接受……吗").is_some());
+        assert!(phrase_voice_factor("run tests").is_some());
+        assert!(phrase_voice_factor("nature sustainability").is_none());
+        assert!(phrase_voice_factor("我会把").is_none());
+        assert!(phrase_voice_factor("我会按的").is_none());
+    }
+
+    #[test]
+    fn catchphrase_cloud_collapses_nested_phrases_with_the_same_session_evidence() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let database = Database::open(temporary.path().join("exclusion.sqlite"))
-            .expect("database should open");
-        let mut state = ParseState::new(AgentKind::Codex, "source-session".into());
-        state.started_at = Some("2026-07-21T02:00:00Z".into());
-        state.ended_at = Some("2026-07-21T02:30:00Z".into());
-        state.title = Some("Refine review flow".into());
-        state.project_hash = Some("project-hash".into());
-        state.project_label = Some("vibemeter-fixture".into());
-        state.current_model = Some("gpt-5".into());
-        state.usage.input_tokens = 2_000;
-        state.usage.output_tokens = 400;
-        database
-            .persist_parse_state("fixture", 1, 1, 1, &state)
-            .expect("state should persist");
-        let session_id = session_database_id(AgentKind::Codex, "source-session");
-        let authored = database
-            .generate_review(&GenerateReviewRequest {
-                review_type: "session".into(),
-                target_id: session_id.clone(),
-                locale: "en-US".into(),
-            })
-            .expect("first review");
-        database
-            .update_review(&UpdateReviewRequest {
-                id: authored.id.clone(),
-                title: "My retained review".into(),
-                content: authored.content.clone(),
-            })
-            .expect("review edit");
-        database
-            .generate_review(&GenerateReviewRequest {
-                review_type: "session".into(),
-                target_id: session_id.clone(),
-                locale: "en-US".into(),
-            })
-            .expect("generated draft");
-        database
-            .save_playbook_item(&SavePlaybookRequest {
-                id: None,
-                title: "Keep verification close".into(),
-                body: "Run the focused check after the first coherent edit.".into(),
-                category: "verification".into(),
-                project_label: Some("vibemeter-fixture".into()),
-                task_type: None,
-                source_review_id: Some(authored.id.clone()),
-                source_finding_id: None,
-                applied: false,
-            })
-            .expect("playbook item");
-        database
-            .split_session(&session_id)
-            .expect("user task should be created");
+        let database =
+            Database::open(temporary.path().join("phrase-dedup.sqlite")).expect("database open");
+        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        for session in ["dedup-one", "dedup-two"] {
+            let mut state = ParseState::new(AgentKind::Codex, session.into());
+            state.started_at = Some(format!("{date}T02:00:00Z"));
+            state.ended_at = Some(format!("{date}T02:10:00Z"));
+            for phrase in [
+                "please implement",
+                "please implement this",
+                "please implement this plan",
+            ] {
+                state.phrase_counts.insert(
+                    phrase.into(),
+                    PhraseAggregate {
+                        date: date.clone(),
+                        role: "user".into(),
+                        phrase: phrase.into(),
+                        occurrences: 2,
+                    },
+                );
+            }
+            database
+                .persist_parse_state(session, 1, 1, 1, &state)
+                .expect("phrase session");
+        }
 
-        database
-            .exclude_project("project-hash")
-            .expect("project exclusion");
-
-        assert_eq!(
-            database.sessions("all", None, None, 0, 100).unwrap().total,
-            0
-        );
-        let reviews = database
-            .reviews(Some("session"), Some(&session_id))
-            .unwrap();
-        assert_eq!(reviews.items.len(), 1);
-        assert!(reviews.items[0].user_edited);
-        assert!(reviews.items[0].source_excluded);
-        let playbook = database.playbook_items(None).unwrap();
-        assert_eq!(playbook.len(), 1);
-        assert!(playbook[0].source_excluded);
-        let connection = database.connect().expect("database connection");
-        let retained_tasks: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM tasks WHERE user_edited=1 AND source_excluded=1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(retained_tasks, 1);
+        let response = database.phrase_cloud("30d").expect("phrase cloud");
+        let phrases = response
+            .user
+            .items
+            .iter()
+            .map(|item| item.phrase.as_str())
+            .collect::<HashSet<_>>();
+        assert!(phrases.contains("please implement this plan"));
+        assert!(!phrases.contains("please implement"));
+        assert!(!phrases.contains("please implement this"));
     }
 
     #[test]

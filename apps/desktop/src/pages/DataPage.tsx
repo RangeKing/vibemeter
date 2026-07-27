@@ -1,24 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EChartsCoreOption } from "echarts";
-import { ArrowRight, BarChart3, CalendarDays, CheckCircle2, Merge, Sparkles, Workflow } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarDays, Merge, Sparkles, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { EChart } from "../components/EChart";
 import { BehaviorStreams } from "../components/BehaviorStreams";
 import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
-import { CatchphraseClouds } from "../components/CatchphraseClouds";
 import { RangePicker } from "../components/RangePicker";
 import { WorkEventCard } from "../components/WorkEventCard";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { buildHourlyActivity } from "../lib/activity";
 import { chartTooltip, useChartColors } from "../lib/chartTheme";
-import { agentName, formatCompact, formatCurrency, formatDate, formatDuration, tokenTotal } from "../lib/format";
+import { agentName, formatCompact, formatCurrency, formatDate, tokenTotal } from "../lib/format";
 import { savitzkyGolaySmooth } from "../lib/smoothing";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
 
 type DailyTotal = { date: string; tokens: number; activeSeconds: number; sessions: number };
+
+function durationParts(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  return {
+    hours: Math.floor(safeSeconds / 3_600),
+    minutes: Math.floor((safeSeconds % 3_600) / 60),
+  };
+}
 
 const RANGE_DAY_COUNTS: Partial<Record<RangeKey, number>> = {
   today: 1,
@@ -89,8 +96,8 @@ function trendOption(series: AgentTrendSeries[], colors: ReturnType<typeof useCh
   return {
     grid: { left: 10, right: 18, top: 12, bottom: 26, containLabel: true },
     tooltip: { ...chartTooltip(colors), trigger: "axis", valueFormatter: (value: unknown) => formatCompact(Number(value), locale) },
-    xAxis: { type: "category", boundaryGap: false, data: series[0]?.buckets ?? [], axisLine: { lineStyle: { color: colors.hairline } }, axisTick: { show: false }, axisLabel: { color: colors.textTertiary, fontSize: 9, hideOverlap: true, formatter: (value: string) => hourly ? value.slice(11, 16) : value.slice(5) } },
-    yAxis: { type: "value", splitNumber: 3, axisLabel: { color: colors.textTertiary, fontSize: 9, formatter: (value: number) => formatCompact(value, locale) }, splitLine: { lineStyle: { color: colors.hairline } } },
+    xAxis: { type: "category", boundaryGap: false, data: series[0]?.buckets ?? [], axisLine: { lineStyle: { color: colors.hairline } }, axisTick: { show: false }, axisLabel: { color: colors.textTertiary, fontSize: 11, hideOverlap: true, formatter: (value: string) => hourly ? value.slice(11, 16) : value.slice(5) } },
+    yAxis: { type: "value", splitNumber: 3, axisLabel: { color: colors.textTertiary, fontSize: 11, formatter: (value: number) => formatCompact(value, locale) }, splitLine: { lineStyle: { color: colors.hairline } } },
     series: series.map((item, index) => ({
       name: agentName(item.agent),
       type: "line",
@@ -125,7 +132,7 @@ function toolOption(tools: Array<{ label: string; value: number }>, colors: Retu
     tooltip: { ...chartTooltip(colors), trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (value: unknown) => formatCompact(Number(value), locale) },
     xAxis: { type: "value", show: false },
     yAxis: { type: "category", data: visible.map((item) => item.label), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: colors.textSecondary, fontSize: 10, width: 100, overflow: "truncate" } },
-    series: [{ type: "bar", data: visible.map((item, index) => ({ value: item.value, itemStyle: { color: colors.series[index % colors.series.length], borderRadius: [0, 5, 5, 0] } })), barWidth: 10, label: { show: true, position: "right", color: colors.textTertiary, fontSize: 9, formatter: (item: { value: number }) => formatCompact(item.value, locale) } }],
+    series: [{ type: "bar", data: visible.map((item, index) => ({ value: item.value, itemStyle: { color: colors.series[index % colors.series.length], borderRadius: [0, 5, 5, 0] } })), barWidth: 10, label: { show: true, position: "right", color: colors.textTertiary, fontSize: 11, formatter: (item: { value: number }) => formatCompact(item.value, locale) } }],
   };
 }
 
@@ -143,7 +150,6 @@ export function DataPage({ locale }: { locale: Locale }) {
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [showAllEvents, setShowAllEvents] = useState(false);
   const overview = useQuery({ queryKey: ["overview", range], queryFn: () => api.overview(range), refetchInterval: 30_000 });
-  const phrases = useQuery({ queryKey: ["phrase-cloud", range], queryFn: () => api.phraseCloud(range), refetchInterval: 30_000 });
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
   const merge = useMutation({
@@ -158,18 +164,26 @@ export function DataPage({ locale }: { locale: Locale }) {
     const value = new Date(overview.data?.generatedAt ?? Date.now());
     return Number.isNaN(value.getTime()) ? new Date() : value;
   }, [overview.data?.generatedAt]);
-  const sourceAgents = useMemo(() => (sources.data ?? []).map((source) => source.agent), [sources.data]);
+  const selectedSources = useMemo(
+    () => (sources.data ?? []).filter((source) => source.available && source.selected),
+    [sources.data],
+  );
+  const sourceAgents = useMemo(
+    () => selectedSources.map((source) => source.agent),
+    [selectedSources],
+  );
   const series = useMemo(() => agentSeries(overview.data?.daily ?? [], overview.data?.hourly ?? [], isToday, referenceTime, sourceAgents), [overview.data?.daily, overview.data?.hourly, isToday, referenceTime, sourceAgents]);
   const daily = useMemo(() => groupDaily(overview.data?.daily ?? [], range, referenceTime), [overview.data?.daily, range, referenceTime]);
   const hourlyActivity = useMemo(() => isToday ? buildHourlyActivity(overview.data?.hourly ?? [], "today", referenceTime) : [], [isToday, overview.data?.hourly, referenceTime]);
   const maxActivity = Math.max(...(isToday ? hourlyActivity.map((item) => item.total) : daily.map((item) => item.tokens)), 1);
 
-  if (overview.isLoading || tasks.isLoading) return <LoadingState />;
-  if (overview.isError || !overview.data || tasks.isError || !tasks.data) return <ErrorState retry={() => void Promise.all([overview.refetch(), tasks.refetch()])} />;
+  if (overview.isLoading || sources.isLoading || tasks.isLoading) return <LoadingState />;
+  if (overview.isError || !overview.data || sources.isError || !sources.data || tasks.isError || !tasks.data) return <ErrorState retry={() => void Promise.all([overview.refetch(), sources.refetch(), tasks.refetch()])} />;
   const data = overview.data;
+  const activeDuration = durationParts(data.totals.activeSeconds);
   const displayedAgents = sourceAgents.map((agent) => data.agents.find((item) => item.label === agent) ?? { id: agent, label: agent, value: 0 });
-  const visibleTasks = showAllEvents ? tasks.data : tasks.data.slice(0, 12);
-  const reviewed = tasks.data.filter((task) => task.worthReviewing).length;
+  const filteredTasks = tasks.data.filter((task) => sourceAgents.includes(task.agent));
+  const visibleTasks = showAllEvents ? filteredTasks : filteredTasks.slice(0, 12);
   const toggleTask = (id: string, selected: boolean) => setSelectedTasks((current) => selected ? [...new Set([...current, id])] : current.filter((item) => item !== id));
   const rangeText = t(`ranges.${range}`);
   const agentTokenText = (agent: string, value: number) => agent === "cursor"
@@ -187,7 +201,14 @@ export function DataPage({ locale }: { locale: Locale }) {
 
       <section className="data-ledger" aria-label={t("data.summary")}>
         <div><span>{t("metrics.sessions")}</span><strong>{formatCompact(data.totals.sessionCount, locale)}</strong><small>{rangeText}</small></div>
-        <div><span>{t("metrics.duration")}</span><strong>{formatDuration(data.totals.activeSeconds, locale)}</strong><small>{data.totals.activeDays} {t("metrics.activeDays").toLowerCase()}</small></div>
+        <div className="duration-metric">
+          <span>{t("metrics.duration")}</span>
+          <strong className="data-duration-value">
+            <span><b>{formatCompact(activeDuration.hours, locale)}</b><em>{t("metrics.hours")}</em></span>
+            <span><b>{formatCompact(activeDuration.minutes, locale)}</b><em>{t("metrics.minutes")}</em></span>
+          </strong>
+          <small>{data.totals.activeDays} {t("metrics.activeDays").toLowerCase()}</small>
+        </div>
         <div className="featured"><span>{t("metrics.tokens")}</span><strong>{formatCompact(tokenTotal(data.totals.usage), locale)}</strong><small>{t("data.localTokenFootnote")}</small></div>
         <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
         <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
@@ -195,16 +216,13 @@ export function DataPage({ locale }: { locale: Locale }) {
 
       <section className="data-source-strip" aria-label={t("data.sourcesTitle")}>
         <header><span>{t("data.sourcesTitle")}</span><small>{t("data.sourcesBody")}</small></header>
-        <div>{(sources.data ?? []).map((source) => <article key={source.agent} className={source.available ? "available" : "missing"}><AgentBadge agent={source.agent} compact /><span>{source.available ? `${formatCompact(source.sessionCount, locale)} ${t("metrics.sessions")}` : t("data.sourceMissing")}</span></article>)}</div>
+        <div>{selectedSources.length
+          ? selectedSources.map((source) => <article key={source.agent} className="available"><AgentBadge agent={source.agent} compact /><span>{formatCompact(source.sessionCount, locale)} {t("metrics.sessions")}</span></article>)
+          : <span className="data-source-empty">{t("data.sourcesNoneSelected")}</span>}
+        </div>
       </section>
 
       <CursorAccountUsagePanel locale={locale} range={range} />
-
-      {phrases.data ? <CatchphraseClouds data={phrases.data} locale={locale} /> : phrases.isError ? (
-        <section className="catchphrase-section">
-          <ErrorState retry={() => void phrases.refetch()} />
-        </section>
-      ) : null}
 
       <section className="data-panel trend-panel">
         <header className="panel-heading"><div><span className="section-index">01</span><h2>{t("data.trend")}</h2><p>{t(isToday ? "data.trendHourlyBody" : "data.trendBody", { range: rangeText })}</p></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>
@@ -251,11 +269,11 @@ export function DataPage({ locale }: { locale: Locale }) {
       </section>
 
       <section className="events-section">
-        <header className="section-heading events-heading"><div><span className="section-index">06</span><h2>{t("data.events")}</h2><p>{t("data.eventsBody", { range: rangeText })}</p></div><div className="event-summary"><span><strong>{tasks.data.length}</strong>{t("metrics.tasks")}</span><span className={reviewed ? "attention" : "clear"}>{reviewed ? t("data.reviewCount", { count: reviewed }) : <><CheckCircle2 size={13} />{t("today.noReview")}</>}</span></div></header>
+        <header className="section-heading events-heading"><div><span className="section-index">06</span><h2>{t("data.events")}</h2><p>{t("data.eventsBody", { range: rangeText })}</p></div><div className="event-summary"><span><strong>{filteredTasks.length}</strong>{t("metrics.tasks")}</span></div></header>
         {selectedTasks.length ? <div className="task-merge-bar"><span>{t("task.selected", { count: selectedTasks.length })}</span><button className="button secondary" onClick={() => merge.mutate(selectedTasks)} disabled={selectedTasks.length < 2 || merge.isPending}><Merge size={13} />{t("task.merge")}</button></div> : null}
         {visibleTasks.length ? <div className="event-grid">{visibleTasks.map((task) => <WorkEventCard key={task.id} task={task} locale={locale} selected={selectedTasks.includes(task.id)} onSelect={(value) => toggleTask(task.id, value)} onOpen={() => openTask(task)} onAcceptSuggestion={task.suggestedTaskId ? () => merge.mutate([task.suggestedTaskId!, task.id]) : undefined} />)}</div> : <EmptyState title={t("data.noEvents")} body={t("data.noEventsBody")} />}
         <footer className="events-footer">
-          {tasks.data.length > 12 ? <button className="button subtle" onClick={() => setShowAllEvents((value) => !value)}>{showAllEvents ? t("data.showLess") : t("data.showAll", { count: tasks.data.length })}</button> : <span />}
+          {filteredTasks.length > 12 ? <button className="button subtle" onClick={() => setShowAllEvents((value) => !value)}>{showAllEvents ? t("data.showLess") : t("data.showAll", { count: filteredTasks.length })}</button> : <span />}
           <button className="inline-link" onClick={() => setPage("sessions")}>{t("sessions.title")}<ArrowRight size={14} /></button>
         </footer>
       </section>

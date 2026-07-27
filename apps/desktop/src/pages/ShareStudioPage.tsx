@@ -6,6 +6,7 @@ import {
   Clipboard,
   Download,
   EyeOff,
+  History,
   Image,
   Languages,
   LayoutTemplate,
@@ -36,10 +37,6 @@ const templateMetricIds: Record<ShareTemplate, string[]> = {
   "developer-wrapped": ["sessions", "duration", "tokens", "files", "lines", "topAgent", "topModel", "activeDate"],
   "agent-comparison": ["sessions", "duration", "tokens", "files", "lines", "cost"],
   "session-recap": ["duration", "tokens", "files", "lines", "tools", "cost"],
-  "daily-review": ["sessions", "duration", "tokens", "files", "lines"],
-  "session-breakdown": ["duration", "files", "lines"],
-  "weekly-recap": ["sessions", "duration", "files", "lines", "topAgent", "topModel", "activeDate"],
-  "ship-card": ["duration", "files", "lines"],
   "vcti-card": ["startStructure", "delegation", "guardrail", "debugDepth", "shipping", "toolNomad"],
   catchphrases: [],
 };
@@ -92,11 +89,16 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
   const range = useUiStore((state) => state.range);
   const requestedTemplate = useUiStore((state) => state.shareTemplate);
   const [request, setRequest] = useState<ShareRenderRequest>(() => defaultRequest(locale, requestedTemplate === "vcti-card" ? "90d" : range, requestedTemplate));
+  const sessionTemplate = request.templateId === "session-recap";
   const [zoom, setZoom] = useState(100);
   const previewStageRef = useRef<HTMLDivElement>(null);
   const [working, setWorking] = useState<string>();
   const [notice, setNotice] = useState<string>();
-  const sessions = useQuery({ queryKey: ["share-sessions", range], queryFn: () => api.sessions(range, undefined, undefined, 0, 80) });
+  const sessions = useQuery({
+    queryKey: ["share-sessions", range],
+    queryFn: () => api.sessions(range, undefined, undefined, 0, 80),
+    enabled: sessionTemplate,
+  });
   const deferredRequest = useDeferredValue(request);
   const preview = useQuery({ queryKey: ["share-preview", deferredRequest], queryFn: () => api.previewShare(deferredRequest), retry: false });
   useEffect(() => {
@@ -105,6 +107,11 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
       ? current
       : { ...current, range, privacyReviewed: false });
   }, [range]);
+  useEffect(() => {
+    if (!sessionTemplate || !request.sessionId || !sessions.data) return;
+    if (sessions.data.items.some((session) => session.id === request.sessionId)) return;
+    setRequest((current) => ({ ...current, sessionId: undefined, privacyReviewed: false }));
+  }, [request.sessionId, sessionTemplate, sessions.data]);
   const patch = <K extends keyof ShareRenderRequest>(key: K, value: ShareRenderRequest[K]) => {
     setNotice(undefined);
     setRequest((current) => ({ ...current, [key]: value, privacyReviewed: key === "privacyReviewed" ? Boolean(value) : false }));
@@ -123,7 +130,6 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
     setZoom(100);
     setNotice(undefined);
   };
-  const sessionTemplate = request.templateId === "session-recap" || request.templateId === "session-breakdown" || request.templateId === "ship-card";
   const hideSensitive = () => setRequest((current) => ({ ...current, showModel: false, showProject: false, showCost: false, showBehaviorEvidence: false, privacyReviewed: false }));
   const toggleMetric = (id: string, visible: boolean) => patch("metrics", request.metrics.map((metric) => metric.id === id ? { ...metric, visible } : metric));
   const doExport = async (format: "png" | "svg") => {
@@ -178,6 +184,27 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
             <div className="template-list">
               <h3 className="template-group-label">{t("share.dataTemplates")}</h3>
               {dataTemplates.map((template, index) => <button key={template} className={request.templateId === template ? "active" : ""} onClick={() => chooseTemplate(template)}><i>D{index + 1}</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
+              {sessionTemplate ? (
+                <div className="session-share-picker">
+                  <div>
+                    <History size={15} />
+                    <span><strong>{t("share.selectSession")}</strong><small>{t("share.selectSessionBody")}</small></span>
+                  </div>
+                  <select
+                    aria-label={t("share.selectSession")}
+                    value={request.sessionId ?? ""}
+                    disabled={sessions.isLoading || !sessions.data?.items.length}
+                    onChange={(event) => patch("sessionId", event.target.value || undefined)}
+                  >
+                    <option value="">{sessions.isLoading ? t("share.loadingSessions") : t("share.latestSession")}</option>
+                    {sessions.data?.items.map((session) => (
+                      <option key={session.id} value={session.id}>
+                        {session.title || session.model || agentName(session.agent)} · {session.projectLabel}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               <h3 className="template-group-label">{t("share.identityTemplates")}</h3>
               {identityTemplates.map((template) => <button key={template} className={request.templateId === template ? "active identity" : "identity"} onClick={() => chooseTemplate(template)}><i>{template === "vcti-card" ? "V" : "C"}</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
             </div>
@@ -198,7 +225,6 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
             </div>
           </section>
 
-          {sessionTemplate ? <section className="control-section"><h2>{t("share.selectSession")}</h2><select value={request.sessionId ?? ""} onChange={(event) => patch("sessionId", event.target.value || undefined)}><option value="">{t("share.latestSession")}</option>{sessions.data?.items.map((session) => <option key={session.id} value={session.id}>{session.title || session.model || agentName(session.agent)} · {session.projectLabel}</option>)}</select></section> : null}
           <section className="control-section form-section">
             <label><span>{t("share.titleField")} <small>{t("share.optional")}</small></span><input value={request.title} onChange={(event) => patch("title", event.target.value)} maxLength={120} /></label>
             <label><span>{t("share.summaryField")} <small>{t("share.optional")}</small></span><textarea value={request.summary} onChange={(event) => patch("summary", event.target.value)} rows={3} maxLength={220} /></label>

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { BrainCircuit, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
@@ -45,11 +45,6 @@ export function SettingsPage() {
     setLoginEnabled(await isEnabled());
     await setSetting("launchAtLogin", String(value));
   };
-  const setDeepMode = async (mode: "cli" | "api") => {
-    await api.setSetting("deepReviewMode", mode);
-    await api.setSetting("deepReviewProvider", mode === "cli" ? "codex" : "openai");
-    await client.invalidateQueries({ queryKey: ["settings"] });
-  };
   const exclude = useMutation({
     mutationFn: async ({ hash, excluded }: { hash: string; excluded: boolean }) => excluded ? api.includeProject(hash) : api.excludeProject(hash),
     onSuccess: async () => { await Promise.all([client.invalidateQueries({ queryKey: ["projects"] }), client.invalidateQueries({ queryKey: ["today"] }), client.invalidateQueries({ queryKey: ["sessions"] })]); },
@@ -87,14 +82,6 @@ export function SettingsPage() {
           <div className="setting-row multiline"><div><strong>{t("settings.gitRead")}</strong><p>{t("settings.gitReadBody")}</p></div><Toggle checked={data.gitReadAllowed === "true"} onCheckedChange={(value) => void setSetting("gitReadAllowed", String(value))} label={t("settings.gitRead")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.credentials")}</strong><p>{t("settings.credentialsBody")}</p></div><Toggle checked={data.credentialsAllowed === "true"} onCheckedChange={(value) => void setSetting("credentialsAllowed", String(value))} label={t("settings.credentials")} /></div>
           <div className={`setting-row multiline nested-setting ${data.credentialsAllowed !== "true" ? "disabled-setting" : ""}`}><div><strong>{t("settings.cursorDashboardUsage")}</strong><p>{t(data.credentialsAllowed === "true" ? "settings.cursorDashboardUsageBody" : "settings.cursorDashboardUsageRequiresCredentials")}</p></div><Toggle checked={data.cursorDashboardUsage === "true"} disabled={data.credentialsAllowed !== "true"} onCheckedChange={(value) => void setSetting("cursorDashboardUsage", String(value))} label={t("settings.cursorDashboardUsage")} /></div>
-        </section>
-
-        <section className="settings-section">
-          <header><BrainCircuit size={17} /><div><h2>{t("settings.deepReview")}</h2><p>{t("settings.deepReviewBody")}</p></div></header>
-          <div className="setting-row multiline"><div><strong>{t("settings.deepReviewMode")}</strong><p>{data.deepReviewMode === "cli" ? t("settings.deepReviewCliBody") : t("settings.deepReviewApiBody")}</p></div><div className="segmented compact"><button className={data.deepReviewMode === "cli" ? "active" : ""} onClick={() => void setDeepMode("cli")}>{t("deepReview.cli")}</button><button className={data.deepReviewMode === "api" ? "active" : ""} onClick={() => void setDeepMode("api")}>{t("deepReview.api")}</button></div></div>
-          <div className="setting-row"><div><strong>{t("settings.deepReviewProvider")}</strong></div><select value={data.deepReviewProvider} onChange={(event) => void setSetting("deepReviewProvider", event.target.value)}>{data.deepReviewMode === "cli" ? <><option value="codex">Codex CLI</option><option value="claude">Claude CLI</option></> : <><option value="openai">OpenAI API</option><option value="anthropic">Anthropic API</option></>}</select></div>
-          <div className="setting-row multiline"><div><strong>{t("settings.deepReviewModel")}</strong><p>{t("settings.deepReviewModelBody")}</p></div><input className="setting-text-input" defaultValue={data.deepReviewModel} placeholder={t("settings.deepReviewModelPlaceholder")} onBlur={(event) => void setSetting("deepReviewModel", event.target.value.trim())} /></div>
-          {data.deepReviewMode === "api" ? <p className="setting-callout">{t("settings.deepReviewEnvHint", { key: data.deepReviewProvider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY" })}</p> : null}
         </section>
 
         <section className="settings-section">

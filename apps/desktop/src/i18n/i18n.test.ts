@@ -26,6 +26,13 @@ describe("localization resources", () => {
     expect(enUS.app.tagline).toBe("Track your agents. Discover your coding type.");
   });
 
+  it("does not expose the retired review workspace", () => {
+    expect("reviews" in zhCN.navigation).toBe(false);
+    expect("reviews" in enUS.navigation).toBe(false);
+    expect("deepReview" in zhCN.settings).toBe(false);
+    expect("deepReview" in enUS.settings).toBe(false);
+  });
+
   it("does not ship a generic session-story vocabulary", () => {
     expect("story" in zhCN.sessions).toBe(false);
     expect("story" in enUS.sessions).toBe(false);

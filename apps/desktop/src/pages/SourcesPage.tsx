@@ -1,11 +1,11 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, CheckCircle2, CircleHelp, CircleMinus, Database, RadioTower, RefreshCw, ShieldCheck, Slash } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { BookOpenCheck, Check, CheckCircle2, CircleHelp, CircleMinus, Database, LockKeyhole, RadioTower, RefreshCw, Settings2, ShieldCheck, Slash } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AgentBadge, ErrorState, LoadingState, PageHeader } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDateTime } from "../lib/format";
 import { capabilityTranslationKey } from "../lib/sourceStatus";
-import type { Locale } from "../types";
+import type { Locale, SourceStatus } from "../types";
 
 export function SourcesPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
@@ -13,6 +13,31 @@ export function SourcesPage({ locale }: { locale: Locale }) {
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 5_000 });
   const index = useQuery({ queryKey: ["index-status"], queryFn: api.indexStatus, refetchInterval: 1_500 });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const selection = useMutation({
+    mutationFn: ({ agent, selected }: { agent: string; selected: boolean }) =>
+      api.setSourceSelected(agent, selected),
+    onMutate: async ({ agent, selected }) => {
+      await client.cancelQueries({ queryKey: ["sources"] });
+      const previous = client.getQueryData<SourceStatus[]>(["sources"]);
+      client.setQueryData<SourceStatus[]>(["sources"], (current) =>
+        current?.map((source) =>
+          source.agent === agent ? { ...source, selected } : source,
+        ),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) client.setQueryData(["sources"], context.previous);
+    },
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["sources"] }),
+        client.invalidateQueries({ queryKey: ["overview"] }),
+        client.invalidateQueries({ queryKey: ["tasks"] }),
+      ]);
+    },
+  });
   const refresh = async () => { await api.refreshIndex(true); await Promise.all([client.invalidateQueries({ queryKey: ["index-status"] }), client.invalidateQueries({ queryKey: ["sources"] })]); };
   return (
     <div className="page sources-page">
@@ -21,9 +46,24 @@ export function SourcesPage({ locale }: { locale: Locale }) {
       {sources.isLoading ? <LoadingState /> : sources.isError || !sources.data ? <ErrorState retry={() => void sources.refetch()} /> : <div className="source-grid">{sources.data.map((source, index) => {
         const liveProvider = live.data?.hookStatus.providers.find((provider) => provider.provider === source.agent);
         const supportsLive = source.agent === "claude-code" || source.agent === "codex";
-        return <section className={`source-card capability-${source.capabilityLevel}`} key={source.agent}>
+        const selected = source.available && source.selected;
+        const cursorAccountDisabled = source.agent === "cursor" && settings.data?.cursorDashboardUsage === "false";
+        return <section className={`source-card capability-${source.capabilityLevel} ${selected ? "is-selected" : "is-unselected"} ${source.available ? "" : "is-missing"}`} key={source.agent}>
           <span className="source-number">{String(index + 1).padStart(2, "0")}</span>
-          <header><AgentBadge agent={source.agent} /><span className={`source-state ${source.available ? "available" : "missing"}`}>{source.available ? <CheckCircle2 size={13} /> : <Slash size={13} />}{source.available ? t("sources.available") : t("sources.notFound")}</span></header>
+          <header>
+            <AgentBadge agent={source.agent} />
+            <span className={`source-state ${source.available ? "available" : "missing"}`}>{source.available ? <CheckCircle2 size={13} /> : <Slash size={13} />}{source.available ? t("sources.available") : t("sources.notFound")}</span>
+          </header>
+          <label className={`source-selector ${selected ? "selected" : ""} ${source.available ? "" : "disabled"}`}>
+            <input
+              type="checkbox"
+              checked={selected}
+              disabled={!source.available || selection.isPending}
+              onChange={(event) => selection.mutate({ agent: source.agent, selected: event.target.checked })}
+            />
+            <span className="source-selector-box"><Check size={11} strokeWidth={2.8} /></span>
+            <span>{t(selected ? "sources.included" : source.available ? "sources.excluded" : "sources.unavailableSelection")}</span>
+          </label>
           <div className="source-count"><strong>{formatCompact(source.sessionCount, locale)}</strong><span>{t("metrics.sessions")}</span></div>
           <div className="source-capability"><span>{t("sources.readability")}</span><strong>{t(capabilityTranslationKey(source.capabilityLevel, source.available))}</strong></div>
           <div className={`source-live ${liveProvider?.installed ? "ready" : ""}`}>
@@ -31,6 +71,11 @@ export function SourcesPage({ locale }: { locale: Locale }) {
             <span>{t("sources.live")}</span>
             <strong>{supportsLive ? t(liveProvider?.installed ? "sources.liveReady" : "sources.liveNeedsSetup") : t("sources.liveUnavailable")}</strong>
           </div>
+          {cursorAccountDisabled ? <div className="source-account-warning">
+            <LockKeyhole size={14} />
+            <div><strong>{t("cursorUsage.disabledTitle")}</strong><span>{t("sources.cursorAccountBody")}</span></div>
+            <button onClick={() => void api.showSettings()} aria-label={t("cursorUsage.openSettings")}><Settings2 size={12} />{t("sources.enableCursorAccount")}</button>
+          </div> : null}
           <footer><Database size={13} /><span>{source.lastIndexedAt ? t("sources.lastIndexed", { time: formatDateTime(source.lastIndexedAt, locale) }) : t("sources.notIndexed")}</span></footer>
         </section>;
       })}</div>}

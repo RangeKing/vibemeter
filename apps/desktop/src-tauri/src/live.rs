@@ -8,7 +8,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,9 @@ use tauri::{AppHandle, Emitter};
 
 const RAW_RETENTION_DAYS: i64 = 90;
 const MAX_HOOK_BYTES: u64 = 768 * 1024;
+const MAX_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
+const MAX_TRANSCRIPT_READ_BYTES: u64 = MAX_TRANSCRIPT_TAIL_BYTES;
+const MAX_TRANSCRIPT_LINE_BYTES: usize = 256 * 1024;
 const MANAGED_MARKER: &str = "vibemeter_hook.py";
 const CODEX_PROBE_TTL: StdDuration = StdDuration::from_secs(20);
 const CLAUDE_HOOKS: &[(&str, Option<&str>, Option<u64>)] = &[
@@ -91,6 +94,31 @@ struct CodexHookProbeCache {
 
 static CODEX_HOOK_PROBE: Lazy<Mutex<CodexHookProbeCache>> =
     Lazy::new(|| Mutex::new(CodexHookProbeCache::default()));
+
+#[derive(Debug)]
+struct CodexTranscriptWatch {
+    path: PathBuf,
+    offset: u64,
+    discard_partial_line: bool,
+    initialized: bool,
+    collaboration_mode: CodexCollaborationMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CodexCollaborationMode {
+    #[default]
+    Default,
+    Plan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CodexMetadataSignal {
+    phase: String,
+    status: String,
+    action_kind: String,
+    action_label: String,
+    occurred_at: String,
+}
 const PYTHON_HOOK: &str = r#"#!/usr/bin/python3
 import json
 import os
@@ -178,9 +206,13 @@ pub struct LiveMonitor {
 
 impl LiveMonitor {
     pub fn start(database: Database, app: AppHandle) -> AppResult<Self> {
+        database.purge_misattributed_cursor_live_events()?;
+        database.purge_codex_memory_live_events()?;
         database.purge_expired_live_events()?;
         let sessions = Arc::new(RwLock::new(HashMap::new()));
+        let auxiliary_sessions = Arc::new(RwLock::new(HashMap::new()));
         let socket_ready = Arc::new(AtomicBool::new(false));
+        let codex_transcripts = Arc::new(Mutex::new(HashMap::new()));
         let monitor = Self {
             sessions: sessions.clone(),
             socket_ready: socket_ready.clone(),
@@ -202,6 +234,38 @@ impl LiveMonitor {
         let listener = UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         socket_ready.store(true, Ordering::SeqCst);
+        let transcript_sessions = sessions.clone();
+        let transcript_socket_ready = socket_ready.clone();
+        let transcript_app = app.clone();
+        let transcript_watches = codex_transcripts.clone();
+        std::thread::spawn(move || {
+            loop {
+                let updates = poll_codex_transcripts(&transcript_watches);
+                for (session_id, signal, live_append) in updates {
+                    let transition = merge_codex_metadata(
+                        &transcript_sessions,
+                        &session_id,
+                        signal,
+                        live_append,
+                    );
+                    let snapshot = snapshot_from(
+                        &transcript_sessions,
+                        transcript_socket_ready.load(Ordering::SeqCst),
+                    );
+                    let _ = transcript_app.emit("live-update", &snapshot);
+                    if let Some(status) = transition.as_deref()
+                        && let Some(active) =
+                            snapshot.sessions.iter().find(|item| item.id == session_id)
+                    {
+                        notify_if_background(active, status);
+                    }
+                }
+                prune_transcript_watches(&transcript_watches, &transcript_sessions);
+                std::thread::sleep(StdDuration::from_millis(250));
+            }
+        });
+        let listener_watches = codex_transcripts;
+        let listener_auxiliary_sessions = auxiliary_sessions;
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
@@ -217,6 +281,18 @@ impl LiveMonitor {
                     continue;
                 };
                 if let Some((session, raw, event_name)) = session_from_envelope(&envelope) {
+                    let auxiliary_memory_activity = is_codex_memory_activity(&envelope);
+                    let Some(session) = fold_codex_memory_activity(
+                        &sessions,
+                        &listener_auxiliary_sessions,
+                        &envelope,
+                        session,
+                    ) else {
+                        continue;
+                    };
+                    if !auxiliary_memory_activity {
+                        register_codex_transcript(&listener_watches, &envelope, &session);
+                    }
                     let transitioned_session_id = session.id.clone();
                     let received = session.updated_at.clone();
                     let expires = DateTime::parse_from_rfc3339(&received)
@@ -240,7 +316,7 @@ impl LiveMonitor {
                     let transition = merge_session(&sessions, session);
                     let snapshot = snapshot_from(&sessions, socket_ready.load(Ordering::SeqCst));
                     let _ = app.emit("live-update", &snapshot);
-                    if matches!(transition.as_deref(), Some("waiting" | "error"))
+                    if transition.is_some()
                         && let Some(active) = snapshot
                             .sessions
                             .iter()
@@ -761,6 +837,9 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
         })?;
     let event_name = string_field(payload, &["hook_event_name", "event", "type"])
         .unwrap_or_else(|| "Unknown".into());
+    if !hook_event_belongs_to_provider(provider, payload, &event_name) {
+        return None;
+    }
     let cwd = string_field(payload, &["cwd", "working_directory"]).unwrap_or_default();
     let project_label = project_label_from_cwd(&cwd);
     let tool = string_field(payload, &["tool_name", "tool"]).unwrap_or_default();
@@ -835,6 +914,119 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
     };
     let raw = serde_json::to_string(envelope).ok()?;
     Some((session, raw, event_name))
+}
+
+fn fold_codex_memory_activity(
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
+    auxiliary_sessions: &Arc<RwLock<HashMap<String, String>>>,
+    envelope: &Value,
+    mut incoming: LiveSession,
+) -> Option<LiveSession> {
+    if incoming.agent != "codex" || !is_codex_memory_activity(envelope) {
+        return Some(incoming);
+    }
+    let auxiliary_source_id = incoming.source_session_id.clone();
+    let aliased_parent = auxiliary_sessions
+        .read()
+        .ok()
+        .and_then(|aliases| aliases.get(&auxiliary_source_id).cloned());
+    let parent = sessions.read().ok().and_then(|active| {
+        aliased_parent
+            .as_ref()
+            .and_then(|id| active.get(id).cloned())
+            .or_else(|| {
+                active
+                    .values()
+                    .filter(|session| {
+                        session.agent == "codex"
+                            && session.project_label != "memories"
+                            && same_process_context(session, &incoming)
+                            && recent_before(session, &incoming)
+                    })
+                    .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+                    .cloned()
+            })
+    })?;
+    if aliased_parent.is_none()
+        && let Ok(mut aliases) = auxiliary_sessions.write()
+    {
+        aliases.insert(auxiliary_source_id, parent.id.clone());
+    }
+    incoming.id = parent.id;
+    incoming.source_session_id = parent.source_session_id;
+    incoming.project_label = parent.project_label;
+    incoming.started_at = parent.started_at;
+    incoming.status = "running".into();
+    incoming.phase = "reading".into();
+    incoming.waiting_reason = None;
+    incoming.process_id = parent.process_id.or(incoming.process_id);
+    incoming.origin = parent.origin.or(incoming.origin);
+    incoming.actions = vec![LiveAction {
+        kind: "memory".into(),
+        label: "Memory".into(),
+        occurred_at: incoming.updated_at.clone(),
+    }];
+    Some(incoming)
+}
+
+fn is_codex_memory_activity(envelope: &Value) -> bool {
+    let Some(cwd) = envelope
+        .get("payload")
+        .and_then(Value::as_object)
+        .and_then(|payload| string_field(payload, &["cwd", "working_directory"]))
+    else {
+        return false;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    Path::new(&cwd).starts_with(codex_home.join("memories"))
+}
+
+fn same_process_context(parent: &LiveSession, auxiliary: &LiveSession) -> bool {
+    match (parent.process_id, auxiliary.process_id) {
+        (Some(parent), Some(auxiliary)) => parent == auxiliary,
+        _ => parent.origin == auxiliary.origin,
+    }
+}
+
+fn recent_before(parent: &LiveSession, auxiliary: &LiveSession) -> bool {
+    let Ok(parent_time) = DateTime::parse_from_rfc3339(&parent.updated_at) else {
+        return false;
+    };
+    let Ok(auxiliary_time) = DateTime::parse_from_rfc3339(&auxiliary.updated_at) else {
+        return false;
+    };
+    let age = auxiliary_time.signed_duration_since(parent_time);
+    age >= Duration::zero() && age <= Duration::minutes(5)
+}
+
+fn hook_event_belongs_to_provider(
+    provider: &str,
+    payload: &Map<String, Value>,
+    event_name: &str,
+) -> bool {
+    match provider {
+        "claude" | "claude-code" => {
+            let cursor_payload = [
+                "cursor_version",
+                "composer_mode",
+                "conversation_id",
+                "workspace_roots",
+            ]
+            .iter()
+            .any(|key| payload.contains_key(*key));
+            !cursor_payload
+                && CLAUDE_HOOKS
+                    .iter()
+                    .any(|(supported_event, _, _)| *supported_event == event_name)
+        }
+        "codex" => CODEX_EVENT_NAMES.contains(&event_name),
+        _ => false,
+    }
 }
 
 fn project_label_from_cwd(cwd: &str) -> String {
@@ -932,6 +1124,300 @@ fn clean_project_name(name: &str) -> Option<String> {
     .then(|| name.to_string())
 }
 
+fn register_codex_transcript(
+    watches: &Arc<Mutex<HashMap<String, CodexTranscriptWatch>>>,
+    envelope: &Value,
+    session: &LiveSession,
+) {
+    if session.agent != "codex" {
+        return;
+    }
+    let Some(path) = envelope
+        .get("payload")
+        .and_then(Value::as_object)
+        .and_then(|payload| string_field(payload, &["transcript_path", "transcriptPath"]))
+        .and_then(|path| validated_codex_transcript_path(&path))
+    else {
+        return;
+    };
+    let Ok(metadata) = fs::metadata(&path) else {
+        return;
+    };
+    let offset = metadata.len().saturating_sub(MAX_TRANSCRIPT_TAIL_BYTES);
+    if let Ok(mut guard) = watches.lock() {
+        let replace = guard
+            .get(&session.id)
+            .is_none_or(|existing| existing.path != path);
+        if replace {
+            guard.insert(
+                session.id.clone(),
+                CodexTranscriptWatch {
+                    path,
+                    offset,
+                    discard_partial_line: offset > 0,
+                    initialized: false,
+                    collaboration_mode: CodexCollaborationMode::Default,
+                },
+            );
+        }
+    }
+}
+
+fn validated_codex_transcript_path(path: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let root = home.join(".codex/sessions").canonicalize().ok()?;
+    let path = Path::new(path).canonicalize().ok()?;
+    (path.starts_with(&root) && path.is_file()).then_some(path)
+}
+
+fn poll_codex_transcripts(
+    watches: &Arc<Mutex<HashMap<String, CodexTranscriptWatch>>>,
+) -> Vec<(String, CodexMetadataSignal, bool)> {
+    let Ok(mut guard) = watches.lock() else {
+        return Vec::new();
+    };
+    let mut updates = Vec::new();
+    for (session_id, watch) in guard.iter_mut() {
+        let Ok(metadata) = fs::metadata(&watch.path) else {
+            continue;
+        };
+        if metadata.len() < watch.offset {
+            watch.offset = metadata.len().saturating_sub(MAX_TRANSCRIPT_TAIL_BYTES);
+            watch.discard_partial_line = watch.offset > 0;
+            watch.initialized = false;
+            watch.collaboration_mode = CodexCollaborationMode::Default;
+        }
+        if metadata.len() == watch.offset {
+            continue;
+        }
+        let Ok(mut file) = fs::File::open(&watch.path) else {
+            continue;
+        };
+        if file.seek(SeekFrom::Start(watch.offset)).is_err() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if file
+            .take(MAX_TRANSCRIPT_READ_BYTES)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.is_empty()
+        {
+            continue;
+        }
+        let consumed = if bytes.ends_with(b"\n") {
+            bytes.len()
+        } else if let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') {
+            last_newline + 1
+        } else if bytes.len() as u64 == MAX_TRANSCRIPT_READ_BYTES {
+            bytes.len()
+        } else {
+            0
+        };
+        if consumed == 0 {
+            continue;
+        }
+        watch.offset = watch.offset.saturating_add(consumed as u64);
+        let mut lines = bytes[..consumed].split(|byte| *byte == b'\n');
+        if watch.discard_partial_line {
+            let _ = lines.next();
+            watch.discard_partial_line = false;
+        }
+        let mut latest_signal = None;
+        for line in lines {
+            if line.is_empty() || line.len() > MAX_TRANSCRIPT_LINE_BYTES {
+                continue;
+            }
+            if let Some(signal) = codex_metadata_signal(line, &mut watch.collaboration_mode) {
+                latest_signal = Some(signal);
+            }
+        }
+        if let Some(signal) = latest_signal {
+            updates.push((session_id.clone(), signal, watch.initialized));
+        }
+        watch.initialized = true;
+    }
+    updates
+}
+
+fn prune_transcript_watches(
+    watches: &Arc<Mutex<HashMap<String, CodexTranscriptWatch>>>,
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
+) {
+    let active = sessions
+        .read()
+        .map(|sessions| sessions.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    if let Ok(mut guard) = watches.lock() {
+        guard.retain(|session_id, _| active.contains(session_id));
+    }
+}
+
+fn codex_metadata_signal(
+    line: &[u8],
+    collaboration_mode: &mut CodexCollaborationMode,
+) -> Option<CodexMetadataSignal> {
+    let record = serde_json::from_slice::<Value>(line).ok()?;
+    let record_type = record.get("type").and_then(Value::as_str)?;
+    let payload = record.get("payload").and_then(Value::as_object)?;
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let occurred_at = record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .filter(|timestamp| DateTime::parse_from_rfc3339(timestamp).is_ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| Utc::now().to_rfc3339());
+
+    if record_type == "turn_context" {
+        *collaboration_mode = match payload
+            .get("collaboration_mode")
+            .and_then(Value::as_object)
+            .and_then(|mode| mode.get("mode"))
+            .and_then(Value::as_str)
+        {
+            Some("plan") => CodexCollaborationMode::Plan,
+            _ => CodexCollaborationMode::Default,
+        };
+        return Some(metadata_signal(
+            collaboration_phase(*collaboration_mode),
+            "running",
+            "session",
+            collaboration_phase(*collaboration_mode),
+            occurred_at,
+        ));
+    }
+
+    if payload_type == "task_complete" {
+        return Some(metadata_signal(
+            "completed",
+            "completed",
+            "completed",
+            "Completed",
+            occurred_at,
+        ));
+    }
+    if payload_type.contains("compact") {
+        return Some(metadata_signal(
+            "compacting",
+            "running",
+            "compact",
+            "Context compacted",
+            occurred_at,
+        ));
+    }
+    if matches!(payload_type, "patch_apply_begin" | "patch_apply_end") {
+        return Some(metadata_signal(
+            "editing",
+            "running",
+            "edit",
+            "apply_patch",
+            occurred_at,
+        ));
+    }
+    if matches!(
+        payload_type,
+        "task_started" | "agent_reasoning" | "reasoning"
+    ) || (record_type == "response_item" && payload_type == "reasoning")
+    {
+        let phase = collaboration_phase(*collaboration_mode);
+        return Some(metadata_signal(
+            phase,
+            "running",
+            if phase == "planning" { "plan" } else { "think" },
+            phase,
+            occurred_at,
+        ));
+    }
+    if record_type == "response_item"
+        && matches!(payload_type, "function_call" | "custom_tool_call")
+    {
+        let tool = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(safe_tool_name)
+            .unwrap_or_else(|| "tool".into());
+        let (phase, action_kind) = phase_for("", &tool, "running");
+        return Some(metadata_signal(
+            phase,
+            "running",
+            action_kind,
+            &tool,
+            occurred_at,
+        ));
+    }
+    None
+}
+
+fn collaboration_phase(mode: CodexCollaborationMode) -> &'static str {
+    match mode {
+        CodexCollaborationMode::Plan => "planning",
+        CodexCollaborationMode::Default => "thinking",
+    }
+}
+
+fn safe_tool_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    (!name.is_empty()
+        && name.len() <= 80
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "_-.".contains(character)))
+    .then(|| name.to_string())
+}
+
+fn metadata_signal(
+    phase: &str,
+    status: &str,
+    action_kind: &str,
+    action_label: &str,
+    occurred_at: String,
+) -> CodexMetadataSignal {
+    CodexMetadataSignal {
+        phase: phase.into(),
+        status: status.into(),
+        action_kind: action_kind.into(),
+        action_label: action_label.into(),
+        occurred_at,
+    }
+}
+
+fn merge_codex_metadata(
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
+    session_id: &str,
+    signal: CodexMetadataSignal,
+    live_append: bool,
+) -> Option<String> {
+    let mut guard = sessions.write().ok()?;
+    let session = guard.get_mut(session_id)?;
+    if signal.status == "completed" && !live_append && session.status != "completed" {
+        return None;
+    }
+    if matches!(session.status.as_str(), "waiting" | "error") && signal.status == "running" {
+        return None;
+    }
+    let previous_status = session.status.clone();
+    session.status = signal.status;
+    session.phase = signal.phase;
+    session.updated_at = signal.occurred_at.clone();
+    session.waiting_reason = None;
+    session.actions.push(LiveAction {
+        kind: signal.action_kind,
+        label: signal.action_label,
+        occurred_at: signal.occurred_at,
+    });
+    if session.actions.len() > 3 {
+        session.actions.drain(0..session.actions.len() - 3);
+    }
+    if previous_status != session.status && session.status == "completed" {
+        Some(session.status.clone())
+    } else {
+        None
+    }
+}
+
 fn merge_session(
     sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
     incoming: LiveSession,
@@ -954,7 +1440,8 @@ fn merge_session(
         guard.insert(incoming.id.clone(), incoming.clone());
     }
     if previous_status.as_deref() != Some(incoming.status.as_str())
-        && matches!(incoming.status.as_str(), "waiting" | "error")
+        && (matches!(incoming.status.as_str(), "waiting" | "error")
+            || (incoming.status == "completed" && previous_status.is_some()))
     {
         Some(incoming.status)
     } else {
@@ -979,7 +1466,7 @@ fn snapshot_from(
     let urgent_session_id = items.first().map(|item| item.id.clone());
     let active_count = items
         .iter()
-        .filter(|item| item.status != "completed")
+        .filter(|item| matches!(item.status.as_str(), "waiting" | "error" | "running"))
         .count() as u64;
     LiveSnapshot {
         generated_at: Utc::now().to_rfc3339(),
@@ -1028,7 +1515,12 @@ fn phase_for<'a>(event: &'a str, tool: &'a str, status: &str) -> (&'a str, &'a s
         return ("completed", "completed");
     }
     let normalized = tool.to_ascii_lowercase();
-    if normalized.contains("test") || normalized.contains("lint") || normalized.contains("check") {
+    if normalized.contains("plan") {
+        ("planning", "plan")
+    } else if normalized.contains("test")
+        || normalized.contains("lint")
+        || normalized.contains("check")
+    {
         ("verifying", "verify")
     } else if normalized.contains("edit")
         || normalized.contains("write")
@@ -1060,11 +1552,16 @@ fn string_field(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 }
 
 fn notify_if_background(session: &LiveSession, status: &str) {
+    if !notification_allowed_for_origin(session, status) {
+        return;
+    }
     if source_is_foreground(session) {
         return;
     }
     let body = if status == "waiting" {
         format!("{} needs your attention.", provider_label(&session.agent))
+    } else if status == "completed" {
+        format!("{} finished its task.", provider_label(&session.agent))
     } else {
         format!("{} reported an error.", provider_label(&session.agent))
     };
@@ -1073,6 +1570,10 @@ fn notify_if_background(session: &LiveSession, status: &str) {
     let _ = Command::new("/usr/bin/osascript")
         .args(["-e", &script])
         .status();
+}
+
+fn notification_allowed_for_origin(session: &LiveSession, status: &str) -> bool {
+    status != "completed" || session.origin.as_deref() == Some("cli")
 }
 
 fn source_is_foreground(session: &LiveSession) -> bool {
@@ -1598,6 +2099,128 @@ mod tests {
     }
 
     #[test]
+    fn cursor_events_routed_through_claude_settings_do_not_create_phantom_claude_sessions() {
+        let cursor_event = json!({
+            "provider":"claude",
+            "received_at":Utc::now().to_rfc3339(),
+            "payload":{
+                "hook_event_name":"sessionStart",
+                "session_id":"cursor-composer",
+                "conversation_id":"cursor-composer",
+                "composer_mode":"agent",
+                "cursor_version":"3.12.30",
+                "workspace_roots":[]
+            }
+        });
+        assert!(session_from_envelope(&cursor_event).is_none());
+
+        let claude_event = json!({
+            "provider":"claude",
+            "received_at":Utc::now().to_rfc3339(),
+            "payload":{
+                "hook_event_name":"SessionStart",
+                "session_id":"real-claude",
+                "cwd":"/tmp/project"
+            }
+        });
+        let (session, _, _) = session_from_envelope(&claude_event).expect("Claude session");
+        assert_eq!(session.agent, "claude-code");
+        assert_eq!(session.status, "idle");
+    }
+
+    #[test]
+    fn codex_memory_subtasks_fold_into_the_parent_instance() {
+        let now = Utc::now();
+        let parent = LiveSession {
+            id: "parent-id".into(),
+            source_session_id: "parent-source".into(),
+            agent: "codex".into(),
+            project_label: "vibemeter".into(),
+            status: "running".into(),
+            phase: "thinking".into(),
+            started_at: (now - Duration::minutes(10)).to_rfc3339(),
+            updated_at: (now - Duration::seconds(8)).to_rfc3339(),
+            waiting_reason: None,
+            actions: Vec::new(),
+            process_id: Some(42),
+            origin: Some("desktop".into()),
+        };
+        let sessions = Arc::new(RwLock::new(HashMap::from([(
+            parent.id.clone(),
+            parent.clone(),
+        )])));
+        let aliases = Arc::new(RwLock::new(HashMap::new()));
+        let memory_root = dirs::home_dir()
+            .expect("home")
+            .join(".codex/memories")
+            .to_string_lossy()
+            .to_string();
+        let started = json!({
+            "provider":"codex",
+            "received_at":now.to_rfc3339(),
+            "process_id":42,
+            "origin":"desktop",
+            "payload":{
+                "session_id":"memory-child",
+                "hook_event_name":"SessionStart",
+                "cwd":memory_root
+            }
+        });
+        let (child, _, _) = session_from_envelope(&started).expect("memory child");
+        let folded = fold_codex_memory_activity(&sessions, &aliases, &started, child)
+            .expect("memory activity should have a parent");
+        assert_eq!(folded.id, parent.id);
+        assert_eq!(folded.source_session_id, parent.source_session_id);
+        assert_eq!(folded.project_label, "vibemeter");
+        assert_eq!(folded.status, "running");
+        assert_eq!(folded.phase, "reading");
+        assert_eq!(folded.actions[0].kind, "memory");
+
+        let ended = json!({
+            "provider":"codex",
+            "received_at":(now + Duration::seconds(4)).to_rfc3339(),
+            "process_id":42,
+            "origin":"desktop",
+            "payload":{
+                "session_id":"memory-child",
+                "hook_event_name":"SessionEnd",
+                "cwd":dirs::home_dir().expect("home").join(".codex/memories")
+            }
+        });
+        let (child, _, _) = session_from_envelope(&ended).expect("memory child end");
+        let folded = fold_codex_memory_activity(&sessions, &aliases, &ended, child)
+            .expect("remembered parent alias");
+        assert_eq!(folded.id, parent.id);
+        assert_eq!(folded.status, "running");
+        assert_eq!(folded.phase, "reading");
+    }
+
+    #[test]
+    fn standalone_codex_memory_subtasks_do_not_create_instances() {
+        let envelope = json!({
+            "provider":"codex",
+            "received_at":Utc::now().to_rfc3339(),
+            "process_id":42,
+            "origin":"desktop",
+            "payload":{
+                "session_id":"orphan-memory-child",
+                "hook_event_name":"SessionStart",
+                "cwd":dirs::home_dir().expect("home").join(".codex/memories")
+            }
+        });
+        let (child, _, _) = session_from_envelope(&envelope).expect("memory child");
+        assert!(
+            fold_codex_memory_activity(
+                &Arc::new(RwLock::new(HashMap::new())),
+                &Arc::new(RwLock::new(HashMap::new())),
+                &envelope,
+                child,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn live_project_label_prefers_repository_metadata_over_the_folder_name() {
         let directory = tempdir().expect("tempdir");
         let root = directory.path().join("TokenGraph");
@@ -1639,6 +2262,68 @@ mod tests {
     }
 
     #[test]
+    fn codex_metadata_listener_reads_only_whitelisted_state() {
+        let timestamp = Utc::now().to_rfc3339();
+        let turn = serde_json::to_vec(&json!({
+            "timestamp": timestamp,
+            "type": "turn_context",
+            "payload": {
+                "collaboration_mode": {"mode": "plan"},
+                "developer_instructions": "private-text-must-not-propagate"
+            }
+        }))
+        .expect("turn context");
+        let mut mode = CodexCollaborationMode::Default;
+        let signal = codex_metadata_signal(&turn, &mut mode).expect("plan signal");
+        assert_eq!(mode, CodexCollaborationMode::Plan);
+        assert_eq!(signal.phase, "planning");
+        assert_eq!(signal.status, "running");
+        assert!(!format!("{signal:?}").contains("private-text"));
+
+        let tool = serde_json::to_vec(&json!({
+            "timestamp": Utc::now().to_rfc3339(),
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": "private-arguments-must-not-propagate"
+            }
+        }))
+        .expect("tool");
+        let signal = codex_metadata_signal(&tool, &mut mode).expect("tool signal");
+        assert_eq!(signal.phase, "planning");
+        assert_eq!(signal.action_label, "update_plan");
+        assert!(!format!("{signal:?}").contains("private-arguments"));
+    }
+
+    #[test]
+    fn metadata_completion_and_tool_names_are_safely_classified() {
+        let mut mode = CodexCollaborationMode::Default;
+        let completed = serde_json::to_vec(&json!({
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "last_agent_message": "private"}
+        }))
+        .expect("complete");
+        let signal = codex_metadata_signal(&completed, &mut mode).expect("complete signal");
+        assert_eq!(signal.status, "completed");
+        assert_eq!(signal.phase, "completed");
+        assert!(!format!("{signal:?}").contains("private"));
+        assert_eq!(
+            safe_tool_name("apply_patch").as_deref(),
+            Some("apply_patch")
+        );
+        assert!(safe_tool_name("../unsafe/path").is_none());
+        assert_eq!(
+            phase_for("PreToolUse", "EnterPlanMode", "running").0,
+            "planning"
+        );
+        assert_eq!(
+            phase_for("PreToolUse", "update_plan", "running").0,
+            "planning"
+        );
+    }
+
+    #[test]
     fn priority_matches_product_contract() {
         assert!(priority("waiting") > priority("error"));
         assert!(priority("error") > priority("running"));
@@ -1667,5 +2352,8 @@ mod tests {
         assert!(!source_matches_frontmost(&desktop, "Terminal"));
         assert!(source_matches_frontmost(&cli, "iTerm2"));
         assert!(!source_matches_frontmost(&cli, "VibeMeter"));
+        assert!(!notification_allowed_for_origin(&desktop, "completed"));
+        assert!(notification_allowed_for_origin(&cli, "completed"));
+        assert!(notification_allowed_for_origin(&desktop, "waiting"));
     }
 }

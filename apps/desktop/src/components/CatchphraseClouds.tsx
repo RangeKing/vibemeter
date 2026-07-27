@@ -25,10 +25,18 @@ function phraseDetails(
   sessionsLabel: string,
 ): string {
   const summary = `${item.phrase} · ${formatCompact(item.occurrences, locale)}× · ${formatCompact(item.sessionCount, locale)} ${sessionsLabel}`;
-  if (!item.agents.length) return summary;
-  return `${summary}\n${item.agents
+  const models = item.models
+    .map((entry) => `${entry.model} ${formatCompact(entry.occurrences, locale)}×`)
+    .join(" · ");
+  const agents = item.agents
     .map((entry) => `${agentName(entry.agent)} ${formatCompact(entry.occurrences, locale)}×`)
-    .join(" · ")}`;
+    .join(" · ");
+  return [summary, models, agents].filter(Boolean).join("\n");
+}
+
+function phraseSource(item: PhraseCloud["items"][number]): string | undefined {
+  if (item.dominantModel) return item.dominantModel;
+  return item.dominantAgent ? agentName(item.dominantAgent) : undefined;
 }
 
 function CloudCard({
@@ -45,6 +53,9 @@ function CloudCard({
   agentColors: boolean;
 }) {
   const { t } = useTranslation();
+  const [lead, ...supporting] = cloud.items;
+  const leadColor = lead?.dominantAgent ? agentColor(lead.dominantAgent) : undefined;
+  const source = lead ? phraseSource(lead) : undefined;
   return (
     <article className={`catchphrase-card ${agentColors ? "agent-cloud" : "user-cloud"}`}>
       <header>
@@ -56,24 +67,48 @@ function CloudCard({
         <span className="catchphrase-sample">{t("catchphrases.sessions", { count: cloud.sampleSessions })}</span>
       </header>
       {cloud.status === "ready" ? (
-        <div className="catchphrase-cloud" aria-label={title}>
-          {cloud.items.map((item) => {
-            const color = item.dominantAgent ? agentColor(item.dominantAgent) : undefined;
-            return (
-              <span
-                className="catchphrase-token"
-                key={item.phrase}
-                title={phraseDetails(item, locale, t("metrics.sessions").toLowerCase())}
-                style={{
-                  "--phrase-weight": item.weight,
-                  "--phrase-color": color,
-                  fontSize: `${12 + item.weight * 18}px`,
-                } as React.CSSProperties}
-              >
-                {item.phrase}
-              </span>
-            );
-          })}
+        <div
+          className="catchphrase-cloud"
+          aria-label={title}
+          style={{ "--phrase-color": leadColor } as React.CSSProperties}
+        >
+          {lead ? (
+            <div
+              className="catchphrase-headliner"
+              title={phraseDetails(lead, locale, t("metrics.sessions").toLowerCase())}
+            >
+              <span className="catchphrase-quote" aria-hidden="true">“</span>
+              <strong>{lead.phrase}</strong>
+              <div>
+                <span>{t("catchphrases.leadEvidence", {
+                  count: formatCompact(lead.occurrences, locale),
+                  sessions: formatCompact(lead.sessionCount, locale),
+                })}</span>
+                {agentColors && source ? <em>{source}</em> : null}
+              </div>
+            </div>
+          ) : null}
+          {supporting.length ? (
+            <div className="catchphrase-supporting">
+              {supporting.map((item) => {
+                const color = item.dominantAgent ? agentColor(item.dominantAgent) : undefined;
+                return (
+                  <span
+                    className="catchphrase-token"
+                    key={item.phrase}
+                    title={phraseDetails(item, locale, t("metrics.sessions").toLowerCase())}
+                    style={{
+                      "--phrase-weight": item.weight,
+                      "--phrase-color": color,
+                      fontSize: `${11 + item.weight * 7}px`,
+                    } as React.CSSProperties}
+                  >
+                    {item.phrase}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       ) : (
         <EmptyState title={t("catchphrases.insufficientTitle")} body={t("catchphrases.insufficientBody")} />

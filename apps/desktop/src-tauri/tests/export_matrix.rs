@@ -21,7 +21,7 @@ fn without_embedded_image_data(svg: &str) -> String {
 
 #[test]
 #[ignore = "requires VIBEMETER_TEST_DB with a sanitized or local VibeMeter database snapshot"]
-fn validates_the_320_release_export_combinations() {
+fn validates_the_release_export_matrix() {
     let database_path = std::env::var("VIBEMETER_TEST_DB")
         .or_else(|_| std::env::var("AFTERVIBE_TEST_DB"))
         .or_else(|_| std::env::var("TOKEN_GRAPH_TEST_DB"))
@@ -43,10 +43,6 @@ fn validates_the_320_release_export_combinations() {
         "developer-wrapped",
         "agent-comparison",
         "session-recap",
-        "daily-review",
-        "session-breakdown",
-        "weekly-recap",
-        "ship-card",
         "vcti-card",
         "catchphrases",
     ]

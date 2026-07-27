@@ -22,7 +22,7 @@ function renderPanel() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
-  render(
+  return render(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={queryClient}>
         <CursorAccountUsagePanel locale="zh-CN" range="today" />
@@ -46,8 +46,10 @@ describe("CursorAccountUsagePanel", () => {
 
   it("is off by default and does not fetch provider history", async () => {
     settings.mockResolvedValue({ cursorDashboardUsage: "false", credentialsAllowed: "false" });
-    renderPanel();
-    expect(await screen.findByText("Cursor 账户 Token 与成本未开启")).toBeTruthy();
+    const { container } = renderPanel();
+    await waitFor(() => expect(settings).toHaveBeenCalled());
+    expect(container?.textContent).toBe("");
+    expect(screen.queryByText("Cursor 账户 Token 与成本未开启")).toBeNull();
     expect(providers).not.toHaveBeenCalled();
   });
 

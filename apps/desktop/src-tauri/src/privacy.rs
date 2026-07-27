@@ -217,7 +217,7 @@ mod tests {
 
     fn request(title: &str) -> ShareRenderRequest {
         ShareRenderRequest {
-            template_id: "daily-review".into(),
+            template_id: "usage-overview".into(),
             locale: "en-US".into(),
             aspect_ratio: "landscape".into(),
             theme: "light".into(),

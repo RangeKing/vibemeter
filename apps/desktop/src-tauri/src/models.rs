@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.1.0";
+pub const PARSER_VERSION: &str = "6.2.1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -535,13 +535,23 @@ pub struct PhraseAgentCount {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PhraseModelCount {
+    pub model: String,
+    pub occurrences: u64,
+    pub session_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PhraseCloudItem {
     pub phrase: String,
     pub occurrences: u64,
     pub session_count: u64,
     pub weight: f64,
     pub dominant_agent: Option<String>,
+    pub dominant_model: Option<String>,
     pub agents: Vec<PhraseAgentCount>,
+    pub models: Vec<PhraseModelCount>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -666,27 +676,6 @@ pub struct TaskSummary {
     pub source_excluded: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodayInsight {
-    pub id: String,
-    pub tier: String,
-    pub message_key: String,
-    pub value: Option<f64>,
-    pub evidence: Vec<EvidenceReference>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TodayResponse {
-    pub date: String,
-    pub tasks: Vec<TaskSummary>,
-    pub worth_reviewing: Vec<TaskSummary>,
-    pub insights: Vec<TodayInsight>,
-    pub totals: OverviewTotals,
-    pub index_status: IndexStatus,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessPhase {
@@ -744,94 +733,6 @@ pub struct SessionDetail {
     pub file_changes: Vec<FileChange>,
     pub git_evidence: GitEvidence,
     pub capabilities: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewContent {
-    pub outcome: String,
-    pub what_happened: String,
-    pub what_worked: String,
-    pub friction: String,
-    pub lessons: String,
-    pub next_run: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewFinding {
-    pub id: String,
-    pub rule_id: String,
-    pub tier: String,
-    pub title: String,
-    pub detail: String,
-    pub evidence: Vec<EvidenceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewDocument {
-    pub id: String,
-    pub review_type: String,
-    pub target_id: String,
-    pub locale: String,
-    pub version: u64,
-    pub status: String,
-    pub title: String,
-    pub content: ReviewContent,
-    pub findings: Vec<ReviewFinding>,
-    pub user_edited: bool,
-    pub source_excluded: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReviewsResponse {
-    pub items: Vec<ReviewDocument>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GenerateReviewRequest {
-    pub review_type: String,
-    pub target_id: String,
-    pub locale: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeepReviewPreview {
-    pub task_id: String,
-    pub title: String,
-    pub mode: String,
-    pub provider: String,
-    pub model: Option<String>,
-    pub payload: String,
-    pub payload_hash: String,
-    pub character_count: u64,
-    pub network_required: bool,
-    pub privacy_notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeepReviewRequest {
-    pub task_id: String,
-    pub locale: String,
-    pub mode: String,
-    pub provider: String,
-    pub model: Option<String>,
-    pub payload_hash: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateReviewRequest {
-    pub id: String,
-    pub title: String,
-    pub content: ReviewContent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -978,6 +879,7 @@ pub struct ProjectControl {
 pub struct SourceStatus {
     pub agent: String,
     pub available: bool,
+    pub selected: bool,
     pub capability_level: String,
     pub session_count: u64,
     pub last_indexed_at: Option<String>,
@@ -1057,8 +959,6 @@ pub struct MenuBarSnapshot {
     pub heatmap: Vec<DailyUsagePoint>,
     pub providers: Vec<ProviderUsage>,
     pub index_status: IndexStatus,
-    pub today_tasks: Vec<TaskSummary>,
-    pub worth_reviewing: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
