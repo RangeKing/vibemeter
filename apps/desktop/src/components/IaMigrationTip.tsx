@@ -1,4 +1,4 @@
-import { ArrowRight, History, Lightbulb, Database, X } from "lucide-react";
+import { ArrowRight, Database, History, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useUiStore } from "../store";
 import type { PageKey } from "../types";
@@ -16,9 +16,9 @@ export function IaMigrationTip({ onDismiss }: { onDismiss: () => void }) {
         <strong>{t("migration.title")}</strong>
         <p>{t("migration.body")}</p>
         <div className="ia-migration-links">
-          <button className="button subtle" onClick={() => open("insights")}><Lightbulb size={14} />{t("navigation.insights")}<ArrowRight size={13} /></button>
           <button className="button subtle" onClick={() => open("sessions")}><History size={14} />{t("navigation.sessions")}<ArrowRight size={13} /></button>
           <button className="button subtle" onClick={() => open("sources")}><Database size={14} />{t("navigation.sources")}<ArrowRight size={13} /></button>
+          <button className="button subtle" onClick={() => open("data")}><ArrowRight size={14} />{t("navigation.data")}</button>
         </div>
       </div>
       <button className="button primary" onClick={onDismiss}>{t("migration.dismiss")}</button>

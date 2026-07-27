@@ -12,7 +12,7 @@ VibeMeter is a local-first macOS activity tracker for AI coding. It shows live C
 - **Live:** See whether Claude Code or Codex is running, waiting, in error, or complete. Jump back to the source app or terminal without approving requests or sending prompts.
 - **Data:** Review sessions, tokens, time, cost, models, tools, activity, and work events.
 
-Share and Settings are utility surfaces. Insights, Sessions, and Sources remain transitional routes (not in the sidebar): catchphrases stay on Insights for now, Sessions opens from Data, and Sources opens from Settings. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. `aftervibe` remains only as a legacy database migration identifier.
+Share and Settings are utility surfaces. Catchphrases and insight cards live on VCTI; comparison bars live on Data. Sessions and Sources remain transitional routes (not in the sidebar): Sessions opens from Data, and Sources opens from Settings. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. `aftervibe` remains only as a legacy database migration identifier.
 
 ## Live monitoring
 

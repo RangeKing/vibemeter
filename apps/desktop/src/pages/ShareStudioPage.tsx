@@ -88,7 +88,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const range = useUiStore((state) => state.range);
   const requestedTemplate = useUiStore((state) => state.shareTemplate);
-  const [request, setRequest] = useState<ShareRenderRequest>(() => defaultRequest(locale, requestedTemplate === "vcti-card" ? "90d" : range, requestedTemplate));
+  const [request, setRequest] = useState<ShareRenderRequest>(() => defaultRequest(locale, range, requestedTemplate));
   const sessionTemplate = request.templateId === "session-recap";
   const [zoom, setZoom] = useState(100);
   const previewStageRef = useRef<HTMLDivElement>(null);
@@ -103,7 +103,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
   const preview = useQuery({ queryKey: ["share-preview", deferredRequest], queryFn: () => api.previewShare(deferredRequest), retry: false });
   useEffect(() => {
     setNotice(undefined);
-    setRequest((current) => current.templateId === "vcti-card" || current.range === range
+    setRequest((current) => current.range === range
       ? current
       : { ...current, range, privacyReviewed: false });
   }, [range]);
@@ -120,13 +120,13 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
     setRequest((current) => ({
       ...current,
       templateId,
-      range: templateId === "vcti-card" ? "90d" : range,
+      range,
       privacyReviewed: false,
     }));
   };
   const chooseAspect = (aspectRatio: AspectRatio) => patch("aspectRatio", aspectRatio);
   const reset = () => {
-    setRequest(defaultRequest(locale, request.templateId === "vcti-card" ? "90d" : range, request.templateId));
+    setRequest(defaultRequest(locale, range, request.templateId));
     setZoom(100);
     setNotice(undefined);
   };
@@ -175,7 +175,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
       <PageHeader
         title={t("share.title")}
         description={t("share.description")}
-        actions={<>{request.templateId === "vcti-card" ? <span className="share-fixed-range">{t("share.vctiFixedRange")}</span> : <RangePicker />}<button className="button subtle" onClick={reset}><RotateCcw size={14} />{t("actions.reset")}</button></>}
+        actions={<><RangePicker /><button className="button subtle" onClick={reset}><RotateCcw size={14} />{t("actions.reset")}</button></>}
       />
       <div className="share-layout">
         <aside className="share-controls">

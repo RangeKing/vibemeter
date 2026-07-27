@@ -253,9 +253,9 @@ async fn get_insights(state: State<'_, AppState>, range: String) -> AppResult<In
 }
 
 #[tauri::command]
-async fn get_vcti_profile(state: State<'_, AppState>) -> AppResult<VctiProfile> {
+async fn get_vcti_profile(state: State<'_, AppState>, range: String) -> AppResult<VctiProfile> {
     let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.vcti_profile())
+    tauri::async_runtime::spawn_blocking(move || database.vcti_profile(&range))
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }

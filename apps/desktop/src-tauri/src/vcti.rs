@@ -5,9 +5,22 @@ use crate::models::{
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub const ALGORITHM_VERSION: &str = "1.3.0";
-const WINDOW_DAYS: i64 = 90;
+pub const ALGORITHM_VERSION: &str = "1.4.0";
+const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
+
+pub fn window_days_for_range(range: &str) -> i64 {
+    match range {
+        "today" => 1,
+        "7d" => 7,
+        "30d" => 30,
+        "90d" => 90,
+        "180d" => 180,
+        "year" => 365,
+        "all" => 3651,
+        _ => 30,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SessionBehaviorRecord {
@@ -90,15 +103,17 @@ pub fn calculate(
     structure_analysis_enabled: bool,
     git_evidence_enabled: bool,
     now: DateTime<Utc>,
+    window_days: i64,
 ) -> VctiProfile {
+    let window_days = window_days.max(1);
     let period_end = now.date_naive();
-    let period_start = (now - Duration::days(WINDOW_DAYS - 1)).date_naive();
+    let period_start = (now - Duration::days(window_days - 1)).date_naive();
     let active_days = records
         .iter()
         .filter_map(|record| record.started_at.get(..10))
         .collect::<HashSet<_>>()
         .len() as u64;
-    let status = if records.len() >= 80 && active_days >= 21 {
+    let mut status = if records.len() >= 80 && active_days >= 21 {
         "high-confidence"
     } else if records.len() >= 30 && active_days >= 7 {
         "stable"
@@ -107,7 +122,7 @@ pub fn calculate(
     } else {
         "collecting"
     };
-    let features = derive_features(records, available_agents, now);
+    let features = derive_features(records, available_agents, now, window_days);
     let mut candidates = type_scores(
         &features,
         structure_analysis_enabled,
@@ -124,9 +139,28 @@ pub fn calculate(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.code.cmp(right.code))
     });
-    let top = candidates
+    let gated_top = candidates
         .first()
         .filter(|candidate| status != "collecting" && candidate.score >= 42.0);
+    let mut temporary = false;
+    let top = if gated_top.is_none()
+        && records.len() >= 3
+        && candidates
+            .first()
+            .is_some_and(|candidate| candidate.score >= 28.0)
+    {
+        temporary = true;
+        status = "preview";
+        candidates.first()
+    } else {
+        gated_top
+    };
+    if window_days < CANONICAL_WINDOW_DAYS && top.is_some() {
+        temporary = true;
+        if status == "stable" || status == "high-confidence" {
+            status = "preview";
+        }
+    }
     let secondary = top.and_then(|primary| {
         candidates
             .iter()
@@ -153,7 +187,7 @@ pub fn calculate(
         behavior.process_control_coverage,
     ]);
     let temporal_stability = temporal_stability(records);
-    let confidence = separation_capped_confidence(
+    let mut confidence = separation_capped_confidence(
         (cap(records.len() as f64, 80.0) * 0.25
             + cap(active_days as f64, 21.0) * 0.20
             + coverage * 100.0 * 0.20
@@ -162,6 +196,9 @@ pub fn calculate(
             .clamp(0.0, 100.0),
         type_margin,
     );
+    if temporary {
+        confidence = confidence.min(55.0);
+    }
     let confidence_label = if confidence >= 80.0 {
         "high"
     } else if confidence >= 60.0 {
@@ -213,6 +250,8 @@ pub fn calculate(
         algorithm_version: ALGORITHM_VERSION.into(),
         period_start: period_start.to_string(),
         period_end: period_end.to_string(),
+        window_days: window_days as u64,
+        temporary,
         session_count: records.len() as u64,
         active_days,
         primary_type: top.map(|candidate| candidate.code.into()),
@@ -237,6 +276,7 @@ fn derive_features(
     records: &[SessionBehaviorRecord],
     available_agents: u64,
     now: DateTime<Utc>,
+    window_days: i64,
 ) -> Features {
     if records.is_empty() {
         return Features::default();
@@ -302,7 +342,7 @@ fn derive_features(
                     .max(0) as f64
                     / 86_400.0
             })
-            .unwrap_or(WINDOW_DAYS as f64);
+            .unwrap_or(window_days as f64);
         let weight = (-std::f64::consts::LN_2 * age_days / HALF_LIFE_DAYS).exp();
         weighted_sessions += weight;
         providers.insert(record.agent.clone());
@@ -1142,7 +1182,7 @@ fn build_trend(
         if slice.len() < 2 {
             continue;
         }
-        let features = derive_features(&slice, available_agents, end);
+        let features = derive_features(&slice, available_agents, end, 14);
         let mut types = type_scores(
             &features,
             structure_enabled,
@@ -1323,8 +1363,11 @@ mod tests {
             true,
             true,
             now,
+            90,
         );
         assert_eq!(profile.status, "stable");
+        assert!(!profile.temporary);
+        assert_eq!(profile.window_days, 90);
         assert!(profile.primary_type.is_some());
         assert!(profile.evidence.len() >= 3);
         assert_eq!(profile.scores.len(), 6);
@@ -1341,9 +1384,42 @@ mod tests {
             true,
             false,
             now,
+            90,
         );
         assert_eq!(profile.status, "collecting");
         assert!(profile.primary_type.is_none());
+        assert!(!profile.temporary);
+    }
+
+    #[test]
+    fn short_windows_mark_temporary_profiles() {
+        let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let records = (0..12)
+            .map(|offset| record(&(now - Duration::days(offset)).date_naive().to_string()))
+            .collect::<Vec<_>>();
+        let profile = calculate(
+            &records,
+            BehaviorSummary {
+                sessions: 12,
+                structure_coverage: 1.0,
+                lifecycle_coverage: 1.0,
+                tool_result_coverage: 1.0,
+                orchestration_coverage: 1.0,
+                process_control_coverage: 1.0,
+                ..BehaviorSummary::default()
+            },
+            3,
+            true,
+            true,
+            now,
+            7,
+        );
+        assert!(profile.temporary);
+        assert_eq!(profile.window_days, 7);
+        assert_eq!(profile.status, "preview");
+        assert!(profile.confidence <= 55.0);
     }
 
     #[test]

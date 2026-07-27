@@ -719,6 +719,23 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .vcti-page::before { content: ""; position: absolute; top: 0; right: 0; width: min(52vw, 760px); height: 420px; pointer-events: none; background: radial-gradient(circle at 68% 12%, color-mix(in srgb, var(--warm) 15%, transparent), transparent 64%); }
 .vcti-page > * { position: relative; z-index: 1; }
 .vcti-page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 24px; }
+.vcti-header-actions { display: grid; gap: 10px; justify-items: end; }
+.vcti-range-nudge { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--amber) 12%, var(--surface)); }
+.vcti-range-nudge strong { display: block; margin-bottom: 3px; font-size: 13px; }
+.vcti-range-nudge p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.vcti-evidence-trigger { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; font: inherit; }
+.vcti-evidence-trigger small { color: var(--accent-dark); font-size: 11px; font-weight: 700; }
+.vcti-evidence-drawer { width: min(760px, calc(100vw - 48px)); max-height: min(860px, calc(100vh - 48px)); overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); border: 1px solid var(--line-strong); border-radius: 20px; background: var(--surface); box-shadow: var(--shadow); }
+.vcti-evidence-drawer > header { display: flex; justify-content: space-between; gap: 18px; padding: 22px 24px 16px; border-bottom: 1px solid var(--line); }
+.vcti-evidence-drawer > header h2 { margin: 8px 0 6px; font-family: var(--serif); font-size: 28px; }
+.vcti-evidence-drawer > header p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+.vcti-evidence-drawer-body { overflow: auto; display: grid; gap: 28px; padding: 22px 24px 28px; }
+.vcti-evidence-drawer-body h3 { margin: 0 0 10px; font-size: 15px; }
+.vcti-evidence-drawer-body > section > p { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.vcti-insights, .vcti-behavior { margin-top: 22px; }
+.vcti-insights .insight-grid { margin-top: 14px; }
+.vcti-behavior .behavior-streams { overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }
+.vcti-scores { margin-bottom: 8px; }
 .vcti-page-header h1 { max-width: 730px; margin: 13px 0 9px; font-family: var(--serif); font-size: clamp(39px, 4.2vw, 61px); font-weight: 590; line-height: 1.02; letter-spacing: -2.1px; }
 .vcti-page-header > div:first-child > p { max-width: 760px; margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
 .vcti-period { display: grid; grid-template-columns: auto 1fr; min-width: 280px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); background: var(--surface); box-shadow: var(--shadow-small); }

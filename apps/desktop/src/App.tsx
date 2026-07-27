@@ -9,7 +9,6 @@ import { Onboarding } from "./components/Onboarding";
 import { LoadingState } from "./components/ui";
 import { api } from "./lib/api";
 import { DataPage } from "./pages/DataPage";
-import { InsightsPage } from "./pages/InsightsPage";
 import { LivePage } from "./pages/LivePage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -23,7 +22,7 @@ function systemLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 
-const pages: PageKey[] = ["data", "live", "insights", "sessions", "vcti", "share", "sources", "settings"];
+const pages: PageKey[] = ["data", "live", "sessions", "vcti", "share", "sources", "settings"];
 
 export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const { i18n } = useTranslation();
@@ -72,12 +71,17 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
         compare: "vcti",
         playbook: "vcti",
         reviews: "vcti",
+        insights: "vcti",
       };
       const target = legacyMap[event.payload] ?? event.payload;
       if (pages.includes(target as PageKey)) setPage(target as PageKey);
     }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; });
     return () => { disposed = true; unlisten?.(); };
   }, [setPage, surface]);
+
+  useEffect(() => {
+    if (page === "insights") setPage("vcti");
+  }, [page, setPage]);
 
   if (settings.isLoading) return <LoadingState />;
   if (surface === "menubar") return <MenuBarPopover locale={locale} />;
@@ -97,7 +101,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
       case "live": return <LivePage locale={locale} />;
       case "data": return <DataPage locale={locale} />;
       case "sessions": return <SessionsPage locale={locale} />;
-      case "insights": return <InsightsPage locale={locale} />;
+      case "insights": return <VctiPage locale={locale} />;
       case "vcti": return <VctiPage locale={locale} />;
       case "share": return <ShareStudioPage locale={locale} />;
       case "sources": return <SourcesPage locale={locale} />;

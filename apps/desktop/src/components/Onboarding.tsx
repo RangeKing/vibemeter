@@ -174,7 +174,7 @@ export function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) 
     const handle = window.setTimeout(() => {
       void (async () => {
         try {
-          const next = await api.vctiProfile();
+          const next = await api.vctiProfile("90d");
           setProfile(next);
         } catch {
           setProfile(undefined);
@@ -286,7 +286,7 @@ export function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) 
               disabled={busy || Boolean(indexStatus?.running)}
               onClick={() => {
                 revealReady.current = true;
-                void api.vctiProfile().then(setProfile).catch(() => setProfile(undefined)).finally(() => setStep("reveal"));
+                void api.vctiProfile("90d").then(setProfile).catch(() => setProfile(undefined)).finally(() => setStep("reveal"));
               }}
             >
               {t("onboarding.skipWait")}

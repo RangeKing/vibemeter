@@ -452,6 +452,8 @@ export interface VctiProfile {
   algorithmVersion: string;
   periodStart: string;
   periodEnd: string;
+  windowDays: number;
+  temporary: boolean;
   sessionCount: number;
   activeDays: number;
   primaryType?: string;

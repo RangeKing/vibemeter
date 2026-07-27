@@ -1201,12 +1201,11 @@ impl Database {
         Ok(removed as u64)
     }
 
-    pub fn vcti_profile(&self) -> AppResult<VctiProfile> {
+    pub fn vcti_profile(&self, range: &str) -> AppResult<VctiProfile> {
         let connection = self.connect()?;
         let now = Utc::now();
-        let start_timestamp = (now - Duration::days(89))
-            .format("%Y-%m-%dT00:00:00Z")
-            .to_string();
+        let window_days = crate::vcti::window_days_for_range(range);
+        let start_timestamp = format!("{}T00:00:00Z", range_start(range));
         let behavior = query_behavior_summary(&connection, &start_timestamp)?;
         let mut statement = connection.prepare(
             "SELECT
@@ -1315,21 +1314,24 @@ impl Database {
             structure_analysis_enabled,
             git_evidence_enabled,
             now,
+            window_days,
         );
-        connection.execute(
-            "INSERT INTO vcti_profile_snapshots(
-                period_end, algorithm_version, profile_json, created_at
-             ) VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(period_end, algorithm_version) DO UPDATE SET
-                profile_json=excluded.profile_json,
-                created_at=excluded.created_at",
-            params![
-                profile.period_end,
-                profile.algorithm_version,
-                serde_json::to_string(&profile)?,
-                Utc::now().to_rfc3339()
-            ],
-        )?;
+        if window_days == 90 {
+            connection.execute(
+                "INSERT INTO vcti_profile_snapshots(
+                    period_end, algorithm_version, profile_json, created_at
+                 ) VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(period_end, algorithm_version) DO UPDATE SET
+                    profile_json=excluded.profile_json,
+                    created_at=excluded.created_at",
+                params![
+                    profile.period_end,
+                    profile.algorithm_version,
+                    serde_json::to_string(&profile)?,
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+        }
         Ok(profile)
     }
 

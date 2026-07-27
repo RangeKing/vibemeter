@@ -197,7 +197,7 @@ fn load_data(database: &Database, request: &ShareRenderRequest) -> AppResult<Sha
     }
     let comparison = database.comparison(&request.range)?;
     let vcti = (request.template_id == "vcti-card")
-        .then(|| database.vcti_profile())
+        .then(|| database.vcti_profile(&request.range))
         .transpose()?;
     let phrases = (request.template_id == "catchphrases")
         .then(|| database.phrase_cloud(&request.range))

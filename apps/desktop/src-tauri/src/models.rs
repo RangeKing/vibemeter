@@ -829,6 +829,8 @@ pub struct VctiProfile {
     pub algorithm_version: String,
     pub period_start: String,
     pub period_end: String,
+    pub window_days: u64,
+    pub temporary: bool,
     pub session_count: u64,
     pub active_days: u64,
     pub primary_type: Option<String>,

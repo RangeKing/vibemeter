@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EChartsCoreOption } from "echarts";
-import { ArrowRight, BarChart3, CalendarDays, Merge, Sparkles, Workflow } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarDays, Merge, Scale, Sparkles, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { EChart } from "../components/EChart";
-import { BehaviorStreams } from "../components/BehaviorStreams";
 import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { RangePicker } from "../components/RangePicker";
 import { WorkEventCard } from "../components/WorkEventCard";
@@ -16,6 +16,17 @@ import { agentName, formatCompact, formatCurrency, formatDate, tokenTotal } from
 import { savitzkyGolaySmooth } from "../lib/smoothing";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
+
+const COMPARISON_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--agent-cursor)",
+  "var(--warning)",
+  "var(--agent-hermes)",
+  "var(--red)",
+  "var(--chart-4)",
+];
 
 type DailyTotal = { date: string; tokens: number; activeSeconds: number; sessions: number };
 
@@ -152,6 +163,7 @@ export function DataPage({ locale }: { locale: Locale }) {
   const overview = useQuery({ queryKey: ["overview", range], queryFn: () => api.overview(range), refetchInterval: 30_000 });
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
+  const comparison = useQuery({ queryKey: ["comparison", range], queryFn: () => api.comparison(range) });
   const merge = useMutation({
     mutationFn: (taskIds: string[]) => api.mergeTasks(taskIds),
     onSuccess: async () => {
@@ -263,9 +275,27 @@ export function DataPage({ locale }: { locale: Locale }) {
         </section>
       </div>
 
-      <section className="data-panel behavior-panel">
-        <header className="panel-heading"><div><span className="section-index">05</span><h2>{t("behavior.title")}</h2><p>{t("behavior.dataBody", { range: rangeText })}</p></div><Workflow size={17} /></header>
-        <BehaviorStreams data={data.behavior} locale={locale} />
+      <section className="data-panel comparison-panel">
+        <header className="panel-heading"><div><span className="section-index">05</span><h2>{t("insights.comparison")}</h2><p>{t("data.comparisonBody")}</p></div><Scale size={17} /></header>
+        {comparison.isLoading ? <LoadingState /> : comparison.isError || !comparison.data ? (
+          <ErrorState retry={() => void comparison.refetch()} />
+        ) : (() => {
+          const maxTokens = Math.max(...comparison.data.map((entry) => tokenTotal(entry.usage)), 1);
+          return (
+            <div className="comparison-list">
+              {comparison.data.slice(0, 8).map((item, index) => (
+                <div key={item.id} style={{ "--comparison-color": COMPARISON_COLORS[index] } as CSSProperties}>
+                  <span className="comparison-label">
+                    <strong><i className="comparison-dot" />{item.label}</strong>
+                    <small>{item.groupKind}</small>
+                  </span>
+                  <div className="comparison-bar"><i style={{ width: `${(tokenTotal(item.usage) / maxTokens) * 100}%` }} /></div>
+                  <span><strong>{formatCompact(tokenTotal(item.usage), locale)}</strong><small>{t("metrics.tokens")}</small></span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </section>
 
       <section className="events-section">

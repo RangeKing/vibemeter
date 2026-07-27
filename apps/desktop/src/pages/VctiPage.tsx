@@ -3,6 +3,10 @@ import { ArrowRight, CalendarRange, DatabaseZap, Eye, EyeOff, Fingerprint, ScanF
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { BehaviorStreams } from "../components/BehaviorStreams";
+import { CatchphraseClouds } from "../components/CatchphraseClouds";
+import { InsightCard } from "../components/InsightCard";
+import { RangePicker } from "../components/RangePicker";
 import { VctiAvatar } from "../components/VctiAvatar";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
@@ -42,17 +46,37 @@ function BehaviorCoverage({ profile }: { profile: VctiProfile }) {
 
 export function VctiPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
-  const [showAtlas, setShowAtlas] = useState(false);
+  const range = useUiStore((state) => state.range);
+  const setRange = useUiStore((state) => state.setRange);
   const openShare = useUiStore((state) => state.openShare);
-  const query = useQuery({ queryKey: ["vcti"], queryFn: api.vctiProfile, refetchInterval: 60_000 });
+  const setPage = useUiStore((state) => state.setPage);
+  const selectSession = useUiStore((state) => state.selectSession);
+  const [showAtlas, setShowAtlas] = useState(false);
+  const [showEvidence, setShowEvidence] = useState(false);
+  const query = useQuery({
+    queryKey: ["vcti", range],
+    queryFn: () => api.vctiProfile(range),
+    refetchInterval: 60_000,
+  });
+  const insights = useQuery({
+    queryKey: ["insights", range],
+    queryFn: () => api.insights(range),
+  });
+  const phrases = useQuery({
+    queryKey: ["phrase-cloud", range],
+    queryFn: () => api.phraseCloud(range),
+    refetchInterval: 30_000,
+  });
   const scoreMap = useMemo(
     () => Object.fromEntries(query.data?.scores.map((score) => [score.id, score]) ?? []),
     [query.data?.scores],
   );
   useEffect(() => {
-    if (!showAtlas) return;
+    if (!showAtlas && !showEvidence) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowAtlas(false);
+      if (event.key !== "Escape") return;
+      setShowAtlas(false);
+      setShowEvidence(false);
     };
     document.body.classList.add("modal-open");
     window.addEventListener("keydown", closeOnEscape);
@@ -60,14 +84,15 @@ export function VctiPage({ locale }: { locale: Locale }) {
       document.body.classList.remove("modal-open");
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [showAtlas]);
+  }, [showAtlas, showEvidence]);
   if (query.isLoading) return <LoadingState />;
   if (query.isError || !query.data) return <ErrorState retry={() => void query.refetch()} />;
   const profile = query.data;
   const primaryName = profile.primaryType ? t(`vcti.types.${profile.primaryType}.name`) : t("vcti.collecting.name");
   const primaryTagline = profile.primaryType ? t(`vcti.types.${profile.primaryType}.tagline`) : t("vcti.collecting.body");
   const guildName = profile.guild ? t(`vcti.guilds.${profile.guild}.name`) : t("vcti.collecting.guild");
-  const stable = profile.status === "stable" || profile.status === "high-confidence";
+  const stable = !profile.temporary && (profile.status === "stable" || profile.status === "high-confidence");
+  const showRangeNudge = range !== "90d";
 
   return (
     <div className="page vcti-page">
@@ -77,8 +102,25 @@ export function VctiPage({ locale }: { locale: Locale }) {
           <h1>{t("vcti.title")}</h1>
           <p>{t("vcti.description")}</p>
         </div>
-        <div className="vcti-period"><CalendarRange size={15} /><span>{t("vcti.canonicalWindow")}</span><strong>{formatDate(profile.periodStart, locale, "short")} — {formatDate(profile.periodEnd, locale, "short")}</strong></div>
+        <div className="vcti-header-actions">
+          <RangePicker />
+          <div className="vcti-period">
+            <CalendarRange size={15} />
+            <span>{profile.temporary ? t("vcti.temporaryWindow") : t("vcti.canonicalWindow")}</span>
+            <strong>{formatDate(profile.periodStart, locale, "short")} — {formatDate(profile.periodEnd, locale, "short")}</strong>
+          </div>
+        </div>
       </header>
+
+      {showRangeNudge ? (
+        <aside className="vcti-range-nudge" role="status">
+          <div>
+            <strong>{t("vcti.temporaryBadge")}</strong>
+            <p>{t("vcti.suggest90d")}</p>
+          </div>
+          <button className="button subtle" onClick={() => setRange("90d")}>{t("vcti.use90d")}</button>
+        </aside>
+      ) : null}
 
       <section className={`vcti-reveal ${stable ? "stable" : profile.status}`}>
         <div className="vcti-reveal-copy">
@@ -87,7 +129,12 @@ export function VctiPage({ locale }: { locale: Locale }) {
           <p>{primaryTagline}</p>
           <div className="vcti-meta-row">
             <span><DatabaseZap size={14} />{t("vcti.observed", { sessions: profile.sessionCount, days: profile.activeDays })}</span>
-            <span><ShieldCheck size={14} />{t(`vcti.confidence.${profile.confidenceLabel}`)} · {Math.round(profile.confidence)}%</span>
+            <button className="vcti-evidence-trigger" type="button" onClick={() => setShowEvidence(true)}>
+              <ShieldCheck size={14} />
+              {profile.temporary ? t("vcti.temporaryBadge") : t(`vcti.confidence.${profile.confidenceLabel}`)}
+              · {Math.round(profile.confidence)}%
+              <small>{t("vcti.openEvidence")}</small>
+            </button>
           </div>
           {profile.primaryType ? (
             <div className="vcti-identity-strip">
@@ -100,59 +147,117 @@ export function VctiPage({ locale }: { locale: Locale }) {
           <div className="vcti-actions">
             <button className="button primary" disabled={!profile.primaryType} onClick={() => openShare("vcti-card")}><Sparkles size={14} />{t("vcti.makeShareCard")}</button>
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
-            <button className="button subtle" onClick={() => useUiStore.getState().setPage("insights")}>{t("vcti.openInsights")}</button>
           </div>
         </div>
         <VctiAvatar type={profile.primaryType} guild={profile.guild} label={primaryName} />
       </section>
 
-      <div className="vcti-dashboard-grid">
-        <section className="vcti-panel vcti-scores">
-          <header><span className="section-index">01</span><div><h2>{t("vcti.scoresTitle")}</h2><p>{t("vcti.scoresBody")}</p></div></header>
-          <div className="vcti-score-list">
-            {["startStructure", "delegation", "guardrail", "debugDepth", "shipping", "toolNomad"].map((id) => {
-              const score = scoreMap[id];
-              return (
-                <div key={id} className={score && score.coverage < .5 ? "low-coverage" : ""}>
-                  <span><b>{t(`vcti.scores.${id}`)}</b><strong>{score ? Math.round(score.value) : "—"}</strong></span>
-                  <i><em style={{ width: `${score?.value ?? 0}%` }} /></i>
-                  {score && score.coverage < .5 ? <small>{t("vcti.partialEvidence")}</small> : null}
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="vcti-panel vcti-evidence">
-          <header><span className="section-index">02</span><div><h2>{t("vcti.evidenceTitle")}</h2><p>{t("vcti.evidenceBody")}</p></div></header>
-          {profile.evidence.length ? <div className="vcti-evidence-list">{profile.evidence.map((item) => (
-            <div key={item.id}>
-              <span className={item.structural ? "structural" : ""}>{item.structural ? t("vcti.structureChip") : t("vcti.observedChip")}</span>
-              <strong>{evidenceValue(item, locale)}</strong>
-              <p>{t(item.labelKey)}</p>
-            </div>
-          ))}</div> : <EmptyState title={t("vcti.noEvidence")} body={t("vcti.collecting.body")} />}
-        </section>
-
-        <section className="vcti-panel vcti-coverage">
-          <header><span className="section-index">03</span><div><h2>{t("vcti.coverageTitle")}</h2><p>{t("vcti.coverageBody")}</p></div></header>
-          <BehaviorCoverage profile={profile} />
-          {profile.missingCapabilities.length ? <div className="vcti-capability-note"><strong>{t("vcti.missingCapability", { count: profile.missingCapabilities.length })}</strong><span>{profile.missingCapabilities.map((capability) => t(`vcti.capabilityNames.${capability}`)).join(" · ")}</span></div> : <p className="vcti-capability-note complete">{t("vcti.coverageComplete")}</p>}
-        </section>
-
-        <section className="vcti-panel vcti-trend">
-          <header><span className="section-index">04</span><div><h2>{t("vcti.trendTitle")}</h2><p>{t("vcti.trendBody")}</p></div></header>
-          <div className="vcti-trend-list">
-            {profile.trend.length ? profile.trend.map((point) => (
-              <div key={point.periodStart}>
-                <small>{formatDate(point.periodStart, locale, "short")}</small>
-                <span>{point.dominantType ? <><b>{point.dominantType}</b>{t(`vcti.types.${point.dominantType}.name`)}</> : t("vcti.collecting.name")}</span>
-                <i><em style={{ width: `${point.scores.find((score) => score.id === "shipping")?.value ?? 0}%` }} /></i>
+      <section className="vcti-panel vcti-scores">
+        <header><span className="section-index">01</span><div><h2>{t("vcti.scoresTitle")}</h2><p>{t("vcti.scoresBody")}</p></div></header>
+        <div className="vcti-score-list">
+          {["startStructure", "delegation", "guardrail", "debugDepth", "shipping", "toolNomad"].map((id) => {
+            const score = scoreMap[id];
+            return (
+              <div key={id} className={score && score.coverage < .5 ? "low-coverage" : ""}>
+                <span><b>{t(`vcti.scores.${id}`)}</b><strong>{score ? Math.round(score.value) : "—"}</strong></span>
+                <i><em style={{ width: `${score?.value ?? 0}%` }} /></i>
+                {score && score.coverage < .5 ? <small>{t("vcti.partialEvidence")}</small> : null}
               </div>
-            )) : <p>{t("vcti.trendUnavailable")}</p>}
-          </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {phrases.data ? <CatchphraseClouds data={phrases.data} locale={locale} /> : phrases.isError ? (
+        <section className="catchphrase-section">
+          <ErrorState retry={() => void phrases.refetch()} />
         </section>
-      </div>
+      ) : null}
+
+      <section className="vcti-panel vcti-insights">
+        <header><span className="section-index">02</span><div><h2>{t("insights.title")}</h2><p>{t("insights.description")}</p></div></header>
+        {insights.isLoading ? <LoadingState /> : insights.isError || !insights.data ? (
+          <ErrorState retry={() => void insights.refetch()} />
+        ) : insights.data.items.length ? (
+          <div className="insight-grid">
+            {insights.data.items.map((item, index) => (
+              <InsightCard
+                key={item.id}
+                item={item}
+                index={index}
+                locale={locale}
+                onOpenSession={(sessionId) => {
+                  selectSession(sessionId);
+                  setPage("sessions");
+                }}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState title={t("insights.noItems")} body={t("insights.description")} />
+        )}
+      </section>
+
+      <section className="vcti-panel vcti-behavior">
+        <header><span className="section-index">03</span><div><h2>{t("behavior.insightTitle")}</h2><p>{t("behavior.insightBody")}</p></div></header>
+        <BehaviorStreams data={profile.behavior} locale={locale} compact />
+      </section>
+
+      {showEvidence ? createPortal(
+        <div className="modal-backdrop vcti-evidence-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setShowEvidence(false);
+        }}>
+          <section className="vcti-evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="vcti-evidence-title">
+            <header>
+              <div>
+                <span className="eyebrow"><ShieldCheck size={13} />{t("vcti.evidenceStrength")}</span>
+                <h2 id="vcti-evidence-title">{t("vcti.evidenceTitle")}</h2>
+                <p>{t("vcti.evidenceBody")}</p>
+              </div>
+              <button className="icon-button" onClick={() => setShowEvidence(false)} aria-label={t("actions.close")}><X size={18} /></button>
+            </header>
+            <div className="vcti-evidence-drawer-body">
+              <section>
+                <h3>{t("vcti.evidenceTitle")}</h3>
+                {profile.evidence.length ? (
+                  <div className="vcti-evidence-list">{profile.evidence.map((item) => (
+                    <div key={item.id}>
+                      <span className={item.structural ? "structural" : ""}>{item.structural ? t("vcti.structureChip") : t("vcti.observedChip")}</span>
+                      <strong>{evidenceValue(item, locale)}</strong>
+                      <p>{t(item.labelKey)}</p>
+                    </div>
+                  ))}</div>
+                ) : <EmptyState title={t("vcti.noEvidence")} body={t("vcti.collecting.body")} />}
+              </section>
+              <section>
+                <h3>{t("vcti.coverageTitle")}</h3>
+                <p>{t("vcti.coverageBody")}</p>
+                <BehaviorCoverage profile={profile} />
+                {profile.missingCapabilities.length ? (
+                  <div className="vcti-capability-note">
+                    <strong>{t("vcti.missingCapability", { count: profile.missingCapabilities.length })}</strong>
+                    <span>{profile.missingCapabilities.map((capability) => t(`vcti.capabilityNames.${capability}`)).join(" · ")}</span>
+                  </div>
+                ) : <p className="vcti-capability-note complete">{t("vcti.coverageComplete")}</p>}
+              </section>
+              <section>
+                <h3>{t("vcti.trendTitle")}</h3>
+                <p>{t("vcti.trendBody")}</p>
+                <div className="vcti-trend-list">
+                  {profile.trend.length ? profile.trend.map((point) => (
+                    <div key={point.periodStart}>
+                      <small>{formatDate(point.periodStart, locale, "short")}</small>
+                      <span>{point.dominantType ? <><b>{point.dominantType}</b>{t(`vcti.types.${point.dominantType}.name`)}</> : t("vcti.collecting.name")}</span>
+                      <i><em style={{ width: `${point.scores.find((score) => score.id === "shipping")?.value ?? 0}%` }} /></i>
+                    </div>
+                  )) : <p>{t("vcti.trendUnavailable")}</p>}
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
 
       {showAtlas ? createPortal(
         <div className="modal-backdrop vcti-atlas-backdrop" role="presentation" onMouseDown={(event) => {
