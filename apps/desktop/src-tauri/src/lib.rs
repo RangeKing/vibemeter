@@ -422,6 +422,7 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("liveHooksEnabled", "true"),
             ("notchEnabled", "true"),
             ("menuBarEnabled", "true"),
+            ("iaMigrationTipSeen", "false"),
         ] {
             settings.insert(
                 key.into(),
@@ -475,7 +476,8 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
         | "launchAtLogin"
         | "liveHooksEnabled"
         | "notchEnabled"
-        | "menuBarEnabled" => {
+        | "menuBarEnabled"
+        | "iaMigrationTipSeen" => {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),

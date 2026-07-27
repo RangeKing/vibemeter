@@ -586,6 +586,7 @@ export interface AppSettings {
   locale: string;
   theme: string;
   onboardingComplete: string;
+  iaMigrationTipSeen: string;
   credentialsAllowed: string;
   cursorDashboardUsage: string;
   launchAtLogin: string;

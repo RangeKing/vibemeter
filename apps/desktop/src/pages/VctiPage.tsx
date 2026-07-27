@@ -100,6 +100,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
           <div className="vcti-actions">
             <button className="button primary" disabled={!profile.primaryType} onClick={() => openShare("vcti-card")}><Sparkles size={14} />{t("vcti.makeShareCard")}</button>
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
+            <button className="button subtle" onClick={() => useUiStore.getState().setPage("insights")}>{t("vcti.openInsights")}</button>
           </div>
         </div>
         <VctiAvatar type={profile.primaryType} guild={profile.guild} label={primaryName} />

@@ -148,6 +148,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .sidebar-nav { display: grid; gap: 3px; }
 .primary-nav { flex: 0 0 auto; grid-template-rows: repeat(3, 38px); }
 .history-nav { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.utility-nav { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ia-migration-tip { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px 18px; align-items: start; margin: 0 0 18px; padding: 16px 44px 16px 18px; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--accent-soft) 70%, var(--surface)); box-shadow: var(--shadow-small); }
+.ia-migration-tip strong { display: block; font-family: var(--serif); font-size: 18px; font-weight: 620; letter-spacing: -.02em; }
+.ia-migration-tip p { margin: 6px 0 0; color: var(--muted); font-size: var(--font-caption); line-height: 1.55; max-width: 62ch; }
+.ia-migration-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.ia-migration-links .button { min-height: 30px; font-size: var(--font-caption); }
+.ia-migration-tip > .button.primary { align-self: center; }
+.ia-migration-close { position: absolute; top: 10px; right: 10px; }
 .sidebar-nav button { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; height: 38px; padding: 0 11px; border: 1px solid transparent; border-radius: 9px; color: var(--muted); background: transparent; text-align: left; transition: 130ms ease; }
 .sidebar-nav button:hover { color: var(--ink); background: color-mix(in srgb, var(--surface) 55%, transparent); }
 .sidebar-nav button.active { color: var(--accent-dark); border-color: color-mix(in srgb, var(--accent) 16%, var(--line)); background: var(--surface); box-shadow: 0 2px 8px rgb(35 29 21 / 4%); }

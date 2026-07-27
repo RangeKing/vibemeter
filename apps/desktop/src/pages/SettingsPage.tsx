@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
+import { useUiStore } from "../store";
 import type { AppSettings, Theme } from "../types";
 
 export function SettingsPage() {
   const { t } = useTranslation();
   const client = useQueryClient();
+  const setPage = useUiStore((state) => state.setPage);
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 3_000 });
@@ -47,7 +49,7 @@ export function SettingsPage() {
   };
   const exclude = useMutation({
     mutationFn: async ({ hash, excluded }: { hash: string; excluded: boolean }) => excluded ? api.includeProject(hash) : api.excludeProject(hash),
-    onSuccess: async () => { await Promise.all([client.invalidateQueries({ queryKey: ["projects"] }), client.invalidateQueries({ queryKey: ["today"] }), client.invalidateQueries({ queryKey: ["sessions"] })]); },
+    onSuccess: async () => { await Promise.all([client.invalidateQueries({ queryKey: ["projects"] }), client.invalidateQueries({ queryKey: ["sessions"] })]); },
   });
   const clearData = useMutation({
     mutationFn: api.clearLocalData,
@@ -66,6 +68,14 @@ export function SettingsPage() {
           <header><Languages size={17} /><div><h2>{t("settings.general")}</h2></div></header>
           <div className="setting-row"><div><strong>{t("settings.language")}</strong></div><select value={data.locale} onChange={(event) => void setSetting("locale", event.target.value)}><option value="system">{t("settings.systemLanguage")}</option><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></div>
           <div className="setting-row"><div><strong>{t("settings.appearance")}</strong></div><div className="segmented compact"><button className={theme === "system" ? "active" : ""} onClick={() => void setSetting("theme", "system")}><Laptop size={13} />{t("settings.systemTheme")}</button><button className={theme === "light" ? "active" : ""} onClick={() => void setSetting("theme", "light")}>{t("share.light")}</button><button className={theme === "dark" ? "active" : ""} onClick={() => void setSetting("theme", "dark")}>{t("share.dark")}</button></div></div>
+        </section>
+
+        <section className="settings-section">
+          <header><Database size={17} /><div><h2>{t("settings.sources")}</h2><p>{t("settings.sourcesBody")}</p></div></header>
+          <div className="setting-row multiline">
+            <div><strong>{t("settings.manageSources")}</strong><p>{t("settings.manageSourcesBody")}</p></div>
+            <button className="button secondary" onClick={() => setPage("sources")}>{t("settings.openSources")}<ArrowRight size={13} /></button>
+          </div>
         </section>
 
         <section className="settings-section">
@@ -91,7 +101,7 @@ export function SettingsPage() {
 
         <section className="settings-section project-settings">
           <header><Database size={17} /><div><h2>{t("settings.projects")}</h2><p>{t("settings.projectsBody")}</p></div></header>
-          <div className="project-list">{projects.data?.map((project) => <div key={project.projectHash}><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{project.projectLabel}</strong><small>{t("sessions.resultCount", { count: project.sessionCount })}</small></span><button className={project.excluded ? "button secondary" : "button danger-button"} onClick={() => { if (project.excluded || window.confirm(t("settings.excludeConfirm"))) exclude.mutate({ hash: project.projectHash, excluded: project.excluded }); }}>{project.excluded ? t("settings.include") : t("settings.exclude")}</button></div>)}</div>
+          <div className="project-list">{projects.data?.map((project) => <div key={project.projectHash}><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{project.projectLabel}</strong><small>{t("settings.projectSessions", { count: project.sessionCount })}</small></span><button className={project.excluded ? "button secondary" : "button danger-button"} onClick={() => { if (project.excluded || window.confirm(t("settings.excludeConfirm"))) exclude.mutate({ hash: project.projectHash, excluded: project.excluded }); }}>{project.excluded ? t("settings.include") : t("settings.exclude")}</button></div>)}</div>
         </section>
 
         <section className="settings-section">

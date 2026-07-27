@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useUiStore } from "../store";
 import type { RangeKey } from "../types";
 
-const ranges: RangeKey[] = ["today", "7d", "30d", "180d", "year"];
+const ranges: RangeKey[] = ["today", "7d", "30d", "90d", "180d", "year"];
 
 export function RangePicker({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();

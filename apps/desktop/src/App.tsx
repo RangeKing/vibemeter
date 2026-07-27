@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +33,12 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const index = useQuery({ queryKey: ["index-status"], queryFn: api.indexStatus, refetchInterval: 1_500 });
   const locale: Locale = settings.data?.locale === "zh-CN" || settings.data?.locale === "en-US" ? settings.data.locale : systemLocale();
+  const dismissMigration = useMutation({
+    mutationFn: () => api.setSetting("iaMigrationTipSeen", "true"),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ["settings"] });
+    },
+  });
 
   useEffect(() => {
     void i18n.changeLanguage(locale);
@@ -60,7 +66,13 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<string>("navigate", (event) => {
-      const legacyMap: Record<string, PageKey> = { overview: "data", today: "data", compare: "insights", playbook: "insights", reviews: "insights" };
+      const legacyMap: Record<string, PageKey> = {
+        overview: "data",
+        today: "data",
+        compare: "vcti",
+        playbook: "vcti",
+        reviews: "vcti",
+      };
       const target = legacyMap[event.payload] ?? event.payload;
       if (pages.includes(target as PageKey)) setPage(target as PageKey);
     }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; });
@@ -74,6 +86,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
     return <Onboarding onFinish={async ({ credentialsAllowed, gitReadAllowed, vctiPromptStructure }) => {
       await Promise.all([
         api.setSetting("onboardingComplete", "true"),
+        api.setSetting("iaMigrationTipSeen", "true"),
         api.setSetting("credentialsAllowed", String(credentialsAllowed)),
         api.setSetting("gitReadAllowed", String(gitReadAllowed)),
         api.setSetting("vctiPromptStructure", String(vctiPromptStructure)),
@@ -84,6 +97,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
       if (credentialsAllowed) await api.refreshProviders(true, false);
       await api.refreshIndex(true);
       await client.invalidateQueries({ queryKey: ["settings"] });
+      setPage("vcti");
     }} />;
   }
 
@@ -99,5 +113,14 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
       case "settings": return <SettingsPage />;
     }
   })();
-  return <AppShell indexStatus={index.data}>{content}</AppShell>;
+  const showMigrationTip = settings.data?.iaMigrationTipSeen !== "true";
+  return (
+    <AppShell
+      indexStatus={index.data}
+      showMigrationTip={showMigrationTip}
+      onDismissMigrationTip={() => dismissMigration.mutate()}
+    >
+      {content}
+    </AppShell>
+  );
 }
