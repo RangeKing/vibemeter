@@ -83,20 +83,11 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   if (surface === "menubar") return <MenuBarPopover locale={locale} />;
   if (surface === "notch") return <NotchSurface locale={locale} />;
   if (settings.data?.onboardingComplete !== "true") {
-    return <Onboarding onFinish={async ({ credentialsAllowed, gitReadAllowed, vctiPromptStructure }) => {
-      await Promise.all([
-        api.setSetting("onboardingComplete", "true"),
-        api.setSetting("iaMigrationTipSeen", "true"),
-        api.setSetting("credentialsAllowed", String(credentialsAllowed)),
-        api.setSetting("gitReadAllowed", String(gitReadAllowed)),
-        api.setSetting("vctiPromptStructure", String(vctiPromptStructure)),
-        api.setSetting("liveHooksEnabled", "true"),
-        api.setSetting("notchEnabled", "true"),
-        api.setSetting("menuBarEnabled", "true"),
-      ]);
-      if (credentialsAllowed) await api.refreshProviders(true, false);
-      await api.refreshIndex(true);
+    return <Onboarding onComplete={async () => {
       await client.invalidateQueries({ queryKey: ["settings"] });
+      await client.invalidateQueries({ queryKey: ["sources"] });
+      await client.invalidateQueries({ queryKey: ["vcti"] });
+      await client.invalidateQueries({ queryKey: ["index-status"] });
       setPage("vcti");
     }} />;
   }
