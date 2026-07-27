@@ -3,15 +3,17 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
 import { useUiStore } from "../store";
-import type { AppSettings, Theme } from "../types";
+import type { AppSettings, Locale, Theme } from "../types";
 
-export function SettingsPage() {
+export function SettingsPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const client = useQueryClient();
   const setPage = useUiStore((state) => state.setPage);
+  const range = useUiStore((state) => state.range);
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 3_000 });
@@ -92,6 +94,11 @@ export function SettingsPage() {
           <div className="setting-row multiline"><div><strong>{t("settings.gitRead")}</strong><p>{t("settings.gitReadBody")}</p></div><Toggle checked={data.gitReadAllowed === "true"} onCheckedChange={(value) => void setSetting("gitReadAllowed", String(value))} label={t("settings.gitRead")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.credentials")}</strong><p>{t("settings.credentialsBody")}</p></div><Toggle checked={data.credentialsAllowed === "true"} onCheckedChange={(value) => void setSetting("credentialsAllowed", String(value))} label={t("settings.credentials")} /></div>
           <div className={`setting-row multiline nested-setting ${data.credentialsAllowed !== "true" ? "disabled-setting" : ""}`}><div><strong>{t("settings.cursorDashboardUsage")}</strong><p>{t(data.credentialsAllowed === "true" ? "settings.cursorDashboardUsageBody" : "settings.cursorDashboardUsageRequiresCredentials")}</p></div><Toggle checked={data.cursorDashboardUsage === "true"} disabled={data.credentialsAllowed !== "true"} onCheckedChange={(value) => void setSetting("cursorDashboardUsage", String(value))} label={t("settings.cursorDashboardUsage")} /></div>
+          {data.cursorDashboardUsage === "true" && data.credentialsAllowed === "true" ? (
+            <div className="settings-cursor-usage">
+              <CursorAccountUsagePanel locale={locale} range={range} />
+            </div>
+          ) : null}
         </section>
 
         <section className="settings-section">

@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EChartsCoreOption } from "echarts";
 import { ArrowRight, BarChart3, CalendarDays, Merge, Scale, Sparkles, Workflow } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { EChart } from "../components/EChart";
-import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { RangePicker } from "../components/RangePicker";
+import { SessionsWorkspace } from "../components/SessionsWorkspace";
 import { WorkEventCard } from "../components/WorkEventCard";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
@@ -148,8 +148,8 @@ function toolOption(tools: Array<{ label: string; value: number }>, colors: Retu
 }
 
 function openTask(task: TaskSummary) {
-  if (task.primarySessionId) useUiStore.getState().selectSession(task.primarySessionId);
-  useUiStore.getState().setPage("sessions");
+  const store = useUiStore.getState();
+  store.openSessions(task.primarySessionId);
 }
 
 export function DataPage({ locale }: { locale: Locale }) {
@@ -157,9 +157,12 @@ export function DataPage({ locale }: { locale: Locale }) {
   const colors = useChartColors();
   const client = useQueryClient();
   const range = useUiStore((state) => state.range);
-  const setPage = useUiStore((state) => state.setPage);
+  const dataView = useUiStore((state) => state.dataView);
+  const openSessions = useUiStore((state) => state.openSessions);
+  const closeSessions = useUiStore((state) => state.closeSessions);
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [showAllEvents, setShowAllEvents] = useState(false);
+  const [agentFilter, setAgentFilter] = useState<string[]>([]);
   const overview = useQuery({ queryKey: ["overview", range], queryFn: () => api.overview(range), refetchInterval: 30_000 });
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
@@ -171,32 +174,76 @@ export function DataPage({ locale }: { locale: Locale }) {
       await Promise.all([client.invalidateQueries({ queryKey: ["tasks"] }), client.invalidateQueries({ queryKey: ["overview"] }), client.invalidateQueries({ queryKey: ["sessions"] })]);
     },
   });
+  const availableAgents = useMemo(
+    () => (sources.data ?? []).filter((source) => source.available).map((source) => source.agent),
+    [sources.data],
+  );
+  const defaultAgents = useMemo(
+    () => (sources.data ?? []).filter((source) => source.available && source.selected).map((source) => source.agent),
+    [sources.data],
+  );
+  useEffect(() => {
+    if (!sources.data) return;
+    setAgentFilter((current) => {
+      const nextDefault = defaultAgents.length ? defaultAgents : availableAgents;
+      if (!current.length) return nextDefault;
+      const stillValid = current.filter((agent) => availableAgents.includes(agent));
+      return stillValid.length ? stillValid : nextDefault;
+    });
+  }, [availableAgents, defaultAgents, sources.data]);
+
   const isToday = range === "today";
   const referenceTime = useMemo(() => {
     const value = new Date(overview.data?.generatedAt ?? Date.now());
     return Number.isNaN(value.getTime()) ? new Date() : value;
   }, [overview.data?.generatedAt]);
-  const selectedSources = useMemo(
-    () => (sources.data ?? []).filter((source) => source.available && source.selected),
-    [sources.data],
+  const activeAgents = agentFilter.length ? agentFilter : availableAgents;
+  const filteredDaily = useMemo(
+    () => (overview.data?.daily ?? []).filter((point) => activeAgents.includes(point.agent)),
+    [overview.data?.daily, activeAgents],
   );
-  const sourceAgents = useMemo(
-    () => selectedSources.map((source) => source.agent),
-    [selectedSources],
+  const filteredHourly = useMemo(
+    () => (overview.data?.hourly ?? []).filter((point) => activeAgents.includes(point.agent)),
+    [overview.data?.hourly, activeAgents],
   );
-  const series = useMemo(() => agentSeries(overview.data?.daily ?? [], overview.data?.hourly ?? [], isToday, referenceTime, sourceAgents), [overview.data?.daily, overview.data?.hourly, isToday, referenceTime, sourceAgents]);
-  const daily = useMemo(() => groupDaily(overview.data?.daily ?? [], range, referenceTime), [overview.data?.daily, range, referenceTime]);
-  const hourlyActivity = useMemo(() => isToday ? buildHourlyActivity(overview.data?.hourly ?? [], "today", referenceTime) : [], [isToday, overview.data?.hourly, referenceTime]);
+  const series = useMemo(
+    () => agentSeries(filteredDaily, filteredHourly, isToday, referenceTime, activeAgents),
+    [filteredDaily, filteredHourly, isToday, referenceTime, activeAgents],
+  );
+  const daily = useMemo(() => groupDaily(filteredDaily, range, referenceTime), [filteredDaily, range, referenceTime]);
+  const hourlyActivity = useMemo(() => isToday ? buildHourlyActivity(filteredHourly, "today", referenceTime) : [], [isToday, filteredHourly, referenceTime]);
   const maxActivity = Math.max(...(isToday ? hourlyActivity.map((item) => item.total) : daily.map((item) => item.tokens)), 1);
 
+  if (dataView === "sessions") {
+    return <SessionsWorkspace locale={locale} embedded onBack={closeSessions} />;
+  }
+
   if (overview.isLoading || sources.isLoading || tasks.isLoading) return <LoadingState />;
-  if (overview.isError || !overview.data || sources.isError || !sources.data || tasks.isError || !tasks.data) return <ErrorState retry={() => void Promise.all([overview.refetch(), sources.refetch(), tasks.refetch()])} />;
+  if (overview.isError || !overview.data || sources.isError || !sources.data || tasks.isError || !tasks.data) {
+    return <ErrorState retry={() => void Promise.all([overview.refetch(), sources.refetch(), tasks.refetch()])} />;
+  }
   const data = overview.data;
-  const activeDuration = durationParts(data.totals.activeSeconds);
-  const displayedAgents = sourceAgents.map((agent) => data.agents.find((item) => item.label === agent) ?? { id: agent, label: agent, value: 0 });
-  const filteredTasks = tasks.data.filter((task) => sourceAgents.includes(task.agent));
+  const filteredAgents = data.agents.filter((item) => activeAgents.includes(item.label));
+  const displayedAgents = activeAgents.map((agent) => filteredAgents.find((item) => item.label === agent) ?? { id: agent, label: agent, value: 0 });
+  const filteredTasks = tasks.data.filter((task) => activeAgents.includes(task.agent));
   const visibleTasks = showAllEvents ? filteredTasks : filteredTasks.slice(0, 12);
+  const filteredComparison = (comparison.data ?? []).filter((item) => item.groupKind !== "agent" || activeAgents.includes(item.agent));
+  const ledgerSessions = filteredDaily.reduce((sum, point) => sum + point.sessionCount, 0);
+  const ledgerTokens = filteredDaily.reduce((sum, point) => sum + tokenTotal(point.usage), 0);
+  const ledgerSeconds = filteredDaily.reduce((sum, point) => sum + point.activeSeconds, 0);
+  const ledgerDays = new Set(filteredDaily.filter((point) => tokenTotal(point.usage) > 0 || point.sessionCount > 0).map((point) => point.date)).size;
+  const activeDuration = durationParts(ledgerSeconds || data.totals.activeSeconds);
   const toggleTask = (id: string, selected: boolean) => setSelectedTasks((current) => selected ? [...new Set([...current, id])] : current.filter((item) => item !== id));
+  const toggleAgent = (agent: string) => {
+    setAgentFilter((current) => {
+      const base = current.length ? current : availableAgents;
+      if (base.includes(agent)) {
+        const next = base.filter((item) => item !== agent);
+        return next.length ? next : base;
+      }
+      return [...base, agent];
+    });
+  };
   const rangeText = t(`ranges.${range}`);
   const agentTokenText = (agent: string, value: number) => agent === "cursor"
     ? t("metrics.notRecorded")
@@ -208,36 +255,44 @@ export function DataPage({ locale }: { locale: Locale }) {
     <div className="page data-page">
       <header className="data-header">
         <div><span className="eyebrow"><BarChart3 size={13} />{t("data.eyebrow")}</span><h1>{t("data.title")}</h1><p>{t("data.description")}</p></div>
-        <RangePicker />
+        <div className="data-header-actions">
+          <div className="data-agent-chips" role="group" aria-label={t("data.agentFilter")}>
+            {availableAgents.length ? availableAgents.map((agent) => {
+              const active = activeAgents.includes(agent);
+              return (
+                <button
+                  key={agent}
+                  type="button"
+                  className={active ? "active" : ""}
+                  aria-pressed={active}
+                  onClick={() => toggleAgent(agent)}
+                >
+                  <AgentBadge agent={agent} compact />
+                </button>
+              );
+            }) : <span className="data-source-empty">{t("data.sourcesNoneSelected")}</span>}
+          </div>
+          <RangePicker />
+        </div>
       </header>
 
       <section className="data-ledger" aria-label={t("data.summary")}>
-        <div><span>{t("metrics.sessions")}</span><strong>{formatCompact(data.totals.sessionCount, locale)}</strong><small>{rangeText}</small></div>
+        <div><span>{t("metrics.sessions")}</span><strong>{formatCompact(ledgerSessions || data.totals.sessionCount, locale)}</strong><small>{rangeText}</small></div>
         <div className="duration-metric">
           <span>{t("metrics.duration")}</span>
           <strong className="data-duration-value">
             <span><b>{formatCompact(activeDuration.hours, locale)}</b><em>{t("metrics.hours")}</em></span>
             <span><b>{formatCompact(activeDuration.minutes, locale)}</b><em>{t("metrics.minutes")}</em></span>
           </strong>
-          <small>{data.totals.activeDays} {t("metrics.activeDays").toLowerCase()}</small>
+          <small>{ledgerDays || data.totals.activeDays} {t("metrics.activeDays").toLowerCase()}</small>
         </div>
-        <div className="featured"><span>{t("metrics.tokens")}</span><strong>{formatCompact(tokenTotal(data.totals.usage), locale)}</strong><small>{t("data.localTokenFootnote")}</small></div>
+        <div className="featured"><span>{t("metrics.tokens")}</span><strong>{formatCompact(ledgerTokens || tokenTotal(data.totals.usage), locale)}</strong><small>{t("data.localTokenFootnote")}</small></div>
         <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
-        <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
+        <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(ledgerDays || data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
       </section>
-
-      <section className="data-source-strip" aria-label={t("data.sourcesTitle")}>
-        <header><span>{t("data.sourcesTitle")}</span><small>{t("data.sourcesBody")}</small></header>
-        <div>{selectedSources.length
-          ? selectedSources.map((source) => <article key={source.agent} className="available"><AgentBadge agent={source.agent} compact /><span>{formatCompact(source.sessionCount, locale)} {t("metrics.sessions")}</span></article>)
-          : <span className="data-source-empty">{t("data.sourcesNoneSelected")}</span>}
-        </div>
-      </section>
-
-      <CursorAccountUsagePanel locale={locale} range={range} />
 
       <section className="data-panel trend-panel">
-        <header className="panel-heading"><div><span className="section-index">01</span><h2>{t("data.trend")}</h2><p>{t(isToday ? "data.trendHourlyBody" : "data.trendBody", { range: rangeText })}</p></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>
+        <header className="panel-heading"><div><h2>{t("data.trend")}</h2><p>{t(isToday ? "data.trendHourlyBody" : "data.trendBody", { range: rangeText })}</p></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>
         <div className="combined-trend">
           {series.length ? <>
             <div className="trend-series-legend">{series.map((item, index) => <div key={item.agent}><i style={{ background: agentColor(item.agent, colors, index) }} /><strong>{agentName(item.agent)}</strong><small>{agentTokenText(item.agent, item.total)}</small></div>)}</div>
@@ -248,8 +303,8 @@ export function DataPage({ locale }: { locale: Locale }) {
 
       <div className="data-analysis-grid">
         <section className="data-panel activity-panel">
-          <header className="panel-heading"><div><span className="section-index">02</span><h2>{t("data.activity")}</h2><p>{t(isToday ? "data.activityHourlyBody" : "data.activityBody")}</p></div><CalendarDays size={17} /></header>
-          <div className="activity-summary"><strong>{isToday ? activeHours.length : data.totals.activeDays}</strong><span>{isToday ? t("data.activeHours") : t("metrics.activeDays")}</span><small>{isToday ? hourWindow : daily.length ? `${formatDate(daily[0].date, locale, "short")} — ${formatDate(daily[daily.length - 1].date, locale, "short")}` : rangeText}</small></div>
+          <header className="panel-heading"><div><h2>{t("data.activity")}</h2><p>{t(isToday ? "data.activityHourlyBody" : "data.activityBody")}</p></div><CalendarDays size={17} /></header>
+          <div className="activity-summary"><strong>{isToday ? activeHours.length : (ledgerDays || data.totals.activeDays)}</strong><span>{isToday ? t("data.activeHours") : t("metrics.activeDays")}</span><small>{isToday ? hourWindow : daily.length ? `${formatDate(daily[0].date, locale, "short")} — ${formatDate(daily[daily.length - 1].date, locale, "short")}` : rangeText}</small></div>
           {isToday ? <>
             <div className="activity-heatmap hourly" style={{ gridTemplateColumns: `repeat(${Math.max(1, hourlyActivity.length)}, minmax(7px, 1fr))` }}>
               {hourlyActivity.map((item) => <span key={item.key} tabIndex={0} style={{ opacity: .12 + .88 * Math.sqrt(item.total / maxActivity) }} data-tooltip={`${item.startAt.slice(11, 16)} · ${formatCompact(item.total, locale)} Token`} aria-label={`${item.startAt.slice(11, 16)} ${formatCompact(item.total, locale)} Token`} />)}
@@ -260,7 +315,7 @@ export function DataPage({ locale }: { locale: Locale }) {
           </div>}
         </section>
         <section className="data-panel distribution-panel">
-          <header className="panel-heading"><div><span className="section-index">03</span><h2>{t("data.distribution")}</h2><p>{t("data.distributionBody")}</p></div></header>
+          <header className="panel-heading"><div><h2>{t("data.distribution")}</h2><p>{t("data.distributionBody")}</p></div></header>
           <div className="distribution-layout">
             <EChart option={distributionOption(displayedAgents, data.models, colors, locale, { agent: t("data.agentLegend"), model: t("data.modelLegend") })} ariaLabel={t("data.distribution")} style={{ height: 250 }} />
             <aside className="distribution-legend">
@@ -270,20 +325,20 @@ export function DataPage({ locale }: { locale: Locale }) {
           </div>
         </section>
         <section className="data-panel tools-panel">
-          <header className="panel-heading"><div><span className="section-index">04</span><h2>{t("data.tools")}</h2><p>{t("data.toolsBody")}</p></div><Workflow size={17} /></header>
+          <header className="panel-heading"><div><h2>{t("data.tools")}</h2><p>{t("data.toolsBody")}</p></div><Workflow size={17} /></header>
           <EChart option={toolOption(data.tools, colors, locale)} ariaLabel={t("data.tools")} style={{ height: 240 }} />
         </section>
       </div>
 
       <section className="data-panel comparison-panel">
-        <header className="panel-heading"><div><span className="section-index">05</span><h2>{t("insights.comparison")}</h2><p>{t("data.comparisonBody")}</p></div><Scale size={17} /></header>
+        <header className="panel-heading"><div><h2>{t("insights.comparison")}</h2><p>{t("data.comparisonBody")}</p></div><Scale size={17} /></header>
         {comparison.isLoading ? <LoadingState /> : comparison.isError || !comparison.data ? (
           <ErrorState retry={() => void comparison.refetch()} />
         ) : (() => {
-          const maxTokens = Math.max(...comparison.data.map((entry) => tokenTotal(entry.usage)), 1);
+          const maxTokens = Math.max(...filteredComparison.map((entry) => tokenTotal(entry.usage)), 1);
           return (
             <div className="comparison-list">
-              {comparison.data.slice(0, 8).map((item, index) => (
+              {filteredComparison.slice(0, 8).map((item, index) => (
                 <div key={item.id} style={{ "--comparison-color": COMPARISON_COLORS[index] } as CSSProperties}>
                   <span className="comparison-label">
                     <strong><i className="comparison-dot" />{item.label}</strong>
@@ -299,12 +354,12 @@ export function DataPage({ locale }: { locale: Locale }) {
       </section>
 
       <section className="events-section">
-        <header className="section-heading events-heading"><div><span className="section-index">06</span><h2>{t("data.events")}</h2><p>{t("data.eventsBody", { range: rangeText })}</p></div><div className="event-summary"><span><strong>{filteredTasks.length}</strong>{t("metrics.tasks")}</span></div></header>
+        <header className="section-heading events-heading"><div><h2>{t("data.events")}</h2><p>{t("data.eventsBody", { range: rangeText })}</p></div><div className="event-summary"><span><strong>{filteredTasks.length}</strong>{t("metrics.tasks")}</span></div></header>
         {selectedTasks.length ? <div className="task-merge-bar"><span>{t("task.selected", { count: selectedTasks.length })}</span><button className="button secondary" onClick={() => merge.mutate(selectedTasks)} disabled={selectedTasks.length < 2 || merge.isPending}><Merge size={13} />{t("task.merge")}</button></div> : null}
         {visibleTasks.length ? <div className="event-grid">{visibleTasks.map((task) => <WorkEventCard key={task.id} task={task} locale={locale} selected={selectedTasks.includes(task.id)} onSelect={(value) => toggleTask(task.id, value)} onOpen={() => openTask(task)} onAcceptSuggestion={task.suggestedTaskId ? () => merge.mutate([task.suggestedTaskId!, task.id]) : undefined} />)}</div> : <EmptyState title={t("data.noEvents")} body={t("data.noEventsBody")} />}
         <footer className="events-footer">
           {filteredTasks.length > 12 ? <button className="button subtle" onClick={() => setShowAllEvents((value) => !value)}>{showAllEvents ? t("data.showLess") : t("data.showAll", { count: filteredTasks.length })}</button> : <span />}
-          <button className="inline-link" onClick={() => setPage("sessions")}>{t("sessions.title")}<ArrowRight size={14} /></button>
+          <button className="inline-link" onClick={() => openSessions()}>{t("data.openSessions")}<ArrowRight size={14} /></button>
         </footer>
       </section>
     </div>

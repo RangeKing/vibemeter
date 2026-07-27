@@ -49,8 +49,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
   const range = useUiStore((state) => state.range);
   const setRange = useUiStore((state) => state.setRange);
   const openShare = useUiStore((state) => state.openShare);
-  const setPage = useUiStore((state) => state.setPage);
-  const selectSession = useUiStore((state) => state.selectSession);
+  const openSessions = useUiStore((state) => state.openSessions);
   const [showAtlas, setShowAtlas] = useState(false);
   const [showEvidence, setShowEvidence] = useState(false);
   const query = useQuery({
@@ -187,8 +186,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
                 index={index}
                 locale={locale}
                 onOpenSession={(sessionId) => {
-                  selectSession(sessionId);
-                  setPage("sessions");
+                  openSessions(sessionId);
                 }}
               />
             ))}

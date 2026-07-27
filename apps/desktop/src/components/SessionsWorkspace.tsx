@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RangePicker } from "../components/RangePicker";
-import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "../components/ui";
+import { RangePicker } from "./RangePicker";
+import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "./ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
@@ -84,7 +84,15 @@ function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; loc
   );
 }
 
-export function SessionsPage({ locale }: { locale: Locale }) {
+export function SessionsWorkspace({
+  locale,
+  embedded = false,
+  onBack,
+}: {
+  locale: Locale;
+  embedded?: boolean;
+  onBack?: () => void;
+}) {
   const { t } = useTranslation();
   const range = useUiStore((state) => state.range);
   const selectedId = useUiStore((state) => state.selectedSessionId);
@@ -145,9 +153,21 @@ export function SessionsPage({ locale }: { locale: Locale }) {
   const loadingMore = query.isFetching && page > 0;
 
   return (
-    <div className={`page sessions-page ${selectedId ? "showing-replay" : ""}`}>
+    <div className={`page sessions-page ${selectedId ? "showing-replay" : ""} ${embedded ? "embedded" : ""}`}>
       {!selectedId ? <>
-        <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
+        {embedded ? (
+          <header className="sessions-embedded-header">
+            <button className="button subtle" onClick={onBack}><ArrowLeft size={14} />{t("data.backToOverview")}</button>
+            <div>
+              <span className="eyebrow">{t("sessions.title")}</span>
+              <h1>{t("sessions.ledgerTitle")}</h1>
+              <p>{t("sessions.description")}</p>
+            </div>
+            <RangePicker />
+          </header>
+        ) : (
+          <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
+        )}
         <div className="session-toolbar">
           <label className="search-field"><Search size={16} /><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder={t("sessions.search")} />{searchInput ? <button onClick={() => setSearchInput("")} aria-label={t("actions.clear")}><X size={14} /></button> : null}</label>
           <select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t("sessions.allAgents")}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="kimi-code">Kimi Code</option><option value="cursor">Cursor</option><option value="openclaw">OpenClaw</option><option value="hermes">Hermes</option></select>

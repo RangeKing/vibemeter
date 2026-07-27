@@ -6,7 +6,7 @@ export const enUS = {
   },
   migration: {
     title: "Navigation got simpler",
-    body: "VCTI is now the home. Catchphrases and insight cards live there too. Live and Data stay up front; Share and Settings sit below. Sessions and Sources moved out of the sidebar—use the shortcuts here, or open Sources from Settings.",
+    body: "VCTI is now the home. Catchphrases and insight cards live there too. Sessions open inside Data. Live stays up front; Share and Settings sit below. Sources open from Settings.",
     dismiss: "Got it",
   },
   navigation: {
@@ -91,8 +91,8 @@ export const enUS = {
     localTokenFootnote: "Readable local sessions; account lifetime usage may differ.",
     localTokenFootnoteWithCost: "Readable local sessions; account lifetime usage may differ · {{value}} estimated API equivalent",
     sourcesTitle: "Local agent sources",
-    sourcesBody: "Only Agents selected on Sources feed these totals. Optional Cursor account usage stays separate.",
-    sourcesNoneSelected: "No local Agent source is selected",
+    sourcesBody: "Use the Agent chips above to filter this page. Discover and index sources from Settings.",
+    sourcesNoneSelected: "No local Agent source is available yet",
     sourceMissing: "Not found",
     trend: "Usage trend",
     trendBody: "{{range}} · all agents share one chart and one scale.",
@@ -106,7 +106,7 @@ export const enUS = {
     activeHours: "Active hours",
     noHourlyActivity: "No hourly activity yet",
     distribution: "Agents and models",
-    distributionBody: "Both rings use locally observed session data; account-wide Cursor usage stays separate.",
+    distributionBody: "Both rings use locally observed session data; Cursor account dashboard usage stays in Settings.",
     agentLegend: "Agents",
     modelLegend: "Models",
     tools: "Workflow footprint",
@@ -118,6 +118,9 @@ export const enUS = {
     noEventsBody: "A readable local session will appear here after indexing.",
     showAll: "Show all {{count}} events",
     showLess: "Show fewer events",
+    agentFilter: "Filter agents",
+    openSessions: "Browse all sessions",
+    backToOverview: "Back to Data",
   },
   catchphrases: {
     title: "Catchphrase fingerprint",
@@ -285,6 +288,7 @@ export const enUS = {
   },
   sessions: {
     title: "Sessions & replay",
+    ledgerTitle: "Session ledger",
     description: "Inspect the process without pretending unavailable evidence exists.",
     search: "Search title, model, project, or file",
     allAgents: "All agents",
@@ -679,7 +683,7 @@ export const zhCN = {
   },
   migration: {
     title: "导航更简单了",
-    body: "现在默认从 VCTI 开始，口头禅与洞察卡片也并入这里。实时与数据仍在主栏，分享与设置在下方。会话与数据源已移出侧栏——可用这里的入口，或在设置里打开数据源。",
+    body: "现在默认从 VCTI 开始，口头禅与洞察卡片也并入这里。会话回放在 Data 内打开。实时仍在主栏，分享与设置在下方。数据源从设置进入。",
     dismiss: "知道了",
   },
   navigation: {
@@ -764,8 +768,8 @@ export const zhCN = {
     localTokenFootnote: "仅统计本机可读取会话，可能与账户累计值不同",
     localTokenFootnoteWithCost: "仅统计本机可读取会话，可能与账户累计值不同 · API 等价成本估算 {{value}}",
     sourcesTitle: "本机 Agent 来源",
-    sourcesBody: "只汇总数据源页当前选中的本机 Agent；可选的 Cursor 账户用量保持独立。",
-    sourcesNoneSelected: "尚未选择任何本机 Agent 数据源",
+    sourcesBody: "用上方 Agent chip 过滤本页；发现与索引请到设置里的数据源。",
+    sourcesNoneSelected: "还没有可用的本机 Agent 来源",
     sourceMissing: "未发现",
     trend: "使用趋势",
     trendBody: "{{range}} · 所有 Agent 共用一张图和同一刻度。",
@@ -779,7 +783,7 @@ export const zhCN = {
     activeHours: "活跃小时",
     noHourlyActivity: "暂无小时级活动",
     distribution: "Agent 与模型分布",
-    distributionBody: "内外环都只使用本机可观测会话；Cursor 账户级用量保持独立。",
+    distributionBody: "内外环都只使用本机可观测会话；Cursor 账户 Dashboard 用量只在设置中查看。",
     agentLegend: "Agent",
     modelLegend: "模型",
     tools: "工作流足迹",
@@ -791,6 +795,9 @@ export const zhCN = {
     noEventsBody: "出现可读取的本机会话后，索引结果会显示在这里。",
     showAll: "显示全部 {{count}} 项事件",
     showLess: "收起部分事件",
+    agentFilter: "筛选 Agent",
+    openSessions: "浏览全部会话",
+    backToOverview: "返回数据总览",
   },
   catchphrases: {
     title: "口头禅画像",
@@ -958,6 +965,7 @@ export const zhCN = {
   },
   sessions: {
     title: "会话与回放",
+    ledgerTitle: "会话台账",
     description: "沿证据回看过程；不可用的信息会明确标注，不会补写。",
     search: "搜索标题、模型、项目或文件",
     allAgents: "全部 Agent",

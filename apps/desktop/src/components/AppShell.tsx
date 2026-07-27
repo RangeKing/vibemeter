@@ -37,14 +37,21 @@ export function AppShell({
 }) {
   const { t } = useTranslation();
   const page = useUiStore((state) => state.page);
+  const dataView = useUiStore((state) => state.dataView);
   const setPage = useUiStore((state) => state.setPage);
   const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
     mainRef.current?.scrollTo({ top: 0, left: 0 });
-  }, [page]);
+  }, [page, dataView]);
   const navigate = (id: PageKey) => {
+    if (id === "data" && page === "data" && dataView === "sessions") {
+      useUiStore.getState().closeSessions();
+      return;
+    }
     setPage(id);
-    if (id !== "sessions") useUiStore.getState().selectSession(undefined);
+    if (id !== "data") {
+      useUiStore.getState().closeSessions();
+    }
   };
 
   const links = (items: typeof primary) => items.map(({ id, icon: Icon }) => (
