@@ -89,6 +89,28 @@ describe("ShareStudioPage range controls", () => {
     expect(screen.queryByRole("button", { name: /每周回顾/ })).toBeNull();
   });
 
+  it("only exposes five primary aspect ratios", async () => {
+    renderShare();
+
+    for (const aspect of ["1:1", "4:5", "3:4", "9:16", "16:9"]) {
+      expect(screen.getByRole("button", { name: aspect })).toBeTruthy();
+    }
+    expect(screen.queryByRole("button", { name: "2:3" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "4:3" })).toBeNull();
+  });
+
+  it("keeps optional copy and metrics behind disclosures", async () => {
+    renderShare();
+
+    expect(screen.queryByText("标题")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "自定义文案" }));
+    expect(await screen.findByText("标题")).toBeTruthy();
+
+    expect(screen.queryByText("最常用 Agent")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "辅助指标" }));
+    expect(await screen.findByText("最常用 Agent")).toBeTruthy();
+  });
+
   it("exports with the currently selected shared range", async () => {
     renderShare();
 

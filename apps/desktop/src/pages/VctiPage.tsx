@@ -11,6 +11,7 @@ import { VctiAvatar } from "../components/VctiAvatar";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDate, formatDuration, formatPercent } from "../lib/format";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { VCTI_GUILDS, VCTI_TYPES } from "../lib/vctiCatalog";
 import { useUiStore } from "../store";
 import type { Locale, VctiEvidenceItem, VctiProfile } from "../types";
@@ -52,6 +53,8 @@ export function VctiPage({ locale }: { locale: Locale }) {
   const openSessions = useUiStore((state) => state.openSessions);
   const [showAtlas, setShowAtlas] = useState(false);
   const [showEvidence, setShowEvidence] = useState(false);
+  const evidenceTrapRef = useFocusTrap(showEvidence);
+  const atlasTrapRef = useFocusTrap(showAtlas);
   const query = useQuery({
     queryKey: ["vcti", range],
     queryFn: () => api.vctiProfile(range),
@@ -205,7 +208,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
         <div className="modal-backdrop vcti-evidence-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setShowEvidence(false);
         }}>
-          <section className="vcti-evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="vcti-evidence-title">
+          <section ref={evidenceTrapRef} className="vcti-evidence-drawer" role="dialog" aria-modal="true" aria-labelledby="vcti-evidence-title">
             <header>
               <div>
                 <span className="eyebrow"><ShieldCheck size={13} />{t("vcti.evidenceStrength")}</span>
@@ -261,7 +264,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
         <div className="modal-backdrop vcti-atlas-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setShowAtlas(false);
         }}>
-          <section className="vcti-atlas-window" role="dialog" aria-modal="true" aria-labelledby="vcti-atlas-title">
+          <section ref={atlasTrapRef} className="vcti-atlas-window" role="dialog" aria-modal="true" aria-labelledby="vcti-atlas-title">
             <header>
               <div>
                 <span className="eyebrow"><ScanFace size={13} />VCTI / 24</span>

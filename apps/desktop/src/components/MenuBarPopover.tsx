@@ -6,6 +6,7 @@ import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, tokenTotal } from "../lib/format";
 import type { Locale, RateWindow } from "../types";
+import { focusHeatmapIndex, HeatmapCell } from "./HeatmapCell";
 import { ErrorState, LoadingState } from "./ui";
 
 function resetTime(window: RateWindow, locale: Locale): string | undefined {
@@ -36,6 +37,8 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   const client = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
   const refreshedOnOpen = useRef(false);
+  const heatmapRef = useRef<HTMLDivElement>(null);
+  const [heatmapIndex, setHeatmapIndex] = useState(0);
   const snapshot = useQuery({ queryKey: ["menu-snapshot"], queryFn: api.menuSnapshot, refetchInterval: 30_000 });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   useEffect(() => {
@@ -74,6 +77,10 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
     return days;
   }, new Map<string, { value: number; sessions: number }>())].sort(([left], [right]) => left.localeCompare(right));
   const maxDay = Math.max(...heatmap.map(([, item]) => item.value), 1);
+  const activateHeatmap = (index: number) => {
+    setHeatmapIndex(index);
+    requestAnimationFrame(() => focusHeatmapIndex(heatmapRef.current, index));
+  };
   const cache = data.todayUsage.cacheReadTokens + data.todayUsage.cacheWriteTokens + data.todayUsage.cacheWrite1hTokens;
   const provider = (name: string) => data.providers.find((item) => item.provider === name);
   const providerState = (name: string) => provider(name)?.health.state ?? "unknown";
@@ -93,10 +100,22 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
       </section>
       <section className="menu-activity">
         <header><span><Activity size={14} />{t("menubar.recentActivity")}</span>{data.todayCostUsd !== undefined ? <span><Coins size={12} />{formatCurrency(data.todayCostUsd, locale)}</span> : null}</header>
-        <div className="menu-heatmap">
-          {heatmap.map(([date, item]) => {
+        <div ref={heatmapRef} className="menu-heatmap">
+          {heatmap.map(([date, item], index) => {
             const detail = `${new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(`${date}T12:00:00`))} · ${formatCompact(item.value, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`;
-            return <i key={date} tabIndex={0} style={{ opacity: .14 + .86 * Math.sqrt(item.value / maxDay) }} data-tooltip={detail} aria-label={detail} />;
+            return (
+              <HeatmapCell
+                key={date}
+                className="heatmap-cell"
+                index={index}
+                total={heatmap.length}
+                active={heatmapIndex === index}
+                onActivate={activateHeatmap}
+                style={{ opacity: .14 + .86 * Math.sqrt(item.value / maxDay) }}
+                tooltip={detail}
+                ariaLabel={detail}
+              />
+            );
           })}
         </div>
       </section>

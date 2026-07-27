@@ -68,7 +68,7 @@ Notch 空闲时完全缩回实体刘海；有活动时，紧凑左翼显示 Code
 | 数据 | Usage Overview、Developer Wrapped、Agent Comparison、Session Recap |
 | 身份 | VCTI Identity Card、Catchphrases |
 
-“Catchphrases”卡片只突出一条 Agent 冠军口癖，并显示重复次数、跨会话数和模型优先归因；数据不足时保持明确状态。所有公开模板支持简体中文 / 英文、浅色 / 深色、8 种画幅、PNG / SVG 与复制图片，并让预览和导出共用同一确定性渲染模型。
+“Catchphrases”卡片只突出一条 Agent 冠军口癖，并显示重复次数、跨会话数和模型优先归因；数据不足时保持明确状态。界面默认预览优先，画幅收成 5 个常用比例，文案/显示/指标放在折叠区；后端仍支持全部 8 种画幅。所有公开模板支持简体中文 / 英文、浅色 / 深色、PNG / SVG 与复制图片，并让预览和导出共用同一确定性渲染模型。
 
 ## 运行与构建
 

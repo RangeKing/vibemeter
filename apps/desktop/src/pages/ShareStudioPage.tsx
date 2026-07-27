@@ -3,6 +3,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 import {
   CheckCircle2,
+  ChevronDown,
   Clipboard,
   Download,
   EyeOff,
@@ -30,7 +31,7 @@ import type { AspectRatio, Locale, ShareRenderRequest, ShareTemplate } from "../
 
 const dataTemplates: ShareTemplate[] = ["usage-overview", "developer-wrapped", "agent-comparison", "session-recap"];
 const identityTemplates: ShareTemplate[] = ["vcti-card", "catchphrases"];
-const aspects: AspectRatio[] = ["1:1", "4:5", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9"];
+const aspects: AspectRatio[] = ["1:1", "4:5", "3:4", "9:16", "16:9"];
 const metricIds = ["sessions", "duration", "tokens", "activeDays", "files", "lines", "tools", "topAgent", "topModel", "activeDate", "cost"];
 const templateMetricIds: Record<ShareTemplate, string[]> = {
   "usage-overview": ["sessions", "duration", "tokens", "activeDays", "topAgent", "topModel"],
@@ -91,6 +92,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
   const [request, setRequest] = useState<ShareRenderRequest>(() => defaultRequest(locale, range, requestedTemplate));
   const sessionTemplate = request.templateId === "session-recap";
   const [zoom, setZoom] = useState(100);
+  const [openPanels, setOpenPanels] = useState({ copy: false, display: false, metrics: false });
   const previewStageRef = useRef<HTMLDivElement>(null);
   const [working, setWorking] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -123,15 +125,18 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
       range,
       privacyReviewed: false,
     }));
+    setOpenPanels((current) => ({ ...current, metrics: false }));
   };
   const chooseAspect = (aspectRatio: AspectRatio) => patch("aspectRatio", aspectRatio);
   const reset = () => {
     setRequest(defaultRequest(locale, range, request.templateId));
     setZoom(100);
     setNotice(undefined);
+    setOpenPanels({ copy: false, display: false, metrics: false });
   };
   const hideSensitive = () => setRequest((current) => ({ ...current, showModel: false, showProject: false, showCost: false, showBehaviorEvidence: false, privacyReviewed: false }));
   const toggleMetric = (id: string, visible: boolean) => patch("metrics", request.metrics.map((metric) => metric.id === id ? { ...metric, visible } : metric));
+  const togglePanel = (key: keyof typeof openPanels) => setOpenPanels((current) => ({ ...current, [key]: !current[key] }));
   const doExport = async (format: "png" | "svg") => {
     setWorking(format);
     setNotice(undefined);
@@ -169,6 +174,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
     ) * 100);
     setZoom(clampZoom(fit));
   };
+  const metricOptions = templateMetricIds[request.templateId];
 
   return (
     <div className="page share-page">
@@ -178,12 +184,45 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
         actions={<><RangePicker /><button className="button subtle" onClick={reset}><RotateCcw size={14} />{t("actions.reset")}</button></>}
       />
       <div className="share-layout">
+        <section className="share-workspace">
+          <div className="share-preview-shell">
+            <div className="share-preview-toolbar">
+              <div><strong>{t("share.preview")}</strong>{preview.data ? <span>{t("share.exactSize", { width: preview.data.width, height: preview.data.height })}</span> : null}</div>
+              <div className="preview-zoom-controls" aria-label={t("share.zoom")}>
+                <button onClick={() => zoomBy(-10)} disabled={zoom <= 50} aria-label={`${t("share.zoom")} -`}><Minus size={14} /></button>
+                <output>{t("share.zoomValue", { value: zoom })}</output>
+                <button onClick={() => zoomBy(10)} disabled={zoom >= 160} aria-label={`${t("share.zoom")} +`}><Plus size={14} /></button>
+                <button onClick={fitPreview}><Maximize2 size={13} />{t("share.fit")}</button>
+              </div>
+            </div>
+            <div ref={previewStageRef} className="preview-stage" onWheel={(event) => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); zoomBy(event.deltaY > 0 ? -10 : 10); }}>
+              {preview.isLoading ? <LoadingState /> : preview.isError || !preview.data ? <ErrorState retry={() => void preview.refetch()} /> : <div className="preview-viewport"><div className="preview-frame" style={{ width: `${frame.width}px`, height: `${frame.height}px` }}><div className="svg-preview" dangerouslySetInnerHTML={{ __html: preview.data.svg }} /></div></div>}
+            </div>
+            <div className="share-bottom">
+              <section className="guard-panel"><header>{preview.data?.findings.some((item) => item.level === "block") ? <ShieldAlert size={17} /> : <ShieldCheck size={17} />}<strong>{t("share.guardTitle")}</strong></header><div className="guard-findings">{preview.data?.findings.map((finding) => <span key={finding.id} className={finding.level}>{finding.level === "safe" ? <CheckCircle2 size={13} /> : <LockKeyhole size={13} />}{t(finding.messageKey)}</span>)}</div>{preview.data?.findings.some((finding) => finding.level === "review") ? <label className="review-check"><input type="checkbox" checked={request.privacyReviewed} onChange={(event) => patch("privacyReviewed", event.target.checked)} /><span>{t("share.reviewed")}</span></label> : null}</section>
+              <div className="export-actions">{notice ? <span className="export-notice">{notice}</span> : null}<button className="button secondary" disabled={!preview.data?.canExport || Boolean(working)} onClick={() => void copy()}><Clipboard size={14} />{working === "copy" ? t("actions.exporting") : t("actions.copyImage")}</button><button className="button secondary" disabled={!preview.data?.canExport || Boolean(working)} onClick={() => void doExport("svg")}><Download size={14} />{t("actions.exportSvg")}</button><button className="button primary" disabled={!preview.data?.canExport || Boolean(working)} onClick={() => void doExport("png")}><Download size={14} />{t("actions.exportPng")}</button></div>
+            </div>
+          </div>
+        </section>
+
         <aside className="share-controls">
           <section className="control-section">
             <h2><LayoutTemplate size={15} />{t("share.template")}</h2>
-            <div className="template-list">
+            <div className="template-list compact">
               <h3 className="template-group-label">{t("share.dataTemplates")}</h3>
-              {dataTemplates.map((template, index) => <button key={template} className={request.templateId === template ? "active" : ""} onClick={() => chooseTemplate(template)}><i>D{index + 1}</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
+              {dataTemplates.map((template, index) => (
+                <button
+                  key={template}
+                  type="button"
+                  className={request.templateId === template ? "active" : ""}
+                  title={t(`share.templates.${template}.description`)}
+                  onClick={() => chooseTemplate(template)}
+                >
+                  <i>D{index + 1}</i>
+                  <span><strong>{t(`share.templates.${template}.title`)}</strong></span>
+                  {request.templateId === template ? <CheckCircle2 size={14} /> : null}
+                </button>
+              ))}
               {sessionTemplate ? (
                 <div className="session-share-picker">
                   <div>
@@ -206,58 +245,93 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
                 </div>
               ) : null}
               <h3 className="template-group-label">{t("share.identityTemplates")}</h3>
-              {identityTemplates.map((template) => <button key={template} className={request.templateId === template ? "active identity" : "identity"} onClick={() => chooseTemplate(template)}><i>{template === "vcti-card" ? "V" : "C"}</i><span><strong>{t(`share.templates.${template}.title`)}</strong><small>{t(`share.templates.${template}.description`)}</small></span>{request.templateId === template ? <CheckCircle2 size={14} /> : null}</button>)}
+              {identityTemplates.map((template) => (
+                <button
+                  key={template}
+                  type="button"
+                  className={request.templateId === template ? "active identity" : "identity"}
+                  title={t(`share.templates.${template}.description`)}
+                  onClick={() => chooseTemplate(template)}
+                >
+                  <i>{template === "vcti-card" ? "V" : "C"}</i>
+                  <span><strong>{t(`share.templates.${template}.title`)}</strong></span>
+                  {request.templateId === template ? <CheckCircle2 size={14} /> : null}
+                </button>
+              ))}
             </div>
           </section>
 
           <section className="control-section">
             <h2><Image size={15} />{t("share.aspect")}</h2>
-            <div className="ratio-preset-grid">
-              {aspects.map((aspect) => <button key={aspect} className={`ratio-preset ${request.aspectRatio === aspect ? "active" : ""}`} onClick={() => chooseAspect(aspect)} aria-pressed={request.aspectRatio === aspect}><i><span style={ratioStyle(aspect)} /></i><strong>{aspect}</strong>{request.aspectRatio === aspect ? <CheckCircle2 size={13} /> : null}</button>)}
+            <div className="ratio-preset-grid slim">
+              {aspects.map((aspect) => (
+                <button
+                  key={aspect}
+                  type="button"
+                  className={`ratio-preset ${request.aspectRatio === aspect ? "active" : ""}`}
+                  onClick={() => chooseAspect(aspect)}
+                  aria-pressed={request.aspectRatio === aspect}
+                >
+                  <i><span style={ratioStyle(aspect)} /></i>
+                  <strong>{aspect}</strong>
+                  {request.aspectRatio === aspect ? <CheckCircle2 size={13} /> : null}
+                </button>
+              ))}
             </div>
             <p className="ratio-hint">{t("share.ratioHint")}</p>
           </section>
 
           <section className="control-section">
             <div className="share-control-grid">
-              <div><h2><Languages size={15} />{t("share.language")}</h2><div className="segmented compact"><button className={request.locale === "zh-CN" ? "active" : ""} onClick={() => patch("locale", "zh-CN")}>中文</button><button className={request.locale === "en-US" ? "active" : ""} onClick={() => patch("locale", "en-US")}>EN</button></div></div>
-              <div><h2>{t("share.theme")}</h2><div className="segmented compact"><button className={request.theme === "light" ? "active" : ""} onClick={() => patch("theme", "light")}>{t("share.light")}</button><button className={request.theme === "dark" ? "active" : ""} onClick={() => patch("theme", "dark")}>{t("share.dark")}</button></div></div>
+              <div><h2><Languages size={15} />{t("share.language")}</h2><div className="segmented compact"><button type="button" className={request.locale === "zh-CN" ? "active" : ""} onClick={() => patch("locale", "zh-CN")}>中文</button><button type="button" className={request.locale === "en-US" ? "active" : ""} onClick={() => patch("locale", "en-US")}>EN</button></div></div>
+              <div><h2>{t("share.theme")}</h2><div className="segmented compact"><button type="button" className={request.theme === "light" ? "active" : ""} onClick={() => patch("theme", "light")}>{t("share.light")}</button><button type="button" className={request.theme === "dark" ? "active" : ""} onClick={() => patch("theme", "dark")}>{t("share.dark")}</button></div></div>
             </div>
           </section>
 
-          <section className="control-section form-section">
-            <label><span>{t("share.titleField")} <small>{t("share.optional")}</small></span><input value={request.title} onChange={(event) => patch("title", event.target.value)} maxLength={120} /></label>
-            <label><span>{t("share.summaryField")} <small>{t("share.optional")}</small></span><textarea value={request.summary} onChange={(event) => patch("summary", event.target.value)} rows={3} maxLength={220} /></label>
-            <label><span>{t("share.projectField")} <small>{t("share.optional")}</small></span><input value={request.projectName} onChange={(event) => patch("projectName", event.target.value)} maxLength={80} /></label>
-          </section>
-          <section className="control-section toggle-section">
-            <div className="control-heading"><h2>{t("share.display")}</h2><button className="inline-action" onClick={hideSensitive}><EyeOff size={13} />{t("share.hideSensitive")}</button></div>
-            {(["showModel", "showCost", "showProject", "showBrand"] as const).map((key) => <label key={key}><span>{t(`share.${key}`)}</span><Toggle checked={request[key]} onCheckedChange={(value) => patch(key, value)} label={t(`share.${key}`)} /></label>)}
-            {request.templateId === "vcti-card" ? <label><span><b>{t("share.showBehaviorEvidence")}</b><small>{t("share.showBehaviorEvidenceBody")}</small></span><Toggle checked={request.showBehaviorEvidence} onCheckedChange={(value) => patch("showBehaviorEvidence", value)} label={t("share.showBehaviorEvidence")} /></label> : null}
-          </section>
-          {templateMetricIds[request.templateId].length ? <section className="control-section toggle-section"><h2>{t("share.metricsTitle")}</h2>{templateMetricIds[request.templateId].map((id) => <label key={id}><span>{t(`metrics.${id}`)}</span><Toggle checked={request.metrics.find((metric) => metric.id === id)?.visible !== false} onCheckedChange={(value) => toggleMetric(id, value)} label={t(`metrics.${id}`)} /></label>)}</section> : null}
-        </aside>
-
-        <section className="share-workspace">
-          <div className="share-preview-shell">
-            <div className="share-preview-toolbar">
-              <div><strong>{t("share.preview")}</strong>{preview.data ? <span>{t("share.exactSize", { width: preview.data.width, height: preview.data.height })}</span> : null}</div>
-              <div className="preview-zoom-controls" aria-label={t("share.zoom")}>
-                <button onClick={() => zoomBy(-10)} disabled={zoom <= 50} aria-label={`${t("share.zoom")} -`}><Minus size={14} /></button>
-                <output>{t("share.zoomValue", { value: zoom })}</output>
-                <button onClick={() => zoomBy(10)} disabled={zoom >= 160} aria-label={`${t("share.zoom")} +`}><Plus size={14} /></button>
-                <button onClick={fitPreview}><Maximize2 size={13} />{t("share.fit")}</button>
+          <section className="control-section">
+            <button type="button" className="control-disclosure" aria-expanded={openPanels.copy} onClick={() => togglePanel("copy")}>
+              <span>{t("share.copyFields")}</span>
+              <ChevronDown size={15} />
+            </button>
+            {openPanels.copy ? (
+              <div className="form-section disclosure-body">
+                <label><span>{t("share.titleField")} <small>{t("share.optional")}</small></span><input value={request.title} onChange={(event) => patch("title", event.target.value)} maxLength={120} /></label>
+                <label><span>{t("share.summaryField")} <small>{t("share.optional")}</small></span><textarea value={request.summary} onChange={(event) => patch("summary", event.target.value)} rows={3} maxLength={220} /></label>
+                <label><span>{t("share.projectField")} <small>{t("share.optional")}</small></span><input value={request.projectName} onChange={(event) => patch("projectName", event.target.value)} maxLength={80} /></label>
               </div>
+            ) : null}
+          </section>
+
+          <section className="control-section">
+            <div className="control-heading">
+              <button type="button" className="control-disclosure inline" aria-expanded={openPanels.display} onClick={() => togglePanel("display")}>
+                <span>{t("share.display")}</span>
+                <ChevronDown size={15} />
+              </button>
+              <button type="button" className="inline-action" onClick={hideSensitive}><EyeOff size={13} />{t("share.hideSensitive")}</button>
             </div>
-            <div ref={previewStageRef} className="preview-stage" onWheel={(event) => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); zoomBy(event.deltaY > 0 ? -10 : 10); }}>
-              {preview.isLoading ? <LoadingState /> : preview.isError || !preview.data ? <ErrorState retry={() => void preview.refetch()} /> : <div className="preview-viewport"><div className="preview-frame" style={{ width: `${frame.width}px`, height: `${frame.height}px` }}><div className="svg-preview" dangerouslySetInnerHTML={{ __html: preview.data.svg }} /></div></div>}
-            </div>
-            <div className="share-bottom">
-              <section className="guard-panel"><header>{preview.data?.findings.some((item) => item.level === "block") ? <ShieldAlert size={17} /> : <ShieldCheck size={17} />}<strong>{t("share.guardTitle")}</strong></header><div className="guard-findings">{preview.data?.findings.map((finding) => <span key={finding.id} className={finding.level}>{finding.level === "safe" ? <CheckCircle2 size={13} /> : <LockKeyhole size={13} />}{t(finding.messageKey)}</span>)}</div>{preview.data?.findings.some((finding) => finding.level === "review") ? <label className="review-check"><input type="checkbox" checked={request.privacyReviewed} onChange={(event) => patch("privacyReviewed", event.target.checked)} /><span>{t("share.reviewed")}</span></label> : null}</section>
-              <div className="export-actions">{notice ? <span className="export-notice">{notice}</span> : null}<button className="button secondary" disabled={!preview.data?.canExport || Boolean(working)} onClick={() => void copy()}><Clipboard size={14} />{working === "copy" ? t("actions.exporting") : t("actions.copyImage")}</button><button className="button secondary" disabled={!preview.data?.canExport || Boolean(working)} onClick={() => void doExport("svg")}><Download size={14} />{t("actions.exportSvg")}</button><button className="button primary" disabled={!preview.data?.canExport || Boolean(working)} onClick={() => void doExport("png")}><Download size={14} />{t("actions.exportPng")}</button></div>
-            </div>
-          </div>
-        </section>
+            {openPanels.display ? (
+              <div className="toggle-section disclosure-body">
+                {(["showModel", "showCost", "showProject", "showBrand"] as const).map((key) => <label key={key}><span>{t(`share.${key}`)}</span><Toggle checked={request[key]} onCheckedChange={(value) => patch(key, value)} label={t(`share.${key}`)} /></label>)}
+                {request.templateId === "vcti-card" ? <label><span><b>{t("share.showBehaviorEvidence")}</b><small>{t("share.showBehaviorEvidenceBody")}</small></span><Toggle checked={request.showBehaviorEvidence} onCheckedChange={(value) => patch("showBehaviorEvidence", value)} label={t("share.showBehaviorEvidence")} /></label> : null}
+              </div>
+            ) : null}
+          </section>
+
+          {metricOptions.length ? (
+            <section className="control-section">
+              <button type="button" className="control-disclosure" aria-expanded={openPanels.metrics} onClick={() => togglePanel("metrics")}>
+                <span>{t("share.metricsTitle")}</span>
+                <ChevronDown size={15} />
+              </button>
+              {openPanels.metrics ? (
+                <div className="toggle-section disclosure-body">
+                  {metricOptions.map((id) => <label key={id}><span>{t(`metrics.${id}`)}</span><Toggle checked={request.metrics.find((metric) => metric.id === id)?.visible !== false} onCheckedChange={(value) => toggleMetric(id, value)} label={t(`metrics.${id}`)} /></label>)}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+        </aside>
       </div>
     </div>
   );

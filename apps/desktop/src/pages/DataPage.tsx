@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EChartsCoreOption } from "echarts";
 import { ArrowRight, BarChart3, CalendarDays, Merge, Scale, Sparkles, Workflow } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import { EChart } from "../components/EChart";
+import { focusHeatmapIndex, HeatmapCell } from "../components/HeatmapCell";
 import { RangePicker } from "../components/RangePicker";
 import { SessionsWorkspace } from "../components/SessionsWorkspace";
 import { WorkEventCard } from "../components/WorkEventCard";
@@ -213,6 +214,15 @@ export function DataPage({ locale }: { locale: Locale }) {
   const daily = useMemo(() => groupDaily(filteredDaily, range, referenceTime), [filteredDaily, range, referenceTime]);
   const hourlyActivity = useMemo(() => isToday ? buildHourlyActivity(filteredHourly, "today", referenceTime) : [], [isToday, filteredHourly, referenceTime]);
   const maxActivity = Math.max(...(isToday ? hourlyActivity.map((item) => item.total) : daily.map((item) => item.tokens)), 1);
+  const heatmapRef = useRef<HTMLDivElement>(null);
+  const [heatmapIndex, setHeatmapIndex] = useState(0);
+  useEffect(() => {
+    setHeatmapIndex(0);
+  }, [isToday, daily.length, hourlyActivity.length]);
+  const activateHeatmap = (index: number) => {
+    setHeatmapIndex(index);
+    requestAnimationFrame(() => focusHeatmapIndex(heatmapRef.current, index));
+  };
 
   if (dataView === "sessions") {
     return <SessionsWorkspace locale={locale} embedded onBack={closeSessions} />;
@@ -306,12 +316,34 @@ export function DataPage({ locale }: { locale: Locale }) {
           <header className="panel-heading"><div><h2>{t("data.activity")}</h2><p>{t(isToday ? "data.activityHourlyBody" : "data.activityBody")}</p></div><CalendarDays size={17} /></header>
           <div className="activity-summary"><strong>{isToday ? activeHours.length : (ledgerDays || data.totals.activeDays)}</strong><span>{isToday ? t("data.activeHours") : t("metrics.activeDays")}</span><small>{isToday ? hourWindow : daily.length ? `${formatDate(daily[0].date, locale, "short")} — ${formatDate(daily[daily.length - 1].date, locale, "short")}` : rangeText}</small></div>
           {isToday ? <>
-            <div className="activity-heatmap hourly" style={{ gridTemplateColumns: `repeat(${Math.max(1, hourlyActivity.length)}, minmax(7px, 1fr))` }}>
-              {hourlyActivity.map((item) => <span key={item.key} tabIndex={0} style={{ opacity: .12 + .88 * Math.sqrt(item.total / maxActivity) }} data-tooltip={`${item.startAt.slice(11, 16)} · ${formatCompact(item.total, locale)} Token`} aria-label={`${item.startAt.slice(11, 16)} ${formatCompact(item.total, locale)} Token`} />)}
+            <div ref={heatmapRef} className="activity-heatmap hourly" style={{ gridTemplateColumns: `repeat(${Math.max(1, hourlyActivity.length)}, minmax(7px, 1fr))` }}>
+              {hourlyActivity.map((item, index) => (
+                <HeatmapCell
+                  key={item.key}
+                  index={index}
+                  total={hourlyActivity.length}
+                  active={heatmapIndex === index}
+                  onActivate={activateHeatmap}
+                  style={{ opacity: .12 + .88 * Math.sqrt(item.total / maxActivity) }}
+                  tooltip={`${item.startAt.slice(11, 16)} · ${formatCompact(item.total, locale)} Token`}
+                  ariaLabel={`${item.startAt.slice(11, 16)} ${formatCompact(item.total, locale)} Token`}
+                />
+              ))}
             </div>
             {hourlyActivity.length ? <div className="hour-axis"><span>{hourlyActivity[0].startAt.slice(11, 16)}</span><span>{hourlyActivity[Math.floor(hourlyActivity.length / 2)].startAt.slice(11, 16)}</span><span>{hourlyActivity[hourlyActivity.length - 1].startAt.slice(11, 16)}</span></div> : null}
-          </> : <div className="activity-heatmap" style={{ gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(daily.length / 7))}, minmax(7px, 1fr))` }}>
-            {daily.map((item) => <span key={item.date} tabIndex={0} style={{ opacity: .15 + .85 * Math.sqrt(item.tokens / maxActivity) }} data-tooltip={`${formatDate(item.date, locale)} · ${formatCompact(item.tokens, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`} aria-label={`${formatDate(item.date, locale)} ${formatCompact(item.tokens, locale)} Token`} />)}
+          </> : <div ref={heatmapRef} className="activity-heatmap" style={{ gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(daily.length / 7))}, minmax(7px, 1fr))` }}>
+            {daily.map((item, index) => (
+              <HeatmapCell
+                key={item.date}
+                index={index}
+                total={daily.length}
+                active={heatmapIndex === index}
+                onActivate={activateHeatmap}
+                style={{ opacity: .15 + .85 * Math.sqrt(item.tokens / maxActivity) }}
+                tooltip={`${formatDate(item.date, locale)} · ${formatCompact(item.tokens, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`}
+                ariaLabel={`${formatDate(item.date, locale)} ${formatCompact(item.tokens, locale)} Token`}
+              />
+            ))}
           </div>}
         </section>
         <section className="data-panel distribution-panel">
