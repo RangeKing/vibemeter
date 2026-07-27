@@ -3,7 +3,8 @@ use crate::models::{
     AgentKind, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem, CoverageNotice,
     DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, GitCommitEvidence,
     GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat,
-    InsightsResponse, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount, PhraseCloud,
+    InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem,
+    LiveTimelinePoint, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount, PhraseCloud,
     PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
     ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
     SessionSummary, SessionsResponse, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
@@ -397,6 +398,12 @@ ALTER TABLE sources ADD COLUMN selected INTEGER NOT NULL DEFAULT 1;
 PRAGMA user_version = 9;
 "#;
 
+const MIGRATION_V10: &str = r#"
+ALTER TABLE live_events ADD COLUMN status TEXT NOT NULL DEFAULT 'running';
+CREATE INDEX IF NOT EXISTS live_events_status_idx ON live_events(status, received_at);
+PRAGMA user_version = 10;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -444,6 +451,9 @@ impl Database {
         }
         if version < 9 {
             connection.execute_batch(MIGRATION_V9)?;
+        }
+        if version < 10 {
+            connection.execute_batch(MIGRATION_V10)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -1100,8 +1110,8 @@ impl Database {
         transaction.execute(
             "INSERT INTO live_events(
                 received_at, expires_at, agent, source_session_id,
-                event_name, project_label, payload_json
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                event_name, project_label, payload_json, status
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 received_at,
                 expires_at,
@@ -1109,7 +1119,8 @@ impl Database {
                 source_session_id,
                 event_name,
                 project_label,
-                payload_json
+                payload_json,
+                status
             ],
         )?;
         transaction.execute(
@@ -1199,6 +1210,130 @@ impl Database {
         )?;
         transaction.commit()?;
         Ok(removed as u64)
+    }
+
+    pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
+        let connection = self.connect()?;
+        let now = Utc::now();
+        let period_start = Local::now()
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map(|value| {
+                value
+                    .and_local_timezone(Local)
+                    .single()
+                    .map(|local| local.with_timezone(&Utc).to_rfc3339())
+                    .unwrap_or_else(|| format!("{}T00:00:00Z", Local::now().date_naive()))
+            })
+            .unwrap_or_else(|| format!("{}T00:00:00Z", Local::now().date_naive()));
+        let history_start = (now - Duration::days(7)).to_rfc3339();
+        let mut timeline_statement = connection.prepare(
+            "SELECT id, received_at, agent, project_label, event_name,
+                    COALESCE(NULLIF(status, ''), 'running'), source_session_id
+             FROM live_events
+             WHERE received_at>=?1
+             ORDER BY received_at ASC
+             LIMIT 200",
+        )?;
+        let timeline = timeline_statement
+            .query_map(params![period_start], |row| {
+                let id: i64 = row.get(0)?;
+                let agent: String = row.get(2)?;
+                let source_session_id: String = row.get(6)?;
+                Ok(LiveTimelinePoint {
+                    id: format!("{id}:{agent}:{source_session_id}"),
+                    received_at: row.get(1)?,
+                    agent,
+                    project_label: row.get(3)?,
+                    event_name: row.get(4)?,
+                    status: row.get(5)?,
+                    source_session_id,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(timeline_statement);
+
+        let mut history_statement = connection.prepare(
+            "SELECT id, received_at, agent, project_label, event_name,
+                    COALESCE(NULLIF(status, ''), 'running'), source_session_id
+             FROM live_events
+             WHERE received_at>=?1
+               AND (
+                    status IN ('waiting', 'error')
+                    OR event_name='PermissionRequest'
+               )
+             ORDER BY received_at DESC
+             LIMIT 60",
+        )?;
+        let history = history_statement
+            .query_map(params![history_start], |row| {
+                let id: i64 = row.get(0)?;
+                let agent: String = row.get(2)?;
+                let event_name: String = row.get(4)?;
+                let mut status: String = row.get(5)?;
+                if status != "waiting" && status != "error" && event_name == "PermissionRequest" {
+                    status = "waiting".into();
+                }
+                let source_session_id: String = row.get(6)?;
+                Ok(LiveHistoryItem {
+                    id: format!("hist:{id}:{agent}:{source_session_id}"),
+                    occurred_at: row.get(1)?,
+                    agent,
+                    project_label: row.get(3)?,
+                    status,
+                    event_name,
+                    source_session_id,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(history_statement);
+
+        let mut lane_statement = connection.prepare(
+            "SELECT agent,
+                    COUNT(*) AS sessions,
+                    SUM(waiting_count) AS waiting,
+                    SUM(error_count) AS errors,
+                    SUM(completion_count) AS completions
+             FROM live_session_metrics
+             WHERE last_seen_at>=?1
+             GROUP BY agent
+             ORDER BY agent",
+        )?;
+        let mut lanes = lane_statement
+            .query_map(params![period_start], |row| {
+                Ok(LiveConcurrencyLane {
+                    agent: row.get(0)?,
+                    session_count: read_u64(row, 1)?,
+                    waiting_count: read_u64(row, 2)?,
+                    error_count: read_u64(row, 3)?,
+                    running_count: 0,
+                    completed_count: read_u64(row, 4)?,
+                    projects: Vec::new(),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(lane_statement);
+
+        for lane in &mut lanes {
+            let mut project_statement = connection.prepare(
+                "SELECT DISTINCT project_label
+                 FROM live_events
+                 WHERE agent=?1 AND received_at>=?2 AND project_label!=''
+                 ORDER BY project_label
+                 LIMIT 6",
+            )?;
+            lane.projects = project_statement
+                .query_map(params![lane.agent, period_start], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+
+        Ok(LiveActivityResponse {
+            generated_at: now.to_rfc3339(),
+            period_start,
+            timeline,
+            history,
+            concurrency: lanes,
+        })
     }
 
     pub fn vcti_profile(&self, range: &str) -> AppResult<VctiProfile> {

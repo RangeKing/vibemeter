@@ -249,6 +249,44 @@ export interface LiveSnapshot {
   hookStatus: HookStatus;
 }
 
+export interface LiveTimelinePoint {
+  id: string;
+  receivedAt: string;
+  agent: string;
+  projectLabel: string;
+  eventName: string;
+  status: string;
+  sourceSessionId: string;
+}
+
+export interface LiveHistoryItem {
+  id: string;
+  occurredAt: string;
+  agent: string;
+  projectLabel: string;
+  status: "waiting" | "error" | string;
+  eventName: string;
+  sourceSessionId: string;
+}
+
+export interface LiveConcurrencyLane {
+  agent: string;
+  sessionCount: number;
+  waitingCount: number;
+  errorCount: number;
+  runningCount: number;
+  completedCount: number;
+  projects: string[];
+}
+
+export interface LiveActivityResponse {
+  generatedAt: string;
+  periodStart: string;
+  timeline: LiveTimelinePoint[];
+  history: LiveHistoryItem[];
+  concurrency: LiveConcurrencyLane[];
+}
+
 export interface NotchUiState {
   available: boolean;
   expanded: boolean;

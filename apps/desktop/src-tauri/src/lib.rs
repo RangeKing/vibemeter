@@ -19,9 +19,10 @@ use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     ComparisonItem, ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse,
-    LiveSnapshot, MenuBarSnapshot, OverviewResponse, PhraseCloudResponse, PlaybookItem,
-    ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail, SessionListFilters,
-    SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
+    LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, OverviewResponse, PhraseCloudResponse,
+    PlaybookItem, ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail,
+    SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus,
+    TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -60,6 +61,75 @@ async fn get_phrase_cloud(
 #[tauri::command]
 fn get_live_snapshot(state: State<'_, AppState>) -> LiveSnapshot {
     state.live.snapshot()
+}
+
+#[tauri::command]
+async fn get_live_activity(state: State<'_, AppState>) -> AppResult<LiveActivityResponse> {
+    let database = state.database.clone();
+    let snapshot = state.live.snapshot();
+    let mut activity = tauri::async_runtime::spawn_blocking(move || database.live_activity())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))??;
+    let metrics = std::mem::take(&mut activity.concurrency);
+    let agents = snapshot
+        .sessions
+        .iter()
+        .map(|session| session.agent.clone())
+        .chain(metrics.iter().map(|lane| lane.agent.clone()))
+        .collect::<std::collections::BTreeSet<_>>();
+    activity.concurrency = agents
+        .into_iter()
+        .map(|agent| {
+            let live_sessions = snapshot
+                .sessions
+                .iter()
+                .filter(|session| session.agent == agent)
+                .collect::<Vec<_>>();
+            let metric = metrics.iter().find(|lane| lane.agent == agent);
+            let mut projects = metric.map(|lane| lane.projects.clone()).unwrap_or_default();
+            for session in &live_sessions {
+                if !session.project_label.is_empty()
+                    && !projects.iter().any(|project| project == &session.project_label)
+                {
+                    projects.push(session.project_label.clone());
+                }
+            }
+            if !live_sessions.is_empty() {
+                crate::models::LiveConcurrencyLane {
+                    agent,
+                    session_count: live_sessions.len() as u64,
+                    waiting_count: live_sessions
+                        .iter()
+                        .filter(|session| session.status == "waiting")
+                        .count() as u64,
+                    error_count: live_sessions
+                        .iter()
+                        .filter(|session| session.status == "error")
+                        .count() as u64,
+                    running_count: live_sessions
+                        .iter()
+                        .filter(|session| session.status == "running")
+                        .count() as u64,
+                    completed_count: live_sessions
+                        .iter()
+                        .filter(|session| session.status == "completed")
+                        .count() as u64,
+                    projects,
+                }
+            } else {
+                crate::models::LiveConcurrencyLane {
+                    agent,
+                    session_count: metric.map(|lane| lane.session_count).unwrap_or(0),
+                    waiting_count: 0,
+                    error_count: 0,
+                    running_count: 0,
+                    completed_count: metric.map(|lane| lane.completed_count).unwrap_or(0),
+                    projects,
+                }
+            }
+        })
+        .collect();
+    Ok(activity)
 }
 
 #[tauri::command]
@@ -710,6 +780,7 @@ pub fn run() {
             get_overview,
             get_phrase_cloud,
             get_live_snapshot,
+            get_live_activity,
             repair_live_hooks,
             uninstall_live_hooks,
             jump_to_live_session,

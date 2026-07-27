@@ -633,6 +633,52 @@ pub struct LiveSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LiveTimelinePoint {
+    pub id: String,
+    pub received_at: String,
+    pub agent: String,
+    pub project_label: String,
+    pub event_name: String,
+    pub status: String,
+    pub source_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveHistoryItem {
+    pub id: String,
+    pub occurred_at: String,
+    pub agent: String,
+    pub project_label: String,
+    pub status: String,
+    pub event_name: String,
+    pub source_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveConcurrencyLane {
+    pub agent: String,
+    pub session_count: u64,
+    pub waiting_count: u64,
+    pub error_count: u64,
+    pub running_count: u64,
+    pub completed_count: u64,
+    pub projects: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveActivityResponse {
+    pub generated_at: String,
+    pub period_start: String,
+    pub timeline: Vec<LiveTimelinePoint>,
+    pub history: Vec<LiveHistoryItem>,
+    pub concurrency: Vec<LiveConcurrencyLane>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionsResponse {
     pub items: Vec<SessionSummary>,
     pub total: u64,

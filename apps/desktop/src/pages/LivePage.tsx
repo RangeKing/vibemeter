@@ -1,23 +1,24 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import {
+  ArrowRight,
   ArrowUpRight,
   Check,
   CircleAlert,
   Clock3,
-  PanelTop,
+  Layers3,
   RadioTower,
-  RefreshCw,
+  Settings2,
   ShieldCheck,
-  Unplug,
   Waves,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { AgentBadge, ErrorState, LoadingState, Toggle } from "../components/ui";
+import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { agentName, formatTime } from "../lib/format";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
-import type { LiveSession, Locale } from "../types";
+import { useUiStore } from "../store";
+import type { LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "../types";
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
   if (session.status === "error") return t("live.reason.error");
@@ -28,7 +29,7 @@ function liveReason(session: LiveSession, t: TFunction): string | undefined {
     : t("live.reason.waitingGeneric");
 }
 
-function statusIcon(status: LiveSession["status"]) {
+function statusIcon(status: LiveSession["status"] | string) {
   if (status === "waiting" || status === "error") return <CircleAlert size={15} />;
   if (status === "completed") return <Check size={15} />;
   return <Waves size={15} />;
@@ -71,31 +72,86 @@ function LiveSessionCard({ session, locale }: { session: LiveSession; locale: Lo
   );
 }
 
+function ConcurrencyLane({ lane }: { lane: LiveConcurrencyLane }) {
+  const { t } = useTranslation();
+  const total = Math.max(lane.sessionCount, 1);
+  return (
+    <article className="live-concurrency-lane">
+      <header>
+        <AgentBadge agent={lane.agent} compact />
+        <div>
+          <strong>{agentName(lane.agent)}</strong>
+          <small>{t("live.concurrencySessions", { count: lane.sessionCount })}</small>
+        </div>
+      </header>
+      <div className="live-concurrency-bars" aria-hidden="true">
+        <i className="waiting" style={{ width: `${(lane.waitingCount / total) * 100}%` }} />
+        <i className="error" style={{ width: `${(lane.errorCount / total) * 100}%` }} />
+        <i className="running" style={{ width: `${(lane.runningCount / total) * 100}%` }} />
+        <i className="completed" style={{ width: `${(lane.completedCount / total) * 100}%` }} />
+      </div>
+      <div className="live-concurrency-stats">
+        <span>{t("live.status.waiting")} · {lane.waitingCount}</span>
+        <span>{t("live.status.error")} · {lane.errorCount}</span>
+        <span>{t("live.status.running")} · {lane.runningCount}</span>
+      </div>
+      {lane.projects.length ? <p>{lane.projects.join(" · ")}</p> : null}
+    </article>
+  );
+}
+
+function TimelineList({ points, locale }: { points: LiveTimelinePoint[]; locale: Locale }) {
+  const { t } = useTranslation();
+  if (!points.length) return <EmptyState title={t("live.timelineEmpty")} body={t("live.timelineEmptyBody")} />;
+  return (
+    <ol className="live-timeline-list">
+      {points.map((point) => (
+        <li key={point.id} className={`status-${point.status}`}>
+          <time>{formatTime(point.receivedAt, locale)}</time>
+          <AgentBadge agent={point.agent} compact />
+          <div>
+            <strong>{point.projectLabel || agentName(point.agent)}</strong>
+            <small>{t(`live.status.${point.status}`, { defaultValue: point.status })} · {point.eventName}</small>
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function HistoryList({ items, locale }: { items: LiveHistoryItem[]; locale: Locale }) {
+  const { t } = useTranslation();
+  if (!items.length) return <EmptyState title={t("live.historyEmpty")} body={t("live.historyEmptyBody")} />;
+  return (
+    <ul className="live-history-list">
+      {items.map((item) => (
+        <li key={item.id} className={`status-${item.status}`}>
+          <span className="live-status">{statusIcon(item.status)}{t(`live.status.${item.status}`, { defaultValue: item.status })}</span>
+          <div>
+            <strong>{item.projectLabel || agentName(item.agent)}</strong>
+            <small>{agentName(item.agent)} · {item.eventName}</small>
+          </div>
+          <time>{formatTime(item.occurredAt, locale)}</time>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function LivePage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
-  const client = useQueryClient();
+  const setPage = useUiStore((state) => state.setPage);
   const snapshot = useLiveSnapshot();
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const setNotch = useMutation({
-    mutationFn: (enabled: boolean) => api.setSetting("notchEnabled", String(enabled)),
-    onSuccess: async () => {
-      await Promise.all([
-        client.invalidateQueries({ queryKey: ["settings"] }),
-        client.invalidateQueries({ queryKey: ["menu-snapshot"] }),
-      ]);
-    },
-  });
-  const repair = useMutation({
-    mutationFn: api.repairLiveHooks,
-    onSuccess: async () => {
-      await api.setSetting("liveHooksEnabled", "true");
-      await client.invalidateQueries({ queryKey: ["live-snapshot"] });
-      await client.invalidateQueries({ queryKey: ["settings"] });
-    },
+  const activity = useQuery({
+    queryKey: ["live-activity"],
+    queryFn: api.liveActivity,
+    refetchInterval: 5_000,
   });
   if (snapshot.isLoading) return <LoadingState />;
   if (snapshot.isError || !snapshot.data) return <ErrorState retry={() => void snapshot.refetch()} />;
   const data = snapshot.data;
+  const activityData = activity.data;
+
   return (
     <div className="page live-page">
       <header className="live-hero">
@@ -104,45 +160,65 @@ export function LivePage({ locale }: { locale: Locale }) {
           <h1>{t("live.title")}</h1>
           <p>{t("live.description")}</p>
         </div>
-        <div className="live-hero-side">
-          <div className={`live-signal-summary state-${data.hookStatus.state}`}>
-            <span className="live-orbit"><i /><i /><i /></span>
-            <div><strong>{data.activeCount}</strong><span>{t("live.activeAgents")}</span></div>
-            <small>{data.hookStatus.socketReady ? t("live.socketReady") : t("live.socketUnavailable")}</small>
-          </div>
-          <div className="live-notch-control">
-            <span><PanelTop size={15} /><span><strong>{t("live.notchControl")}</strong><small>{t("live.notchControlBody")}</small></span></span>
-            <Toggle
-              checked={settings.data?.notchEnabled === "true"}
-              disabled={settings.isLoading || setNotch.isPending}
-              onCheckedChange={(value) => setNotch.mutate(value)}
-              label={t("live.notchControl")}
-            />
-          </div>
+        <div className={`live-signal-summary state-${data.hookStatus.state}`}>
+          <span className="live-orbit"><i /><i /><i /></span>
+          <div><strong>{data.activeCount}</strong><span>{t("live.activeAgents")}</span></div>
+          <small>{data.hookStatus.socketReady ? t("live.socketReady") : t("live.socketUnavailable")}</small>
         </div>
       </header>
 
-      <section className="live-integrations">
-        <header>
-          <div><ShieldCheck size={17} /><span><strong>{t("live.integrations")}</strong><small>{t("live.integrationsBody")}</small></span></div>
-          <button className="button subtle" disabled={repair.isPending} onClick={() => repair.mutate()}>
-            <RefreshCw size={13} />{repair.isPending ? t("actions.refreshing") : t("live.repair")}
-          </button>
-        </header>
+      <aside className={`live-hook-strip state-${data.hookStatus.state}`} role="status">
+        <ShieldCheck size={16} />
         <div>
-          {data.hookStatus.providers.map((provider) => (
-            <article key={provider.provider} className={provider.installed ? "ready" : provider.available ? "attention" : "missing"}>
-              <AgentBadge agent={provider.provider} compact />
-              <span><strong>{agentName(provider.provider)}</strong><small>{t(`live.hook.${provider.detail}`)}</small></span>
-              {provider.installed ? <Check size={14} /> : <Unplug size={14} />}
-            </article>
-          ))}
+          <strong>{t(`settings.liveState.${data.hookStatus.state}`)}</strong>
+          <p>{t("live.hookStripBody")}</p>
         </div>
+        <button className="button subtle" onClick={() => setPage("settings")}>
+          <Settings2 size={13} />{t("live.openSettings")}<ArrowRight size={13} />
+        </button>
+      </aside>
+
+      <section className="live-panel live-concurrency">
+        <header>
+          <div><Layers3 size={16} /><div><h2>{t("live.concurrency")}</h2><p>{t("live.concurrencyBody")}</p></div></div>
+        </header>
+        {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
+          <ErrorState retry={() => void activity.refetch()} />
+        ) : activityData?.concurrency.length ? (
+          <div className="live-concurrency-grid">
+            {activityData.concurrency.map((lane) => <ConcurrencyLane key={lane.agent} lane={lane} />)}
+          </div>
+        ) : (
+          <EmptyState title={t("live.concurrencyEmpty")} body={t("live.concurrencyEmptyBody")} />
+        )}
       </section>
+
+      <div className="live-split">
+        <section className="live-panel">
+          <header>
+            <div><Clock3 size={16} /><div><h2>{t("live.timeline")}</h2><p>{t("live.timelineBody")}</p></div></div>
+          </header>
+          {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
+            <ErrorState retry={() => void activity.refetch()} />
+          ) : (
+            <TimelineList points={activityData?.timeline ?? []} locale={locale} />
+          )}
+        </section>
+        <section className="live-panel">
+          <header>
+            <div><CircleAlert size={16} /><div><h2>{t("live.history")}</h2><p>{t("live.historyBody")}</p></div></div>
+          </header>
+          {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
+            <ErrorState retry={() => void activity.refetch()} />
+          ) : (
+            <HistoryList items={activityData?.history ?? []} locale={locale} />
+          )}
+        </section>
+      </div>
 
       <section className="live-workspace">
         <header className="section-heading">
-          <div><span className="section-index">LIVE</span><h2>{t("live.sessions")}</h2><p>{t("live.sessionsBody")}</p></div>
+          <div><h2>{t("live.sessions")}</h2><p>{t("live.sessionsBody")}</p></div>
           <span className="panel-kicker">{t("live.priorityOrder")}</span>
         </header>
         {data.sessions.length ? (

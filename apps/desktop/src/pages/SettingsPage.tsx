@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
@@ -57,6 +57,17 @@ export function SettingsPage({ locale }: { locale: Locale }) {
     mutationFn: api.clearLocalData,
     onSuccess: async () => { await client.invalidateQueries(); },
   });
+  const repairHooks = useMutation({
+    mutationFn: api.repairLiveHooks,
+    onSuccess: async () => {
+      await api.setSetting("liveHooksEnabled", "true");
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["live-snapshot"] }),
+        client.invalidateQueries({ queryKey: ["live-activity"] }),
+        client.invalidateQueries({ queryKey: ["settings"] }),
+      ]);
+    },
+  });
 
   if (settings.isLoading || projects.isLoading) return <LoadingState />;
   if (settings.isError || !settings.data || projects.isError) return <ErrorState retry={() => void Promise.all([settings.refetch(), projects.refetch()])} />;
@@ -85,6 +96,12 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <div className="setting-row multiline"><div><strong>{t("settings.liveHooks")}</strong><p>{t("settings.liveHooksBody")}</p></div><Toggle checked={data.liveHooksEnabled === "true"} onCheckedChange={(value) => void setSetting("liveHooksEnabled", String(value))} label={t("settings.liveHooks")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.notch")}</strong><p>{t("settings.notchBody")}</p></div><Toggle checked={data.notchEnabled === "true"} onCheckedChange={(value) => void setSetting("notchEnabled", String(value))} label={t("settings.notch")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.menuBar")}</strong><p>{t("settings.menuBarBody")}</p></div><Toggle checked={data.menuBarEnabled === "true"} onCheckedChange={(value) => void setSetting("menuBarEnabled", String(value))} label={t("settings.menuBar")} /></div>
+          <div className="setting-row multiline">
+            <div><strong>{t("settings.repairHooks")}</strong><p>{t("settings.repairHooksBody")}</p></div>
+            <button className="button secondary" disabled={repairHooks.isPending} onClick={() => repairHooks.mutate()}>
+              <RefreshCw size={13} />{repairHooks.isPending ? t("actions.refreshing") : t("live.repair")}
+            </button>
+          </div>
           <p className="setting-callout live-setting-status"><PanelTop size={13} />{t(`settings.liveState.${live.data?.hookStatus.state ?? "unavailable"}`)} · {t("settings.rawRetention")}</p>
         </section>
 
