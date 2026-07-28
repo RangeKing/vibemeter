@@ -6,8 +6,9 @@ use crate::models::{
     InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem,
     LiveTimelinePoint, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount, PhraseCloud,
     PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
-    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
-    SessionSummary, SessionsResponse, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail,
+    SessionListFilters, SessionSummary, SessionsResponse, SourceStatus, TaskSummary, TokenUsage,
+    VctiProfile,
 };
 use chrono::{DateTime, Duration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -1017,8 +1018,14 @@ impl Database {
         let models = query_usage_distribution(&connection, "model", "model", &start_date)?;
         let tools = query_tools(&connection, &start_timestamp)?;
         let behavior = query_behavior_summary(&connection, &start_timestamp)?;
-        let recent_sessions =
-            query_session_rows(&connection, &start_timestamp, None, None, 0, 8)?.0;
+        let recent_sessions = query_session_rows(
+            &connection,
+            &start_timestamp,
+            &SessionListFilters::default(),
+            0,
+            8,
+        )?
+        .0;
         let warning_count = connection.query_row(
             "SELECT COALESCE(SUM(count), 0) FROM parser_warnings
              WHERE NOT EXISTS(SELECT 1 FROM sources)
@@ -1212,6 +1219,39 @@ impl Database {
         Ok(removed as u64)
     }
 
+    pub fn purge_known_live_validation_events(&self) -> AppResult<u64> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let session_ids = [
+            "claude-expanded-check",
+            "codex-expanded-check",
+            "vibemeter-direct-check",
+            "vibemeter-visual-check",
+        ];
+        transaction.execute(
+            "DELETE FROM live_session_metrics
+             WHERE source_session_id IN (?1, ?2, ?3, ?4)",
+            params![
+                session_ids[0],
+                session_ids[1],
+                session_ids[2],
+                session_ids[3]
+            ],
+        )?;
+        let removed = transaction.execute(
+            "DELETE FROM live_events
+             WHERE source_session_id IN (?1, ?2, ?3, ?4)",
+            params![
+                session_ids[0],
+                session_ids[1],
+                session_ids[2],
+                session_ids[3]
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(removed as u64)
+    }
+
     pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
         let connection = self.connect()?;
         let now = Utc::now();
@@ -1254,15 +1294,23 @@ impl Database {
         drop(timeline_statement);
 
         let mut history_statement = connection.prepare(
-            "SELECT id, received_at, agent, project_label, event_name,
-                    COALESCE(NULLIF(status, ''), 'running'), source_session_id
-             FROM live_events
-             WHERE received_at>=?1
+            "SELECT le.id, le.received_at, le.agent, le.project_label, le.event_name,
+                    COALESCE(NULLIF(le.status, ''), 'running'), le.source_session_id,
+                    (
+                        SELECT s.id
+                        FROM sessions s
+                        WHERE s.agent=le.agent
+                          AND s.source_session_id=le.source_session_id
+                        ORDER BY COALESCE(s.ended_at, s.started_at) DESC
+                        LIMIT 1
+                    )
+             FROM live_events le
+             WHERE le.received_at>=?1
                AND (
-                    status IN ('waiting', 'error')
-                    OR event_name='PermissionRequest'
+                    le.status IN ('waiting', 'error')
+                    OR le.event_name='PermissionRequest'
                )
-             ORDER BY received_at DESC
+             ORDER BY le.received_at DESC
              LIMIT 60",
         )?;
         let history = history_statement
@@ -1283,6 +1331,7 @@ impl Database {
                     status,
                     event_name,
                     source_session_id,
+                    session_id: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1933,7 +1982,8 @@ impl Database {
         let page_size = page_size.clamp(1, 100);
         let (items, total) =
             query_session_rows(&connection, &start_timestamp, &filters, page, page_size)?;
-        let (models, projects) = query_session_facets(&connection, &start_timestamp, filters.agent)?;
+        let (models, projects) =
+            query_session_facets(&connection, &start_timestamp, filters.agent)?;
         Ok(SessionsResponse {
             items,
             total,
@@ -3989,7 +4039,7 @@ fn query_session_facets(
             Ok(display_project_label(&row.get::<_, String>(0)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    projects.sort_by(|left, right| left.to_lowercase().cmp(&right.to_lowercase()));
+    projects.sort_by_key(|left| left.to_lowercase());
     projects.dedup();
     Ok((models, projects))
 }
@@ -4257,25 +4307,26 @@ mod concurrency_tests {
         let database = Database::open(temporary.path().join("session-filters.sqlite"))
             .expect("database should open");
         let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
-        let persist = |id: &str, model: &str, project: &str, files: u64, errors: u64, verified: bool| {
-            let mut state = ParseState::new(AgentKind::Codex, id.into());
-            state.started_at = Some(format!("{date}T10:00:00Z"));
-            state.ended_at = Some(format!("{date}T11:00:00Z"));
-            state.current_model = Some(model.into());
-            state.project_label = Some(project.into());
-            state.project_hash = Some(format!("hash-{project}"));
-            state.title = Some(format!("{id} title"));
-            state.touched_file_hashes = (0..files)
-                .map(|index| format!("{id}-file-{index}"))
-                .collect();
-            state.lines_added = files;
-            state.errors = errors;
-            state.verification_events = u64::from(verified);
-            state.active_seconds = if errors >= 3 { 2_000 } else { 600 };
-            database
-                .persist_parse_state(&format!("{id}-file"), 1, 1, 1, &state)
-                .expect("session should persist");
-        };
+        let persist =
+            |id: &str, model: &str, project: &str, files: u64, errors: u64, verified: bool| {
+                let mut state = ParseState::new(AgentKind::Codex, id.into());
+                state.started_at = Some(format!("{date}T10:00:00Z"));
+                state.ended_at = Some(format!("{date}T11:00:00Z"));
+                state.current_model = Some(model.into());
+                state.project_label = Some(project.into());
+                state.project_hash = Some(format!("hash-{project}"));
+                state.title = Some(format!("{id} title"));
+                state.touched_file_hashes = (0..files)
+                    .map(|index| format!("{id}-file-{index}"))
+                    .collect();
+                state.lines_added = files;
+                state.errors = errors;
+                state.verification_events = u64::from(verified);
+                state.active_seconds = if errors >= 3 { 2_000 } else { 600 };
+                database
+                    .persist_parse_state(&format!("{id}-file"), 1, 1, 1, &state)
+                    .expect("session should persist");
+            };
         persist("alpha", "model-a", "proj-one", 2, 0, false);
         persist("beta", "model-b", "proj-two", 0, 4, false);
         persist("gamma", "model-a", "proj-one", 3, 0, true);
@@ -4572,6 +4623,133 @@ mod concurrency_tests {
         assert_eq!(cursor_events, 0);
         assert_eq!(cursor_metrics, 0);
         assert_eq!(real_claude_events, 1);
+    }
+
+    #[test]
+    fn removes_only_known_live_validation_sessions() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("validation-cleanup.sqlite"))
+            .expect("database should open");
+        let received_at = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        for session_id in [
+            "claude-expanded-check",
+            "codex-expanded-check",
+            "vibemeter-direct-check",
+            "vibemeter-visual-check",
+        ] {
+            database
+                .record_live_event(
+                    &received_at,
+                    &expires_at,
+                    "codex",
+                    session_id,
+                    "PreToolUse",
+                    "validation",
+                    "{}",
+                    "running",
+                )
+                .expect("validation event should persist");
+        }
+        database
+            .record_live_event(
+                &received_at,
+                &expires_at,
+                "claude-code",
+                "real-claude-session",
+                "PermissionRequest",
+                "project",
+                "{}",
+                "waiting",
+            )
+            .expect("real Claude event should persist");
+
+        assert_eq!(
+            database
+                .purge_known_live_validation_events()
+                .expect("validation cleanup"),
+            4
+        );
+        let connection = database.connect().expect("database connection");
+        let validation_events: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_events
+                 WHERE source_session_id IN (
+                    'claude-expanded-check',
+                    'codex-expanded-check',
+                    'vibemeter-direct-check',
+                    'vibemeter-visual-check'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("validation event count");
+        let validation_metrics: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_session_metrics
+                 WHERE source_session_id IN (
+                    'claude-expanded-check',
+                    'codex-expanded-check',
+                    'vibemeter-direct-check',
+                    'vibemeter-visual-check'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("validation metric count");
+        let real_events: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_events
+                 WHERE source_session_id='real-claude-session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("real event count");
+        assert_eq!(validation_events, 0);
+        assert_eq!(validation_metrics, 0);
+        assert_eq!(real_events, 1);
+    }
+
+    #[test]
+    fn live_history_links_to_the_matching_indexed_session() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("live-history-link.sqlite"))
+            .expect("database should open");
+        let received_at = Utc::now().to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        let connection = database.connect().expect("database connection");
+        connection
+            .execute(
+                "INSERT INTO sessions(
+                    id, source_session_id, agent, started_at, parser_version,
+                    source_file_hash, source_size, source_mtime, updated_at
+                 ) VALUES(
+                    'indexed-session', 'source-session', 'claude-code', ?1, 'test',
+                    'source-hash', 1, 1, ?1
+                 )",
+                params![received_at],
+            )
+            .expect("indexed session should persist");
+        drop(connection);
+        database
+            .record_live_event(
+                &received_at,
+                &expires_at,
+                "claude-code",
+                "source-session",
+                "PermissionRequest",
+                "project",
+                "{}",
+                "waiting",
+            )
+            .expect("waiting event should persist");
+
+        let activity = database.live_activity().expect("live activity");
+        assert_eq!(activity.history.len(), 1);
+        assert_eq!(
+            activity.history[0].session_id.as_deref(),
+            Some("indexed-session")
+        );
     }
 
     #[test]

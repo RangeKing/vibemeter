@@ -23,6 +23,7 @@ const NOTCH_HOVER_EXPAND_DELAY: Duration = Duration::from_millis(300);
 const NOTCH_HOVER_COLLAPSE_DELAY: Duration = Duration::from_millis(500);
 const NOTCH_COLLAPSE_ANIMATION_DURATION: Duration = Duration::from_millis(260);
 static NOTCH_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static NOTCH_ENABLED: AtomicBool = AtomicBool::new(false);
 static NOTCH_EXPANDED: AtomicBool = AtomicBool::new(false);
 static NOTCH_PINNED: AtomicBool = AtomicBool::new(false);
 static NOTCH_HAS_ACTIVITY: AtomicBool = AtomicBool::new(false);
@@ -70,6 +71,7 @@ struct NotchWindowLayout {
 #[serde(rename_all = "camelCase")]
 pub struct NotchUiState {
     available: bool,
+    enabled: bool,
     expanded: bool,
     pinned: bool,
     has_activity: bool,
@@ -105,6 +107,7 @@ pub fn setup(
 ) -> tauri::Result<()> {
     let notch_geometry = detect_notch();
     NOTCH_AVAILABLE.store(notch_geometry.is_some(), Ordering::SeqCst);
+    update_notch_enabled_state(notch_enabled && notch_geometry.is_some());
     let _ = NOTCH_GEOMETRY.set(Mutex::new(notch_geometry.unwrap_or_default()));
     WebviewWindowBuilder::new(
         app,
@@ -161,7 +164,7 @@ pub fn setup(
                     .always_on_top(true)
                     .shadow(false)
                     .skip_taskbar(true)
-                    .visible(true)
+                    .visible(NOTCH_ENABLED.load(Ordering::SeqCst))
             })
             .build()?;
         let app_handle = app.handle().clone();
@@ -311,6 +314,9 @@ fn mouse_location() -> (f64, f64) {
 
 #[cfg(target_os = "macos")]
 fn handle_notch_mouse_location(app: &tauri::AppHandle, point: (f64, f64)) {
+    if !NOTCH_ENABLED.load(Ordering::SeqCst) {
+        return;
+    }
     let geometry = current_geometry();
     let expanded = NOTCH_EXPANDED.load(Ordering::SeqCst);
     let inside = if expanded {
@@ -342,7 +348,8 @@ fn handle_notch_mouse_location(app: &tauri::AppHandle, point: (f64, f64)) {
 fn schedule_hover_expand(app: tauri::AppHandle, generation: u64) {
     std::thread::spawn(move || {
         std::thread::sleep(NOTCH_HOVER_EXPAND_DELAY);
-        if NOTCH_HOVER_GENERATION.load(Ordering::SeqCst) == generation
+        if NOTCH_ENABLED.load(Ordering::SeqCst)
+            && NOTCH_HOVER_GENERATION.load(Ordering::SeqCst) == generation
             && NOTCH_CURSOR_IN_HOVER_REGION.load(Ordering::SeqCst)
             && !NOTCH_EXPANDED.load(Ordering::SeqCst)
         {
@@ -374,6 +381,8 @@ fn set_notch_expanded_internal(
     expanded: bool,
     from_hover: bool,
 ) -> tauri::Result<()> {
+    let expanded =
+        expanded && NOTCH_ENABLED.load(Ordering::SeqCst) && NOTCH_AVAILABLE.load(Ordering::SeqCst);
     let transition_generation = NOTCH_TRANSITION_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     NOTCH_EXPANDED.store(expanded, Ordering::SeqCst);
     NOTCH_EXPANDED_FROM_HOVER.store(expanded && from_hover, Ordering::SeqCst);
@@ -383,6 +392,10 @@ fn set_notch_expanded_internal(
     // Let the webview animate its clipped island back into the hardware cutout
     // before the transparent native window adopts the collapsed frame.
     emit_notch_state(app);
+    if !NOTCH_ENABLED.load(Ordering::SeqCst) {
+        NOTCH_COLLAPSE_PENDING.store(false, Ordering::SeqCst);
+        return hide_notch(app);
+    }
     if expanded {
         NOTCH_COLLAPSE_PENDING.store(false, Ordering::SeqCst);
         apply_notch_geometry(app)?;
@@ -426,7 +439,8 @@ fn schedule_notch_collapse_geometry(app: tauri::AppHandle, generation: u64) {
 }
 
 pub fn set_notch_pinned(app: &tauri::AppHandle, pinned: bool) -> tauri::Result<()> {
-    let pinned = pinned && NOTCH_EXPANDED.load(Ordering::SeqCst);
+    let pinned =
+        pinned && NOTCH_ENABLED.load(Ordering::SeqCst) && NOTCH_EXPANDED.load(Ordering::SeqCst);
     NOTCH_PINNED.store(pinned, Ordering::SeqCst);
     if pinned {
         NOTCH_EXPANDED_FROM_HOVER.store(false, Ordering::SeqCst);
@@ -438,7 +452,10 @@ pub fn set_notch_pinned(app: &tauri::AppHandle, pinned: bool) -> tauri::Result<(
 pub fn set_notch_activity(app: &tauri::AppHandle, has_activity: bool) -> tauri::Result<()> {
     NOTCH_HAS_ACTIVITY.store(has_activity, Ordering::SeqCst);
     emit_notch_state(app);
-    if !NOTCH_EXPANDED.load(Ordering::SeqCst) && !NOTCH_COLLAPSE_PENDING.load(Ordering::SeqCst) {
+    if NOTCH_ENABLED.load(Ordering::SeqCst)
+        && !NOTCH_EXPANDED.load(Ordering::SeqCst)
+        && !NOTCH_COLLAPSE_PENDING.load(Ordering::SeqCst)
+    {
         apply_notch_geometry(app)?;
         show_notch(app)?;
     }
@@ -472,6 +489,7 @@ pub fn notch_state() -> NotchUiState {
     let geometry = current_geometry();
     NotchUiState {
         available: NOTCH_AVAILABLE.load(Ordering::SeqCst),
+        enabled: NOTCH_ENABLED.load(Ordering::SeqCst),
         expanded: NOTCH_EXPANDED.load(Ordering::SeqCst),
         pinned: NOTCH_PINNED.load(Ordering::SeqCst),
         has_activity: NOTCH_HAS_ACTIVITY.load(Ordering::SeqCst),
@@ -484,11 +502,27 @@ pub fn notch_state() -> NotchUiState {
 }
 
 pub fn set_notch_enabled(app: &tauri::AppHandle, enabled: bool) -> tauri::Result<()> {
-    if enabled && NOTCH_AVAILABLE.load(Ordering::SeqCst) {
+    let enabled = enabled && NOTCH_AVAILABLE.load(Ordering::SeqCst);
+    update_notch_enabled_state(enabled);
+    emit_notch_state(app);
+    if enabled {
         set_notch_expanded(app, false)?;
         show_notch(app)
     } else {
         hide_notch(app)
+    }
+}
+
+fn update_notch_enabled_state(enabled: bool) {
+    NOTCH_ENABLED.store(enabled, Ordering::SeqCst);
+    NOTCH_CURSOR_IN_HOVER_REGION.store(false, Ordering::SeqCst);
+    NOTCH_HOVER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    NOTCH_TRANSITION_GENERATION.fetch_add(1, Ordering::SeqCst);
+    NOTCH_COLLAPSE_PENDING.store(false, Ordering::SeqCst);
+    if !enabled {
+        NOTCH_EXPANDED.store(false, Ordering::SeqCst);
+        NOTCH_EXPANDED_FROM_HOVER.store(false, Ordering::SeqCst);
+        NOTCH_PINNED.store(false, Ordering::SeqCst);
     }
 }
 
@@ -622,6 +656,9 @@ fn emit_notch_state(app: &tauri::AppHandle) {
 
 #[cfg(target_os = "macos")]
 fn show_notch(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if !NOTCH_ENABLED.load(Ordering::SeqCst) {
+        return hide_notch(app);
+    }
     if let Ok(panel) = app.get_webview_panel("notch") {
         app.run_on_main_thread(move || panel.show())?;
     }
@@ -630,6 +667,9 @@ fn show_notch(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 #[cfg(not(target_os = "macos"))]
 fn show_notch(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if !NOTCH_ENABLED.load(Ordering::SeqCst) {
+        return hide_notch(app);
+    }
     if let Some(window) = app.get_webview_window("notch") {
         window.show()?;
     }
@@ -723,6 +763,28 @@ mod tests {
         assert_eq!(layout.width, NOTCH_EXPANDED_WIDTH);
         assert_eq!(layout.height, 186.0);
         assert_eq!(layout.left_of_hardware_center, NOTCH_EXPANDED_WIDTH / 2.0);
+    }
+
+    #[test]
+    fn disabling_notch_cancels_pending_hover_and_expansion_state() {
+        NOTCH_EXPANDED.store(true, Ordering::SeqCst);
+        NOTCH_EXPANDED_FROM_HOVER.store(true, Ordering::SeqCst);
+        NOTCH_PINNED.store(true, Ordering::SeqCst);
+        NOTCH_CURSOR_IN_HOVER_REGION.store(true, Ordering::SeqCst);
+        NOTCH_COLLAPSE_PENDING.store(true, Ordering::SeqCst);
+        let hover_generation = NOTCH_HOVER_GENERATION.load(Ordering::SeqCst);
+        let transition_generation = NOTCH_TRANSITION_GENERATION.load(Ordering::SeqCst);
+
+        update_notch_enabled_state(false);
+
+        assert!(!NOTCH_ENABLED.load(Ordering::SeqCst));
+        assert!(!NOTCH_EXPANDED.load(Ordering::SeqCst));
+        assert!(!NOTCH_EXPANDED_FROM_HOVER.load(Ordering::SeqCst));
+        assert!(!NOTCH_PINNED.load(Ordering::SeqCst));
+        assert!(!NOTCH_CURSOR_IN_HOVER_REGION.load(Ordering::SeqCst));
+        assert!(!NOTCH_COLLAPSE_PENDING.load(Ordering::SeqCst));
+        assert!(NOTCH_HOVER_GENERATION.load(Ordering::SeqCst) > hover_generation);
+        assert!(NOTCH_TRANSITION_GENERATION.load(Ordering::SeqCst) > transition_generation);
     }
 
     #[cfg(target_os = "macos")]

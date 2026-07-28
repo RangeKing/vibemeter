@@ -89,7 +89,9 @@ async fn get_live_activity(state: State<'_, AppState>) -> AppResult<LiveActivity
             let mut projects = metric.map(|lane| lane.projects.clone()).unwrap_or_default();
             for session in &live_sessions {
                 if !session.project_label.is_empty()
-                    && !projects.iter().any(|project| project == &session.project_label)
+                    && !projects
+                        .iter()
+                        .any(|project| project == &session.project_label)
                 {
                     projects.push(session.project_label.clone());
                 }
@@ -213,6 +215,7 @@ async fn split_session(state: State<'_, AppState>, session_id: String) -> AppRes
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn get_sessions(
     state: State<'_, AppState>,
     range: String,

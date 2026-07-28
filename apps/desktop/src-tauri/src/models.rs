@@ -653,6 +653,7 @@ pub struct LiveHistoryItem {
     pub status: String,
     pub event_name: String,
     pub source_session_id: String,
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

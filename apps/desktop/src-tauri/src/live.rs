@@ -208,6 +208,7 @@ impl LiveMonitor {
     pub fn start(database: Database, app: AppHandle) -> AppResult<Self> {
         database.purge_misattributed_cursor_live_events()?;
         database.purge_codex_memory_live_events()?;
+        database.purge_known_live_validation_events()?;
         database.purge_expired_live_events()?;
         let sessions = Arc::new(RwLock::new(HashMap::new()));
         let auxiliary_sessions = Arc::new(RwLock::new(HashMap::new()));

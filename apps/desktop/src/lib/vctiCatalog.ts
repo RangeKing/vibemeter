@@ -1,6 +1,8 @@
 export const VCTI_GUILDS = ["start", "agent", "quality", "debug", "delivery", "tools"] as const;
 export type VctiGuild = (typeof VCTI_GUILDS)[number];
 
+export const VCTI_BADGES = ["GUARD", "TURBO", "LIVE", "BUDGET", "NIGHT", "MARATHON", "SOLO", "FINISH", "STEADY"] as const;
+
 export const VCTI_TYPES = [
   ["VIBE", "start"], ["SPEC", "start"], ["HACK", "start"], ["MIX", "start"],
   ["YOLO", "agent"], ["LOOP", "agent"], ["BOSS", "agent"], ["SWARM", "agent"],

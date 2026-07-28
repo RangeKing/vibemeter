@@ -5,7 +5,7 @@ use crate::models::{
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub const ALGORITHM_VERSION: &str = "1.4.0";
+pub const ALGORITHM_VERSION: &str = "1.6.0";
 const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 
@@ -86,6 +86,11 @@ struct Features {
     night_rate: f64,
     long_session_count: u64,
     active_day_variation: f64,
+    prompt_signal: bool,
+    modification_signal: bool,
+    lifecycle_signal: bool,
+    first_tool_signal: bool,
+    token_signal: bool,
 }
 
 #[derive(Clone)]
@@ -93,6 +98,8 @@ struct TypeScore {
     code: &'static str,
     guild: &'static str,
     score: f64,
+    raw_score: f64,
+    distinctiveness: f64,
     eligible: bool,
 }
 
@@ -123,15 +130,14 @@ pub fn calculate(
         "collecting"
     };
     let features = derive_features(records, available_agents, now, window_days);
-    let mut candidates = type_scores(
+    let mut candidates = rank_type_scores(type_scores(
         &features,
         structure_analysis_enabled,
         git_evidence_enabled,
         behavior.orchestration_coverage,
         behavior.process_control_coverage,
         available_agents,
-    );
-    candidates.retain(|candidate| candidate.eligible);
+    ));
     candidates.sort_by(|left, right| {
         right
             .score
@@ -139,16 +145,15 @@ pub fn calculate(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| left.code.cmp(right.code))
     });
-    let gated_top = candidates
-        .first()
-        .filter(|candidate| status != "collecting" && candidate.score >= 42.0);
+    let gated_top = candidates.first().filter(|candidate| {
+        status != "collecting" && candidate.raw_score >= 42.0 && candidate.distinctiveness >= 4.0
+    });
     let mut temporary = false;
     let top = if gated_top.is_none()
         && records.len() >= 3
-        && candidates
-            .first()
-            .is_some_and(|candidate| candidate.score >= 28.0)
-    {
+        && candidates.first().is_some_and(|candidate| {
+            candidate.raw_score >= 35.0 && candidate.distinctiveness >= 3.0
+        }) {
         temporary = true;
         status = "preview";
         candidates.first()
@@ -323,7 +328,7 @@ fn derive_features(
     let mut total_tokens = 0.0;
     let mut cache_tokens = 0.0;
     let mut model_switches = 0.0;
-    let mut longest_seconds: f64 = 0.0;
+    let mut uninterrupted_seconds = 0.0;
     let mut providers = HashSet::new();
     let mut models = HashSet::new();
     let mut daily = BTreeMap::<String, f64>::new();
@@ -417,11 +422,10 @@ fn derive_features(
         total_tokens += record.total_tokens as f64 * weight;
         cache_tokens += record.cache_read_tokens as f64 * weight;
         model_switches += record.model_switches as f64 * weight;
-        longest_seconds = longest_seconds.max(
-            record
-                .longest_uninterrupted_seconds
-                .max(record.active_seconds) as f64,
-        );
+        uninterrupted_seconds += record
+            .longest_uninterrupted_seconds
+            .max(record.active_seconds) as f64
+            * weight;
     }
 
     let ws = weighted_sessions.max(0.001);
@@ -430,33 +434,60 @@ fn derive_features(
     let file_scope_rate = ratio(scope_prompts, prompt_count);
     let plan_rate = ratio(plans, ws);
     let avg_prompt_chars = ratio(prompt_characters, prompt_count);
+    let prompt_signal = prompt_count > f64::EPSILON;
+    let modification_signal = modified_sessions > f64::EPSILON;
+    let lifecycle_signal = completions + aborts > f64::EPSILON;
+    let first_tool_signal = first_tool_weight > f64::EPSILON;
+    let token_signal = total_tokens > f64::EPSILON;
     let scope_drift = cap(ratio(goal_changes, ws), 0.28);
-    let requirement_clarity = (prompt_structure_rate * 38.0
-        + cap(acceptance_rate, 0.28) * 26.0
-        + cap(file_scope_rate, 0.38) * 22.0
-        + cap(plan_rate, 0.45) * 14.0)
-        .clamp(0.0, 100.0);
+    let requirement_clarity = if prompt_signal {
+        weighted(&[
+            (prompt_structure_rate * 100.0, 0.38),
+            (cap(acceptance_rate, 0.28), 0.26),
+            (cap(file_scope_rate, 0.38), 0.22),
+            (cap(plan_rate, 0.45), 0.14),
+        ])
+    } else {
+        50.0
+    };
     let exploration = (scope_drift * 0.38
         + cap(ratio(model_switches, ws), 0.20) * 0.22
         + cap(ratio(dependency_events, ws), 0.40) * 0.20
-        + inverse(cap(avg_prompt_chars, 1_200.0)) * 0.20)
-        .clamp(0.0, 100.0);
+        + if prompt_signal {
+            inverse(cap(avg_prompt_chars, 1_200.0)) * 0.20
+        } else {
+            50.0 * 0.20
+        })
+    .clamp(0.0, 100.0);
     let delegation = (cap(ratio(files, ws), 8.0) * 0.35
         + cap(ratio(tools, prompt_count.max(ws)), 18.0) * 0.30
-        + cap(longest_seconds, 7_200.0) * 0.20
+        + cap(ratio(uninterrupted_seconds, ws), 7_200.0) * 0.20
         + inverse(cap(ratio(interventions, ws), 5.0)) * 0.15)
         .clamp(0.0, 100.0);
     let human_intervention = cap(ratio(interventions, ws), 4.0);
     let parallel_orchestration = (cap(ratio(subagents, ws), 0.65) * 0.65
         + cap(ratio(parallel_batches, ws), 0.45) * 0.35)
         .clamp(0.0, 100.0);
-    let diff_review = cap(ratio(git_reviews, modified_sessions.max(1.0)), 1.15);
-    let automated_verification = (ratio(verified_modified, modified_sessions.max(1.0)) * 70.0
-        + cap(ratio(tests, modified_sessions.max(1.0)), 1.2) * 30.0)
-        .clamp(0.0, 100.0);
-    let rollback_awareness = (cap(ratio(rollbacks, modified_sessions.max(1.0)), 0.16) * 0.58
-        + ratio(committed_sessions, modified_sessions.max(1.0)) * 42.0)
-        .clamp(0.0, 100.0);
+    let diff_review = if modification_signal {
+        cap(ratio(git_reviews, modified_sessions), 1.15)
+    } else {
+        50.0
+    };
+    let automated_verification = if modification_signal {
+        weighted(&[
+            (ratio(verified_modified, modified_sessions) * 100.0, 0.70),
+            (cap(ratio(tests, modified_sessions), 1.2), 0.30),
+        ])
+    } else {
+        50.0
+    };
+    let rollback_awareness = if modification_signal {
+        (cap(ratio(rollbacks, modified_sessions), 0.16) * 0.58
+            + ratio(committed_sessions, modified_sessions) * 42.0)
+            .clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
     let root_cause = (cap(
         ratio(reads_and_searches + shell_events * 0.08, edits.max(1.0)),
         0.95,
@@ -464,19 +495,35 @@ fn derive_features(
         + cap(ratio(tests, modified_sessions.max(1.0)), 1.0) * 0.30
         + cap(ratio(errors, ws), 0.35) * 0.25)
         .clamp(0.0, 100.0);
-    let local_fix = (inverse(cap(ratio(files, modified_sessions.max(1.0)), 9.0)) * 0.58
-        + inverse(cap(ratio(lines, modified_sessions.max(1.0)), 480.0)) * 0.42)
-        .clamp(0.0, 100.0);
+    let local_fix = if modification_signal {
+        (inverse(cap(ratio(files, modified_sessions), 9.0)) * 0.58
+            + inverse(cap(ratio(lines, modified_sessions), 480.0)) * 0.42)
+            .clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
     let automation = (cap(ratio(automation_events, ws), 0.30) * 0.58
         + cap(ratio(tools, ws), 55.0) * 0.24
         + cap(plan_rate, 0.60) * 0.18)
         .clamp(0.0, 100.0);
-    let average_first_tool_ms = ratio(first_tool_ms, first_tool_weight.max(0.001));
-    let first_result_speed = inverse(cap(average_first_tool_ms, 12.0 * 60_000.0));
-    let iteration_granularity = (cap(ratio(files, modified_sessions.max(1.0)), 10.0) * 0.58
-        + cap(ratio(lines, modified_sessions.max(1.0)), 600.0) * 0.42)
-        .clamp(0.0, 100.0);
-    let completion = ratio(completions, completions + aborts);
+    let first_result_speed = if first_tool_signal {
+        let average_first_tool_ms = ratio(first_tool_ms, first_tool_weight);
+        inverse(cap(average_first_tool_ms, 12.0 * 60_000.0))
+    } else {
+        50.0
+    };
+    let iteration_granularity = if modification_signal {
+        (cap(ratio(files, modified_sessions), 10.0) * 0.58
+            + cap(ratio(lines, modified_sessions), 600.0) * 0.42)
+            .clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
+    let completion = if lifecycle_signal {
+        ratio(completions, completions + aborts)
+    } else {
+        0.5
+    };
     let shipping_tendency = (cap(ratio(deploy_events, ws), 0.08) * 0.34
         + ratio(committed_sessions, ws) * 34.0
         + completion * 32.0)
@@ -499,22 +546,30 @@ fn derive_features(
         + cap(ratio(compactions, ws), 0.18) * 0.22
         + cap(cache_ratio, 0.72) * 0.36)
         .clamp(0.0, 100.0);
-    let polish = (cap(ratio(style_events, modified_sessions.max(1.0)), 1.8) * 0.48
-        + cap(ratio(document_events, modified_sessions.max(1.0)), 0.65) * 0.20
-        + inverse(first_result_speed) * 0.12
-        + inverse(local_fix) * 0.20)
-        .clamp(0.0, 100.0);
-    let infrastructure = cap(ratio(infra_events, modified_sessions.max(1.0)), 0.85);
-    let dependency_reuse = cap(ratio(dependency_events, modified_sessions.max(1.0)), 0.55);
+    let polish = if modification_signal {
+        (cap(ratio(style_events, modified_sessions), 1.8) * 0.48
+            + cap(ratio(document_events, modified_sessions), 0.65) * 0.20
+            + inverse(first_result_speed) * 0.12
+            + inverse(local_fix) * 0.20)
+            .clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
+    let infrastructure = if modification_signal {
+        cap(ratio(infra_events, modified_sessions), 0.85)
+    } else {
+        50.0
+    };
+    let dependency_reuse = if modification_signal {
+        cap(ratio(dependency_events, modified_sessions), 0.55)
+    } else {
+        50.0
+    };
     let mean_day = if daily.is_empty() {
         0.0
     } else {
         daily.values().sum::<f64>() / daily.len() as f64
     };
-    let max_day = daily.values().copied().fold(0.0, f64::max);
-    let burst = (cap(ratio(max_day, mean_day.max(1.0)) - 1.0, 2.0) * 0.62
-        + cap(long_session_count as f64, 8.0) * 0.38)
-        .clamp(0.0, 100.0);
     let variance = if daily.len() > 1 && mean_day > 0.0 {
         (daily
             .values()
@@ -526,6 +581,8 @@ fn derive_features(
     } else {
         1.0
     };
+    let long_session_rate = ratio(long_session_count as f64, records.len() as f64);
+    let burst = (cap(variance, 1.2) * 0.62 + cap(long_session_rate, 0.18) * 0.38).clamp(0.0, 100.0);
 
     Features {
         requirement_clarity,
@@ -559,6 +616,11 @@ fn derive_features(
         night_rate: ratio(night_days.len() as f64, active_days.len().max(1) as f64) * 100.0,
         long_session_count,
         active_day_variation: variance,
+        prompt_signal,
+        modification_signal,
+        lifecycle_signal,
+        first_tool_signal,
+        token_signal,
     }
 }
 
@@ -584,7 +646,7 @@ fn type_scores(
                 (inverse(features.requirement_clarity), 0.34),
                 (features.polish, 0.26),
             ]),
-            structure_enabled,
+            structure_enabled && features.prompt_signal,
         ),
         (
             "SPEC",
@@ -594,7 +656,7 @@ fn type_scores(
                 (inverse(features.scope_drift), 0.24),
                 (features.context_reuse, 0.18),
             ]),
-            structure_enabled,
+            structure_enabled && features.prompt_signal,
         ),
         (
             "HACK",
@@ -605,7 +667,7 @@ fn type_scores(
                 (features.dependency_reuse, 0.20),
                 (inverse(features.requirement_clarity), 0.13),
             ]),
-            structure_enabled,
+            structure_enabled && features.prompt_signal,
         ),
         (
             "MIX",
@@ -616,7 +678,7 @@ fn type_scores(
                 (features.first_result_speed, 0.17),
                 (inverse(features.infrastructure), 0.10),
             ]),
-            structure_enabled,
+            structure_enabled && features.prompt_signal && features.modification_signal,
         ),
         (
             "YOLO",
@@ -626,7 +688,7 @@ fn type_scores(
                 (features.iteration_granularity, 0.27),
                 (inverse(guardrail), 0.27),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "LOOP",
@@ -636,7 +698,7 @@ fn type_scores(
                 (inverse(features.iteration_granularity), 0.27),
                 (features.polish, 0.23),
             ]),
-            true,
+            features.modification_signal || process_coverage >= 0.30,
         ),
         (
             "BOSS",
@@ -666,7 +728,7 @@ fn type_scores(
                 (features.human_intervention, 0.18),
                 (features.rollback_awareness, 0.16),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "TEST",
@@ -676,7 +738,7 @@ fn type_scores(
                 (features.root_cause, 0.16),
                 (features.rollback_awareness, 0.12),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "DOCS",
@@ -686,7 +748,7 @@ fn type_scores(
                 (features.requirement_clarity, 0.30),
                 (inverse(features.scope_drift), 0.20),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "UNDO",
@@ -696,7 +758,7 @@ fn type_scores(
                 (features.iteration_granularity, 0.18),
                 (features.exploration, 0.14),
             ]),
-            git_enabled || process_coverage >= 0.30,
+            features.modification_signal && (git_enabled || process_coverage >= 0.30),
         ),
         (
             "DEBUG",
@@ -706,7 +768,7 @@ fn type_scores(
                 (features.automated_verification, 0.20),
                 (inverse(features.first_result_speed), 0.18),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "PATCH",
@@ -716,7 +778,7 @@ fn type_scores(
                 (features.first_result_speed, 0.28),
                 (inverse(features.infrastructure), 0.14),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "STACK",
@@ -726,7 +788,7 @@ fn type_scores(
                 (features.dependency_reuse, 0.24),
                 (features.iteration_granularity, 0.20),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "AUTO",
@@ -736,7 +798,7 @@ fn type_scores(
                 (features.parallel_orchestration, 0.18),
                 (features.context_reuse, 0.18),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "SHIP",
@@ -746,7 +808,7 @@ fn type_scores(
                 (features.first_result_speed, 0.26),
                 (features.completion, 0.19),
             ]),
-            true,
+            features.lifecycle_signal || features.modification_signal,
         ),
         (
             "RUSH",
@@ -756,7 +818,7 @@ fn type_scores(
                 (features.completion, 0.24),
                 (features.first_result_speed, 0.18),
             ]),
-            true,
+            features.lifecycle_signal,
         ),
         (
             "MVP",
@@ -767,7 +829,7 @@ fn type_scores(
                 (inverse(features.polish), 0.22),
                 (features.shipping_tendency, 0.16),
             ]),
-            structure_enabled,
+            structure_enabled && features.modification_signal && features.first_tool_signal,
         ),
         (
             "DETAIL",
@@ -777,7 +839,7 @@ fn type_scores(
                 (inverse(features.first_result_speed), 0.18),
                 (features.human_intervention, 0.20),
             ]),
-            true,
+            features.modification_signal,
         ),
         (
             "FORK",
@@ -797,7 +859,7 @@ fn type_scores(
                 (features.context_reuse, 0.18),
                 (inverse(features.iteration_granularity), 0.10),
             ]),
-            true,
+            features.token_signal,
         ),
         (
             "CACHE",
@@ -807,7 +869,7 @@ fn type_scores(
                 (features.requirement_clarity, 0.18),
                 (features.cost_routing, 0.14),
             ]),
-            true,
+            features.token_signal || features.prompt_signal,
         ),
         (
             "BUDDY",
@@ -817,18 +879,39 @@ fn type_scores(
                 (features.context_reuse, 0.22),
                 (inverse(features.scope_drift), 0.16),
             ]),
-            available_agents >= 2,
+            available_agents >= 2 && (features.token_signal || features.prompt_signal),
         ),
     ];
     types
         .into_iter()
-        .map(|(code, guild, score, eligible)| TypeScore {
+        .map(|(code, guild, raw_score, eligible)| TypeScore {
             code,
             guild,
-            score,
+            score: raw_score,
+            raw_score,
+            distinctiveness: 0.0,
             eligible,
         })
         .collect()
+}
+
+fn rank_type_scores(mut types: Vec<TypeScore>) -> Vec<TypeScore> {
+    let mut guild_totals = HashMap::<&str, (f64, usize)>::new();
+    for candidate in &types {
+        let total = guild_totals.entry(candidate.guild).or_default();
+        total.0 += candidate.raw_score;
+        total.1 += 1;
+    }
+    for candidate in &mut types {
+        let (total, count) = guild_totals[candidate.guild];
+        let guild_mean = total / count.max(1) as f64;
+        candidate.distinctiveness = candidate.raw_score - guild_mean;
+        candidate.score =
+            (50.0 + candidate.distinctiveness * 1.35 + (candidate.raw_score - 50.0) * 0.20)
+                .clamp(0.0, 100.0);
+    }
+    types.retain(|candidate| candidate.eligible);
+    types
 }
 
 fn public_scores(features: &Features, behavior: &BehaviorSummary) -> Vec<VctiScore> {
@@ -961,7 +1044,6 @@ fn badges(
     });
     candidates
         .into_iter()
-        .take(2)
         .map(|(code, _)| VctiBadge {
             code: code.into(),
             label_key: format!("vcti.badges.{code}.name"),
@@ -1280,11 +1362,15 @@ fn cap(value: f64, target: f64) -> f64 {
 
 fn separation_capped_confidence(confidence: f64, type_margin: f64) -> f64 {
     if type_margin < 0.02 {
-        confidence.min(72.0)
+        confidence.min(65.0)
     } else if type_margin < 0.04 {
-        confidence.min(79.0)
+        confidence.min(72.0)
+    } else if type_margin < 0.08 {
+        confidence.min(80.0)
+    } else if type_margin < 0.12 {
+        confidence.min(86.0)
     } else {
-        confidence
+        confidence.min(92.0)
     }
 }
 
@@ -1424,8 +1510,210 @@ mod tests {
 
     #[test]
     fn ambiguous_types_cannot_claim_high_match_confidence() {
-        assert_eq!(separation_capped_confidence(96.0, 0.011), 72.0);
-        assert_eq!(separation_capped_confidence(96.0, 0.031), 79.0);
-        assert_eq!(separation_capped_confidence(96.0, 0.061), 96.0);
+        assert_eq!(separation_capped_confidence(96.0, 0.011), 65.0);
+        assert_eq!(separation_capped_confidence(96.0, 0.031), 72.0);
+        assert_eq!(separation_capped_confidence(96.0, 0.061), 80.0);
+        assert_eq!(separation_capped_confidence(96.0, 0.101), 86.0);
+        assert_eq!(separation_capped_confidence(96.0, 0.161), 92.0);
+    }
+
+    #[test]
+    fn percentage_components_keep_their_declared_weight() {
+        let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut sample = record("2026-07-23");
+        sample.has_commit = false;
+        sample.verification_events = 0;
+        sample.test_events = 1;
+        sample.build_events = 0;
+        sample.behavior.prompt_count = 4;
+        sample.behavior.structured_prompts = 1;
+        sample.behavior.acceptance_criteria_prompts = 1;
+        sample.behavior.file_scope_prompts = 1;
+        sample.behavior.plan_events = 1;
+
+        let features = derive_features(&[sample], 2, now, 90);
+
+        assert!((features.requirement_clarity - 61.19).abs() < 0.02);
+        assert!((features.automated_verification - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn absent_behavior_is_neutral_not_opposite_evidence() {
+        let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut sample = record("2026-07-23");
+        sample.files_touched = 0;
+        sample.lines_changed = 0;
+        sample.verification_events = 0;
+        sample.has_commit = false;
+        sample.test_events = 0;
+        sample.build_events = 0;
+        sample.read_events = 0;
+        sample.search_events = 0;
+        sample.edit_events = 0;
+        sample.behavior = BehaviorSignals::default();
+
+        let features = derive_features(&[sample], 2, now, 90);
+        let candidates = type_scores(&features, true, false, 0.0, 0.0, 2);
+
+        assert_eq!(features.requirement_clarity, 50.0);
+        assert_eq!(features.automated_verification, 50.0);
+        assert_eq!(features.local_fix, 50.0);
+        assert_eq!(features.first_result_speed, 50.0);
+        assert!(!features.prompt_signal);
+        assert!(!features.modification_signal);
+        assert!(
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    matches!(candidate.guild, "start" | "quality" | "debug" | "delivery")
+                })
+                .all(|candidate| !candidate.eligible)
+        );
+    }
+
+    #[test]
+    fn badges_are_independent_instead_of_competing_for_two_slots() {
+        let records = std::iter::repeat_with(|| record("2026-07-01"))
+            .take(50)
+            .collect::<Vec<_>>();
+        let features = Features {
+            diff_review: 92.0,
+            automated_verification: 90.0,
+            rollback_awareness: 88.0,
+            first_result_speed: 90.0,
+            tool_success: 92.0,
+            completion: 91.0,
+            cost_routing: 90.0,
+            human_intervention: 80.0,
+            night_rate: 50.0,
+            long_session_count: 10,
+            parallel_orchestration: 5.0,
+            active_day_variation: 0.25,
+            ..Features::default()
+        };
+        let behavior = BehaviorSummary {
+            process_control_coverage: 1.0,
+            orchestration_coverage: 1.0,
+            lifecycle_coverage: 1.0,
+            ..BehaviorSummary::default()
+        };
+        let earned = badges(&features, &behavior, &records, true, 50);
+        let codes = earned
+            .iter()
+            .map(|badge| badge.code.as_str())
+            .collect::<HashSet<_>>();
+
+        assert_eq!(earned.len(), 9);
+        assert_eq!(
+            codes,
+            HashSet::from([
+                "GUARD", "TURBO", "LIVE", "BUDGET", "NIGHT", "MARATHON", "SOLO", "FINISH",
+                "STEADY",
+            ])
+        );
+    }
+
+    #[test]
+    fn synthetic_population_has_no_single_default_persona() {
+        fn sample(seed: &mut u64) -> f64 {
+            *seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((*seed >> 32) as u32 as f64 / u32::MAX as f64) * 100.0
+        }
+
+        fn draw(seed: &mut u64, centered: bool) -> f64 {
+            if centered {
+                (0..4).map(|_| sample(seed)).sum::<f64>() / 4.0
+            } else {
+                sample(seed)
+            }
+        }
+
+        fn random_features(seed: &mut u64, centered: bool) -> Features {
+            Features {
+                requirement_clarity: draw(seed, centered),
+                exploration: draw(seed, centered),
+                scope_drift: draw(seed, centered),
+                delegation: draw(seed, centered),
+                human_intervention: draw(seed, centered),
+                parallel_orchestration: draw(seed, centered),
+                diff_review: draw(seed, centered),
+                automated_verification: draw(seed, centered),
+                rollback_awareness: draw(seed, centered),
+                root_cause: draw(seed, centered),
+                local_fix: draw(seed, centered),
+                automation: draw(seed, centered),
+                first_result_speed: draw(seed, centered),
+                iteration_granularity: draw(seed, centered),
+                shipping_tendency: draw(seed, centered),
+                tool_switching: draw(seed, centered),
+                cost_routing: draw(seed, centered),
+                context_reuse: draw(seed, centered),
+                polish: draw(seed, centered),
+                infrastructure: draw(seed, centered),
+                dependency_reuse: draw(seed, centered),
+                burst: draw(seed, centered),
+                completion: draw(seed, centered),
+                prompt_signal: true,
+                modification_signal: true,
+                lifecycle_signal: true,
+                first_tool_signal: true,
+                token_signal: true,
+                ..Features::default()
+            }
+        }
+
+        fn audit_population(centered: bool) -> (usize, HashMap<&'static str, usize>) {
+            let mut seed = if centered { 0xc3e7e_u64 } else { 0x5eed_u64 };
+            let mut assigned = 0_usize;
+            let mut counts = HashMap::<&'static str, usize>::new();
+            for _ in 0..20_000 {
+                let features = random_features(&mut seed, centered);
+                let mut candidates =
+                    rank_type_scores(type_scores(&features, true, true, 1.0, 1.0, 3));
+                candidates.sort_by(|left, right| {
+                    right
+                        .score
+                        .total_cmp(&left.score)
+                        .then_with(|| left.code.cmp(right.code))
+                });
+                if let Some(winner) = candidates.first().filter(|candidate| {
+                    candidate.raw_score >= 42.0 && candidate.distinctiveness >= 4.0
+                }) {
+                    assigned += 1;
+                    *counts.entry(winner.code).or_default() += 1;
+                }
+            }
+            (assigned, counts)
+        }
+
+        for centered in [false, true] {
+            let (assigned, counts) = audit_population(centered);
+            let represented = counts.len();
+            let largest_share =
+                counts.values().copied().max().unwrap_or_default() as f64 / assigned.max(1) as f64;
+            println!(
+                "VCTI synthetic audit: centered={centered} assigned={assigned} represented={represented} largest_share={:.1}%",
+                largest_share * 100.0
+            );
+            assert!(
+                assigned >= 17_000,
+                "too many synthetic profiles were left unassigned: centered={centered}"
+            );
+            assert!(
+                represented >= 20,
+                "only {represented} of 24 personas appeared: centered={centered} {counts:?}"
+            );
+            assert!(
+                largest_share <= 0.18,
+                "one persona captured {:.1}% of profiles: centered={centered} {counts:?}",
+                largest_share * 100.0
+            );
+        }
     }
 }

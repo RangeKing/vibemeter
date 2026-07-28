@@ -12,7 +12,7 @@ import { EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDate, formatDuration, formatPercent } from "../lib/format";
 import { useFocusTrap } from "../lib/useFocusTrap";
-import { VCTI_GUILDS, VCTI_TYPES } from "../lib/vctiCatalog";
+import { VCTI_BADGES, VCTI_GUILDS, VCTI_TYPES } from "../lib/vctiCatalog";
 import { useUiStore } from "../store";
 import type { Locale, VctiEvidenceItem, VctiProfile } from "../types";
 
@@ -95,6 +95,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
   const guildName = profile.guild ? t(`vcti.guilds.${profile.guild}.name`) : t("vcti.collecting.guild");
   const stable = !profile.temporary && (profile.status === "stable" || profile.status === "high-confidence");
   const showRangeNudge = range !== "90d";
+  const earnedBadges = new Set(profile.badges.map((badge) => badge.code));
 
   return (
     <div className="page vcti-page">
@@ -141,7 +142,11 @@ export function VctiPage({ locale }: { locale: Locale }) {
           {profile.primaryType ? (
             <div className="vcti-identity-strip">
               {profile.secondaryType ? <span>{t("vcti.secondary")} <strong>{profile.secondaryType} · {t(`vcti.types.${profile.secondaryType}.name`)}</strong></span> : null}
-              {profile.badges.map((badge) => <span className="vcti-badge" key={badge.code}>{badge.code} · {t(badge.labelKey)}</span>)}
+              {profile.badges.map((badge) => (
+                <span className="vcti-badge" key={badge.code} title={t(badge.descriptionKey)}>
+                  {badge.code} · {t(badge.labelKey)}
+                </span>
+              ))}
             </div>
           ) : (
             <div className="vcti-collecting-track"><span style={{ width: `${Math.min(92, profile.confidence)}%` }} /></div>
@@ -290,6 +295,29 @@ export function VctiPage({ locale }: { locale: Locale }) {
                   </div>
                 </section>
               ))}
+              <section className="vcti-atlas-guild vcti-atlas-badges">
+                <header>
+                  <span className="section-index">07</span>
+                  <div><strong>{t("vcti.badgeAtlasTitle")}</strong><small>{t("vcti.badgeAtlasBody")}</small></div>
+                </header>
+                <div className="vcti-atlas-badge-grid">
+                  {VCTI_BADGES.map((code) => {
+                    const earned = earnedBadges.has(code);
+                    return (
+                      <article className={earned ? "earned" : ""} key={code}>
+                        <b>{code}</b>
+                        <div>
+                          <span className="vcti-atlas-badge-heading">
+                            <strong>{t(`vcti.badges.${code}.name`)}</strong>
+                            {earned ? <small>{t("vcti.badgeEarned")}</small> : null}
+                          </span>
+                          <p>{t(`vcti.badges.${code}.description`)}</p>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
             </div>
             <footer>
               <span>{profile.primaryType ? `${profile.primaryType} · ${primaryName}` : t("vcti.collecting.name")}</span>

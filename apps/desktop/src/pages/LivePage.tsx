@@ -15,7 +15,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
-import { agentName, formatTime } from "../lib/format";
+import { agentName, formatDateTime, formatTime } from "../lib/format";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
 import type { LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "../types";
@@ -119,7 +119,15 @@ function TimelineList({ points, locale }: { points: LiveTimelinePoint[]; locale:
   );
 }
 
-function HistoryList({ items, locale }: { items: LiveHistoryItem[]; locale: Locale }) {
+export function HistoryList({
+  items,
+  locale,
+  onOpenSession,
+}: {
+  items: LiveHistoryItem[];
+  locale: Locale;
+  onOpenSession: (sessionId: string) => void;
+}) {
   const { t } = useTranslation();
   if (!items.length) return <EmptyState title={t("live.historyEmpty")} body={t("live.historyEmptyBody")} />;
   return (
@@ -131,7 +139,15 @@ function HistoryList({ items, locale }: { items: LiveHistoryItem[]; locale: Loca
             <strong>{item.projectLabel || agentName(item.agent)}</strong>
             <small>{agentName(item.agent)} · {item.eventName}</small>
           </div>
-          <time>{formatTime(item.occurredAt, locale)}</time>
+          <time>{formatDateTime(item.occurredAt, locale)}</time>
+          <button
+            className="button subtle live-history-jump"
+            disabled={!item.sessionId}
+            title={item.sessionId ? undefined : t("live.historyJumpUnavailable")}
+            onClick={() => item.sessionId && onOpenSession(item.sessionId)}
+          >
+            {t("live.jump")}<ArrowUpRight size={12} />
+          </button>
         </li>
       ))}
     </ul>
@@ -141,6 +157,7 @@ function HistoryList({ items, locale }: { items: LiveHistoryItem[]; locale: Loca
 export function LivePage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const setPage = useUiStore((state) => state.setPage);
+  const openSessions = useUiStore((state) => state.openSessions);
   const snapshot = useLiveSnapshot();
   const activity = useQuery({
     queryKey: ["live-activity"],
@@ -211,7 +228,7 @@ export function LivePage({ locale }: { locale: Locale }) {
           {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
             <ErrorState retry={() => void activity.refetch()} />
           ) : (
-            <HistoryList items={activityData?.history ?? []} locale={locale} />
+            <HistoryList items={activityData?.history ?? []} locale={locale} onOpenSession={openSessions} />
           )}
         </section>
       </div>

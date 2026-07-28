@@ -2,7 +2,7 @@ use crate::adapters::{claude, codex, common, cursor, kimi, openclaw};
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
-use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, SessionListFilters, TokenUsage};
+use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, TokenUsage};
 use crate::privacy::stable_hash;
 use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
@@ -549,6 +549,7 @@ fn timestamp_from_seconds(value: f64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::SessionListFilters;
     use std::io::Write;
 
     #[test]

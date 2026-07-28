@@ -267,6 +267,7 @@ export interface LiveHistoryItem {
   status: "waiting" | "error" | string;
   eventName: string;
   sourceSessionId: string;
+  sessionId?: string;
 }
 
 export interface LiveConcurrencyLane {
@@ -289,6 +290,7 @@ export interface LiveActivityResponse {
 
 export interface NotchUiState {
   available: boolean;
+  enabled: boolean;
   expanded: boolean;
   pinned: boolean;
   hasActivity: boolean;

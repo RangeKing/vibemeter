@@ -38,6 +38,7 @@ const MIN_EXPANDED_HEIGHT = 150;
 const MAX_EXPANDED_HEIGHT = 352;
 const DEFAULT_NOTCH_STATE: NotchUiState = {
   available: true,
+  enabled: true,
   expanded: false,
   pinned: false,
   hasActivity: false,
@@ -361,6 +362,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const togglePinned = async () => {
     await api.setNotchPinned(!notchState.pinned);
   };
+
+  if (!notchState.enabled) return null;
 
   const showExpandedSurface = notchState.expanded || keepExpandedDuringClose;
   const isClosing = showExpandedSurface && !notchState.expanded;

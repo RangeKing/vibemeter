@@ -1419,30 +1419,30 @@ fn vcti_guild_name(locale: &str, guild: &str) -> &'static str {
 
 fn vcti_type_name(locale: &str, code: &str) -> &'static str {
     match (locale, code) {
-        ("zh-CN", "VIBE") => "氛围组组长",
-        ("zh-CN", "SPEC") => "需求主理人",
+        ("zh-CN", "VIBE") => "感觉对了就开干",
+        ("zh-CN", "SPEC") => "开工判官",
         ("zh-CN", "HACK") => "邪修玩家",
-        ("zh-CN", "MIX") => "赛博缝合怪",
-        ("zh-CN", "YOLO") => "一把梭哈王",
-        ("zh-CN", "LOOP") => "再来一版王",
-        ("zh-CN", "BOSS") => "赛博包工头",
+        ("zh-CN", "MIX") => "能拼就别造",
+        ("zh-CN", "YOLO") => "全选就开冲",
+        ("zh-CN", "LOOP") => "不行就重开",
+        ("zh-CN", "BOSS") => "Agent 包工头",
         ("zh-CN", "SWARM") => "多开狂魔",
-        ("zh-CN", "DIFF") => "赛博监工",
+        ("zh-CN", "DIFF") => "逐行验尸官",
         ("zh-CN", "TEST") => "测试守门员",
-        ("zh-CN", "DOCS") => "文档钉子户",
-        ("zh-CN", "UNDO") => "回滚大师",
+        ("zh-CN", "DOCS") => "失忆预防针",
+        ("zh-CN", "UNDO") => "后悔药批发商",
         ("zh-CN", "DEBUG") => "Bug 侦探",
-        ("zh-CN", "PATCH") => "补丁侠",
-        ("zh-CN", "STACK") => "基建狂魔",
-        ("zh-CN", "AUTO") => "自动化狂魔",
+        ("zh-CN", "PATCH") => "哪里漏补哪里",
+        ("zh-CN", "STACK") => "大炮打蚊子",
+        ("zh-CN", "AUTO") => "手动过敏症",
         ("zh-CN", "SHIP") => "发版战神",
         ("zh-CN", "RUSH") => "爆肝冲刺王",
-        ("zh-CN", "MVP") => "毛坯房主理人",
+        ("zh-CN", "MVP") => "先跑再说",
         ("zh-CN", "DETAIL") => "细节控",
-        ("zh-CN", "FORK") => "工具海王",
-        ("zh-CN", "TOKEN") => "Token 会计",
-        ("zh-CN", "CACHE") => "上下文仓鼠",
-        ("zh-CN", "BUDDY") => "赛博搭子",
+        ("zh-CN", "FORK") => "见一个爱一个",
+        ("zh-CN", "TOKEN") => "每句都算账",
+        ("zh-CN", "CACHE") => "背景全塞给它",
+        ("zh-CN", "BUDDY") => "搭子养成系",
         (_, "VIBE") => "Vibe Lead",
         (_, "SPEC") => "Spec Owner",
         (_, "HACK") => "Shortcut Hacker",
@@ -1472,30 +1472,30 @@ fn vcti_type_name(locale: &str, code: &str) -> &'static str {
 
 fn vcti_type_tagline(locale: &str, code: &str) -> &'static str {
     match (locale, code) {
-        ("zh-CN", "VIBE") => "需求可以晚点写，感觉必须先到位。",
-        ("zh-CN", "SPEC") => "没有验收标准的任务，还没有获得开工许可。",
-        ("zh-CN", "HACK") => "正统方案还在读文档，你的邪修方案已经跑通。",
-        ("zh-CN", "MIX") => "你把轮子、底盘和发动机拼成了一辆能跑的车。",
-        ("zh-CN", "YOLO") => "全选、执行、接受、祈祷，操作没有多余动作。",
-        ("zh-CN", "LOOP") => "你和 Agent 之间没有失败，只有下一版。",
-        ("zh-CN", "BOSS") => "亲自写的代码变少，安排代码的能力变强。",
-        ("zh-CN", "SWARM") => "项目还没上线，Agent 组织架构已经完整。",
-        ("zh-CN", "DIFF") => "Agent 可以自由发挥，每一行仍要接受检查。",
-        ("zh-CN", "TEST") => "页面能打开，只代表获得了参加测试的资格。",
-        ("zh-CN", "DOCS") => "只存在于聊天记录里的知识，随时可能失传。",
-        ("zh-CN", "UNDO") => "你允许一切发生，因为知道怎样让它从未发生。",
-        ("zh-CN", "DEBUG") => "别人看到报错，你看到一条尚未整理的线索。",
-        ("zh-CN", "PATCH") => "哪里漏风补哪里，恢复运行是当前最高优先级。",
-        ("zh-CN", "STACK") => "一个按钮的问题，最终拥有了自己的服务层。",
-        ("zh-CN", "AUTO") => "需要手动完成第二次的事情，都在挑战你的底线。",
-        ("zh-CN", "SHIP") => "别人还在讨论字段名，你已经把链接发进群。",
-        ("zh-CN", "RUSH") => "平时稳定巡航，冲刺窗口一到就连续推进到收口。",
-        ("zh-CN", "MVP") => "流程能走、按钮能点，已经可以邀请第一批用户。",
-        ("zh-CN", "DETAIL") => "功能早已完成，最后两个像素仍未通过验收。",
-        ("zh-CN", "FORK") => "每个新工具都是长期关系，直到下一个出现。",
-        ("zh-CN", "TOKEN") => "每次调用模型，脑中都会弹出一张成本报表。",
-        ("zh-CN", "CACHE") => "把背景都交给 Agent，它总能在角落找到答案。",
-        ("zh-CN", "BUDDY") => "真正顺手的 Agent 搭子，值得长期磨合。",
+        ("zh-CN", "VIBE") => "规格还没成形，第一版已经替你把感觉试出来了。",
+        ("zh-CN", "SPEC") => "边界先钉死、验收先写清，Agent 想跑偏都没路。",
+        ("zh-CN", "HACK") => "正门还在排队，你已经从侧门把结果拎回来了。",
+        ("zh-CN", "MIX") => "轮子不用造，能把一地零件拼成车才是本事。",
+        ("zh-CN", "YOLO") => "权限全开，验收随缘——先让 Agent 跑起来再说。",
+        ("zh-CN", "LOOP") => "第一版只是开价，你总能把 Agent 磨到改口。",
+        ("zh-CN", "BOSS") => "别人把 Agent 当助手，你已经给它们排班、派活、验收。",
+        ("zh-CN", "SWARM") => "能并行绝不排队，Agent 不够就再开一队。",
+        ("zh-CN", "DIFF") => "嘴上说“放手去做”，眼睛却没放过一行 Diff。",
+        ("zh-CN", "TEST") => "没过测试的代码，在你这里连“能跑”都不算。",
+        ("zh-CN", "DOCS") => "聊天会过期，文档才是你留给下一个 Agent 的记忆。",
+        ("zh-CN", "UNDO") => "你敢把改动推到底，因为回滚路线早就铺好了。",
+        ("zh-CN", "DEBUG") => "别人修报错，你追凶：非得揪出第一个倒下的环节。",
+        ("zh-CN", "PATCH") => "先把血止住、服务拉起，根治排在下一张单。",
+        ("zh-CN", "STACK") => "问题只要够小，你就敢给它配一整套基础设施。",
+        ("zh-CN", "AUTO") => "手动重复一次叫工作，第二次就该判脚本接管。",
+        ("zh-CN", "SHIP") => "讨论还没收尾，你的可用链接已经先到了。",
+        ("zh-CN", "RUSH") => "平时留着油，冲刺一来就把进度条一脚踩满。",
+        ("zh-CN", "MVP") => "不等精装交房，先让真实用户住进毛坯里。",
+        ("zh-CN", "DETAIL") => "功能已经交付，你还在审最后两个像素。",
+        ("zh-CN", "FORK") => "新工具一冒头，你的旧工具立刻被打入冷宫。",
+        ("zh-CN", "TOKEN") => "Agent 每多想一步，你脑内的 Token 计价器就跳一下。",
+        ("zh-CN", "CACHE") => "上下文宁可塞满，也不让 Agent 猜一个前提。",
+        ("zh-CN", "BUDDY") => "工具会换，默契会攒；你把同一个 Agent 越用越顺手。",
         _ => "Your real agent workflow leaves a recognizable operating signature.",
     }
 }
@@ -3776,6 +3776,15 @@ mod tests {
             "Parallel"
         );
         assert_ne!(vcti_dimension_name("zh-CN", "contextReuse"), "18");
+    }
+
+    #[test]
+    fn vcti_share_copy_uses_the_same_agent_foreman_hook() {
+        assert_eq!(vcti_type_name("zh-CN", "BOSS"), "Agent 包工头");
+        assert_eq!(
+            vcti_type_tagline("zh-CN", "BOSS"),
+            "别人把 Agent 当助手，你已经给它们排班、派活、验收。"
+        );
     }
 
     #[test]

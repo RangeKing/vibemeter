@@ -26,6 +26,25 @@ describe("localization resources", () => {
     expect(enUS.app.tagline).toBe("Track your agents. Discover your coding type.");
   });
 
+  it("keeps all 24 VCTI personas distinct and shareable", () => {
+    const personas = Object.values(zhCN.vcti.types);
+    expect(personas).toHaveLength(24);
+    expect(new Set(personas.map((persona) => persona.name))).toHaveLength(24);
+    expect(new Set(personas.map((persona) => persona.tagline))).toHaveLength(24);
+    expect(zhCN.vcti.types.BOSS).toEqual({
+      name: "Agent 包工头",
+      tagline: "别人把 Agent 当助手，你已经给它们排班、派活、验收。",
+    });
+  });
+
+  it("explains earned VCTI badges as evidence-bound traits", () => {
+    expect(zhCN.vcti.badgeAtlasBody).toContain("副标签不是第二人格");
+    expect(zhCN.vcti.badgeAtlasBody).not.toContain("这里只展示");
+    expect(Object.keys(zhCN.vcti.badges)).toHaveLength(9);
+    expect(zhCN.vcti.badges.MARATHON.description).toContain("工具、修改或验证事件");
+    expect(zhCN.vcti.badges.TURBO.description).toContain("第一个结果");
+  });
+
   it("does not expose the retired review workspace", () => {
     expect("reviews" in zhCN.navigation).toBe(false);
     expect("reviews" in enUS.navigation).toBe(false);
