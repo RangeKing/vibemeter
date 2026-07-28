@@ -9,11 +9,83 @@ target/
 .env.*
 !.env.example
 
+# Local Agent instructions and tool state may contain private prompts,
+# machine paths, MCP configuration, or workspace-specific decisions.
+/AGENT.md
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/.codex/
+/.claude/
+/.cursor/
+/.continue/
+/.mcp/
+/.mcp.json
+/.aider*
+
+# Local credentials, signing material, and authentication exports.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.mobileprovision
+credentials.*
+secrets.*
+auth.local.*
+service-account*.json
+oauth*.json
+/.npmrc
+/.pypirc
+/.netrc
+!credentials.example.*
+!secrets.example.*
+!service-account.example.json
+!oauth.example.json
+
+# Machine-specific configuration overrides.
+*.local.json
+*.local.yaml
+*.local.yml
+*.local.toml
+*.code-workspace
+/.idea/
+/.fleet/
+
+# Raw local Agent/session data and diagnostic captures.
+*.jsonl
+*.ndjson
+*.har
+*.pcap
+*.trace
+*.dump
+*.crash
+*.ips
+
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/target/
 apps/desktop/test-results/
 apps/desktop/playwright-report/
 
+# Local databases and sidecars.
 *.sqlite
+*.sqlite3
+*.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Local-only work products and recoverable backups.
+*.bak
+*.backup
+*.orig
+*~
+/.local/
+/private/
+/backups/
+/exports/
+/recordings/
