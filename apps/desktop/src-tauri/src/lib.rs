@@ -479,7 +479,7 @@ async fn get_menu_bar_snapshot(state: State<'_, AppState>) -> AppResult<MenuBarS
     }
     let index_status = current_index_status(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let (today_usage, today_cost_usd, heatmap) = database.today_and_heatmap(28)?;
+        let (today_usage, today_cost_usd, heatmap) = database.today_and_heatmap(15)?;
         Ok(MenuBarSnapshot {
             generated_at: Utc::now().to_rfc3339(),
             today_usage,

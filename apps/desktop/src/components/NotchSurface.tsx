@@ -73,6 +73,18 @@ function liveReason(session: LiveSession, t: TFunction): string | undefined {
     : t("live.reason.waitingGeneric");
 }
 
+function notchPhaseLabel(phase: LiveSession["phase"], t: TFunction): string {
+  return t(`notch.phase.${phase}`, {
+    defaultValue: t(`live.phase.${phase}`, { defaultValue: phase }),
+  });
+}
+
+function notchActionLabel(action: LiveSession["actions"][number], t: TFunction): string {
+  return t(`notch.action.${action.kind}`, {
+    defaultValue: t(`live.action.${action.kind}`, { defaultValue: action.label }),
+  });
+}
+
 function ProviderMark({
   agent,
   size = 14,
@@ -169,7 +181,7 @@ function NotchActionFlow({
         return (
           <span className="notch-action-group" data-action-key={key} key={key}>
             <span className="notch-action-step">
-              {t(`live.action.${action.kind}`, { defaultValue: action.label })}
+              {notchActionLabel(action, t)}
             </span>
             {index < actions.length - 1 ? (
               <ChevronRight className="notch-action-arrow" size={8} strokeWidth={2.4} aria-hidden="true" />
@@ -552,7 +564,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
             {rightSession ? (
               <>
                 <AgentActivityGlyph session={rightSession} compact />
-                <strong>{t(`live.phase.${rightSession.phase}`, { defaultValue: rightSession.phase })}</strong>
+                <strong>{notchPhaseLabel(rightSession.phase, t)}</strong>
               </>
             ) : null}
           </span>
@@ -633,7 +645,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
                 </span>
                 <span className="notch-phase">
                   <AgentActivityGlyph session={session} compact />
-                  {t(`live.phase.${session.phase}`, { defaultValue: session.phase })}
+                  {notchPhaseLabel(session.phase, t)}
                 </span>
               </div>
               {reason ? <p>{reason}</p> : null}
@@ -711,7 +723,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
                         </span>
                         <span className="notch-phase">
                           <AgentActivityGlyph session={session} compact />
-                          {t("live.phase.completed")}
+                          {notchPhaseLabel("completed", t)}
                         </span>
                       </div>
                       {completedJumpError === session.id ? (

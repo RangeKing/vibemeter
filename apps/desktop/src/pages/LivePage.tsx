@@ -6,7 +6,6 @@ import {
   Check,
   CircleAlert,
   Clock3,
-  Layers3,
   RadioTower,
   Settings2,
   ShieldCheck,
@@ -18,7 +17,7 @@ import { api } from "../lib/api";
 import { agentName, formatDateTime, formatTime } from "../lib/format";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
-import type { LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "../types";
+import type { LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "../types";
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
   if (session.status === "error") return t("live.reason.error");
@@ -72,35 +71,7 @@ function LiveSessionCard({ session, locale }: { session: LiveSession; locale: Lo
   );
 }
 
-function ConcurrencyLane({ lane }: { lane: LiveConcurrencyLane }) {
-  const { t } = useTranslation();
-  const total = Math.max(lane.sessionCount, 1);
-  return (
-    <article className="live-concurrency-lane">
-      <header>
-        <AgentBadge agent={lane.agent} compact />
-        <div>
-          <strong>{agentName(lane.agent)}</strong>
-          <small>{t("live.concurrencySessions", { count: lane.sessionCount })}</small>
-        </div>
-      </header>
-      <div className="live-concurrency-bars" aria-hidden="true">
-        <i className="waiting" style={{ width: `${(lane.waitingCount / total) * 100}%` }} />
-        <i className="error" style={{ width: `${(lane.errorCount / total) * 100}%` }} />
-        <i className="running" style={{ width: `${(lane.runningCount / total) * 100}%` }} />
-        <i className="completed" style={{ width: `${(lane.completedCount / total) * 100}%` }} />
-      </div>
-      <div className="live-concurrency-stats">
-        <span>{t("live.status.waiting")} · {lane.waitingCount}</span>
-        <span>{t("live.status.error")} · {lane.errorCount}</span>
-        <span>{t("live.status.running")} · {lane.runningCount}</span>
-      </div>
-      {lane.projects.length ? <p>{lane.projects.join(" · ")}</p> : null}
-    </article>
-  );
-}
-
-function TimelineList({ points, locale }: { points: LiveTimelinePoint[]; locale: Locale }) {
+export function TimelineList({ points, locale }: { points: LiveTimelinePoint[]; locale: Locale }) {
   const { t } = useTranslation();
   if (!points.length) return <EmptyState title={t("live.timelineEmpty")} body={t("live.timelineEmptyBody")} />;
   return (
@@ -195,18 +166,20 @@ export function LivePage({ locale }: { locale: Locale }) {
         </button>
       </aside>
 
-      <section className="live-panel live-concurrency">
-        <header>
-          <div><Layers3 size={16} /><div><h2>{t("live.concurrency")}</h2><p>{t("live.concurrencyBody")}</p></div></div>
+      <section className="live-workspace">
+        <header className="section-heading">
+          <div><h2>{t("live.sessions")}</h2><p>{t("live.sessionsBody")}</p></div>
+          <span className="panel-kicker">{t("live.priorityOrder")}</span>
         </header>
-        {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
-          <ErrorState retry={() => void activity.refetch()} />
-        ) : activityData?.concurrency.length ? (
-          <div className="live-concurrency-grid">
-            {activityData.concurrency.map((lane) => <ConcurrencyLane key={lane.agent} lane={lane} />)}
+        {data.sessions.length ? (
+          <div className="live-session-grid">
+            {data.sessions.map((session) => <LiveSessionCard key={session.id} session={session} locale={locale} />)}
           </div>
         ) : (
-          <EmptyState title={t("live.concurrencyEmpty")} body={t("live.concurrencyEmptyBody")} />
+          <div className="live-empty">
+            <span className="live-empty-meter"><i /></span>
+            <div><h3>{t("live.emptyTitle")}</h3><p>{t("live.emptyBody")}</p></div>
+          </div>
         )}
       </section>
 
@@ -232,23 +205,6 @@ export function LivePage({ locale }: { locale: Locale }) {
           )}
         </section>
       </div>
-
-      <section className="live-workspace">
-        <header className="section-heading">
-          <div><h2>{t("live.sessions")}</h2><p>{t("live.sessionsBody")}</p></div>
-          <span className="panel-kicker">{t("live.priorityOrder")}</span>
-        </header>
-        {data.sessions.length ? (
-          <div className="live-session-grid">
-            {data.sessions.map((session) => <LiveSessionCard key={session.id} session={session} locale={locale} />)}
-          </div>
-        ) : (
-          <div className="live-empty">
-            <span className="live-empty-meter"><i /></span>
-            <div><h3>{t("live.emptyTitle")}</h3><p>{t("live.emptyBody")}</p></div>
-          </div>
-        )}
-      </section>
 
       <footer className="live-privacy-note">
         <ShieldCheck size={15} />

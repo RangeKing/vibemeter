@@ -13,7 +13,7 @@ import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/
 import { api } from "../lib/api";
 import { buildHourlyActivity } from "../lib/activity";
 import { chartTooltip, useChartColors } from "../lib/chartTheme";
-import { agentName, formatCompact, formatCurrency, formatDate, tokenTotal } from "../lib/format";
+import { agentName, cacheTokenTotal, formatCompact, formatCurrency, formatDate, sumTokenUsage, tokenTotal } from "../lib/format";
 import { savitzkyGolaySmooth } from "../lib/smoothing";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
@@ -239,7 +239,9 @@ export function DataPage({ locale }: { locale: Locale }) {
   const visibleTasks = showAllEvents ? filteredTasks : filteredTasks.slice(0, 12);
   const filteredComparison = (comparison.data ?? []).filter((item) => item.groupKind !== "agent" || activeAgents.includes(item.agent));
   const ledgerSessions = filteredDaily.reduce((sum, point) => sum + point.sessionCount, 0);
-  const ledgerTokens = filteredDaily.reduce((sum, point) => sum + tokenTotal(point.usage), 0);
+  const ledgerUsage = sumTokenUsage(filteredDaily.map((point) => point.usage));
+  const ledgerTokens = tokenTotal(ledgerUsage);
+  const ledgerCacheTokens = cacheTokenTotal(ledgerUsage);
   const ledgerSeconds = filteredDaily.reduce((sum, point) => sum + point.activeSeconds, 0);
   const ledgerDays = new Set(filteredDaily.filter((point) => tokenTotal(point.usage) > 0 || point.sessionCount > 0).map((point) => point.date)).size;
   const activeDuration = durationParts(ledgerSeconds || data.totals.activeSeconds);
@@ -296,7 +298,16 @@ export function DataPage({ locale }: { locale: Locale }) {
           </strong>
           <small>{ledgerDays || data.totals.activeDays} {t("metrics.activeDays").toLowerCase()}</small>
         </div>
-        <div className="featured"><span>{t("metrics.tokens")}</span><strong>{formatCompact(ledgerTokens || tokenTotal(data.totals.usage), locale)}</strong><small>{t("data.localTokenFootnote")}</small></div>
+        <div className="featured">
+          <span>{t("metrics.tokens")}</span>
+          <strong>{formatCompact(ledgerTokens, locale)}</strong>
+          <div className="data-token-breakdown">
+            <span className="input"><i /><em>{t("metrics.input")}</em><b>{formatCompact(ledgerUsage.inputTokens, locale)}</b></span>
+            <span className="output"><i /><em>{t("metrics.output")}</em><b>{formatCompact(ledgerUsage.outputTokens, locale)}</b></span>
+            <span className="cache"><i /><em>{t("metrics.cache")}</em><b>{formatCompact(ledgerCacheTokens, locale)}</b></span>
+          </div>
+          <small>{t("data.localTokenFootnote")}</small>
+        </div>
         <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
         <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(ledgerDays || data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
       </section>

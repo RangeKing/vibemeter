@@ -4,6 +4,28 @@ export function tokenTotal(usage: TokenUsage): number {
   return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.cacheWrite1hTokens;
 }
 
+export function cacheTokenTotal(usage: TokenUsage): number {
+  return usage.cacheReadTokens + usage.cacheWriteTokens + usage.cacheWrite1hTokens;
+}
+
+export function sumTokenUsage(usages: TokenUsage[]): TokenUsage {
+  return usages.reduce<TokenUsage>((total, usage) => ({
+    inputTokens: total.inputTokens + usage.inputTokens,
+    outputTokens: total.outputTokens + usage.outputTokens,
+    cacheReadTokens: total.cacheReadTokens + usage.cacheReadTokens,
+    cacheWriteTokens: total.cacheWriteTokens + usage.cacheWriteTokens,
+    cacheWrite1hTokens: total.cacheWrite1hTokens + usage.cacheWrite1hTokens,
+    reasoningTokens: total.reasoningTokens + usage.reasoningTokens,
+  }), {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    reasoningTokens: 0,
+  });
+}
+
 export function formatCompact(value: number, locale: Locale): string {
   return new Intl.NumberFormat(locale, { notation: value >= 1_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }

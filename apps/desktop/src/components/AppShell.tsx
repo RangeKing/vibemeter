@@ -14,9 +14,9 @@ import type { IndexStatus, PageKey } from "../types";
 import { IaMigrationTip } from "./IaMigrationTip";
 
 const primary: Array<{ id: PageKey; icon: typeof Sparkles }> = [
-  { id: "vcti", icon: ScanFace },
-  { id: "live", icon: RadioTower },
   { id: "data", icon: BarChart3 },
+  { id: "live", icon: RadioTower },
+  { id: "vcti", icon: ScanFace },
 ];
 
 const utility: Array<{ id: PageKey; icon: typeof Sparkles }> = [

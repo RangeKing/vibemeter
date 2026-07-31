@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, tokenTotal } from "../lib/format";
+import { buildMenuActivity } from "../lib/menuActivity";
 import type { Locale, RateWindow } from "../types";
 import { focusHeatmapIndex, HeatmapCell } from "./HeatmapCell";
 import { ErrorState, LoadingState } from "./ui";
@@ -69,14 +70,12 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   if (snapshot.isLoading) return <div className="menubar-root"><LoadingState /></div>;
   if (snapshot.isError || !snapshot.data) return <div className="menubar-root"><ErrorState retry={() => void snapshot.refetch()} /></div>;
   const data = snapshot.data;
-  const heatmap = [...data.heatmap.reduce((days, point) => {
-    const current = days.get(point.date) ?? { value: 0, sessions: 0 };
-    current.value += tokenTotal(point.usage);
-    current.sessions += point.sessionCount;
-    days.set(point.date, current);
-    return days;
-  }, new Map<string, { value: number; sessions: number }>())].sort(([left], [right]) => left.localeCompare(right));
-  const maxDay = Math.max(...heatmap.map(([, item]) => item.value), 1);
+  const generatedAt = new Date(data.generatedAt);
+  const activityDays = buildMenuActivity(
+    data.heatmap,
+    Number.isNaN(generatedAt.getTime()) ? new Date() : generatedAt,
+  );
+  const maxDay = Math.max(...activityDays.map((item) => item.value), 1);
   const activateHeatmap = (index: number) => {
     setHeatmapIndex(index);
     requestAnimationFrame(() => focusHeatmapIndex(heatmapRef.current, index));
@@ -100,18 +99,19 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
       </section>
       <section className="menu-activity">
         <header><span><Activity size={14} />{t("menubar.recentActivity")}</span>{data.todayCostUsd !== undefined ? <span><Coins size={12} />{formatCurrency(data.todayCostUsd, locale)}</span> : null}</header>
-        <div ref={heatmapRef} className="menu-heatmap">
-          {heatmap.map(([date, item], index) => {
-            const detail = `${new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(`${date}T12:00:00`))} · ${formatCompact(item.value, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`;
+        <div ref={heatmapRef} className="menu-activity-bars">
+          {activityDays.map((item, index) => {
+            const detail = `${new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(`${item.date}T12:00:00`))} · ${formatCompact(item.value, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`;
+            const height = item.value > 0 ? `${Math.max(12, Math.sqrt(item.value / maxDay) * 100)}%` : "4px";
             return (
               <HeatmapCell
-                key={date}
-                className="heatmap-cell"
+                key={item.date}
+                className="activity-bar"
                 index={index}
-                total={heatmap.length}
+                total={activityDays.length}
                 active={heatmapIndex === index}
                 onActivate={activateHeatmap}
-                style={{ opacity: .14 + .86 * Math.sqrt(item.value / maxDay) }}
+                style={{ height, opacity: item.value > 0 ? .45 + .55 * Math.sqrt(item.value / maxDay) : .18 }}
                 tooltip={detail}
                 ariaLabel={detail}
               />

@@ -26,6 +26,14 @@ describe("localization resources", () => {
     expect(enUS.app.tagline).toBe("Track your agents. Discover your coding type.");
   });
 
+  it("keeps Notch phase and action labels compact in both locales", () => {
+    expect(zhCN.notch.phase.compacting).toBe("压缩上下文");
+    expect(enUS.notch.phase.compacting).toBe("Compact");
+    expect(zhCN.notch.phase["running-tool"]).toBe("调用工具");
+    expect(enUS.notch.phase["running-tool"]).toBe("Tool use");
+    expect(enUS.notch.action.waiting).toBe("Approval");
+  });
+
   it("keeps all 24 VCTI personas distinct and shareable", () => {
     const personas = Object.values(zhCN.vcti.types);
     expect(personas).toHaveLength(24);

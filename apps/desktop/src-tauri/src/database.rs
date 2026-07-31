@@ -1518,7 +1518,7 @@ impl Database {
                     COALESCE(NULLIF(status, ''), 'running'), source_session_id
              FROM live_events
              WHERE received_at>=?1
-             ORDER BY received_at ASC
+             ORDER BY received_at DESC
              LIMIT 200",
         )?;
         let timeline = timeline_statement
@@ -5043,6 +5043,46 @@ mod concurrency_tests {
             activity.history[0].session_id.as_deref(),
             Some("indexed-session")
         );
+    }
+
+    #[test]
+    fn live_timeline_returns_the_newest_events_first() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("live-timeline-order.sqlite"))
+            .expect("database should open");
+        let earlier = (Utc::now() - Duration::minutes(2)).to_rfc3339();
+        let later = (Utc::now() - Duration::minutes(1)).to_rfc3339();
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+
+        database
+            .record_live_event(
+                &earlier,
+                &expires_at,
+                "codex",
+                "earlier-session",
+                "EarlierEvent",
+                "project",
+                "{}",
+                "running",
+            )
+            .expect("earlier event should persist");
+        database
+            .record_live_event(
+                &later,
+                &expires_at,
+                "codex",
+                "later-session",
+                "LaterEvent",
+                "project",
+                "{}",
+                "running",
+            )
+            .expect("later event should persist");
+
+        let activity = database.live_activity().expect("live activity");
+        assert_eq!(activity.timeline.len(), 2);
+        assert_eq!(activity.timeline[0].event_name, "LaterEvent");
+        assert_eq!(activity.timeline[1].event_name, "EarlierEvent");
     }
 
     #[test]
