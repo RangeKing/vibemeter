@@ -1,10 +1,14 @@
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
-use crate::models::{HookProviderStatus, HookStatus, LiveAction, LiveSession, LiveSnapshot};
+use crate::models::{
+    HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession, LiveSnapshot,
+    NotchCompletedSession,
+};
 use crate::providers::{codex_binary, write_json_line};
 use chrono::{DateTime, Duration, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -122,16 +126,101 @@ struct CodexMetadataSignal {
 const PYTHON_HOOK: &str = r#"#!/usr/bin/python3
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 
 MAX_BYTES = 768 * 1024
 
+def app_name_from_command(command):
+    marker = ".app/"
+    lower = command.lower()
+    index = lower.find(marker)
+    if index < 0:
+        return None
+    bundle_path = command[:index + len(".app")]
+    name = os.path.basename(bundle_path)
+    return name[:-4] if name.lower().endswith(".app") else name
+
+def terminal_kind_from_environment(host_app_name):
+    if os.environ.get("CMUX_WORKSPACE_ID") or os.environ.get("CMUX_SURFACE_ID"):
+        return "cmux"
+    candidates = " ".join(filter(None, [
+        os.environ.get("TERM_PROGRAM"),
+        os.environ.get("LC_TERMINAL"),
+        os.environ.get("TERM"),
+        os.environ.get("VSCODE_IPC_HOOK_CLI"),
+        os.environ.get("VSCODE_GIT_ASKPASS_NODE"),
+        host_app_name,
+    ])).lower()
+    if "apple_terminal" in candidates or host_app_name == "Terminal":
+        return "terminal"
+    if "iterm" in candidates:
+        return "iterm"
+    if "warp" in candidates:
+        return "warp"
+    if "ghostty" in candidates:
+        return "ghostty"
+    if "wezterm" in candidates:
+        return "wezterm"
+    if "kitty" in candidates:
+        return "kitty"
+    if "alacritty" in candidates:
+        return "alacritty"
+    if "cursor" in candidates:
+        return "cursor"
+    if "vscode" in candidates or host_app_name == "Visual Studio Code":
+        return "vscode"
+    return None
+
+def jump_context(table, process_id, tty):
+    host_app_name = None
+    current = process_id
+    for _ in range(24):
+        info = table.get(current)
+        if not info:
+            break
+        host_app_name = app_name_from_command(info["command"]) or host_app_name
+        if host_app_name:
+            break
+        parent = info["ppid"]
+        if parent <= 1 or parent == current:
+            break
+        current = parent
+
+    context = {
+        "tty": tty if tty and tty != "??" else None,
+        "terminalKind": terminal_kind_from_environment(host_app_name),
+        "hostAppName": host_app_name,
+        "processStartedAt": table.get(process_id, {}).get("started_at"),
+        "tmuxSocket": None,
+        "tmuxPane": os.environ.get("TMUX_PANE"),
+        "tmuxExecutable": shutil.which("tmux"),
+        "cmuxSocket": None,
+        "cmuxWorkspaceId": os.environ.get("CMUX_WORKSPACE_ID"),
+        "cmuxSurfaceId": os.environ.get("CMUX_SURFACE_ID"),
+        "cmuxExecutable": shutil.which("cmux"),
+    }
+    tmux = os.environ.get("TMUX")
+    if tmux:
+        context["tmuxSocket"] = tmux.split(",", 1)[0]
+    if context["cmuxWorkspaceId"] or context["cmuxSurfaceId"]:
+        context["cmuxSocket"] = os.environ.get(
+            "CMUX_SOCKET_PATH",
+            os.path.expanduser("~/.local/state/cmux/cmux.sock"),
+        )
+        if not context["cmuxExecutable"]:
+            bundled = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+            if os.path.isfile(bundled):
+                context["cmuxExecutable"] = bundled
+        context["hostAppName"] = context["hostAppName"] or "cmux"
+    return {key: value for key, value in context.items() if value is not None}
+
 def process_context(provider):
     try:
         output = subprocess.check_output(
-            ["/bin/ps", "-axo", "pid=,ppid=,tty=,comm="],
+            ["/bin/ps", "-axo", "pid=,ppid=,tty=,lstart=,comm="],
             text=True,
             timeout=0.6,
         )
@@ -139,16 +228,18 @@ def process_context(provider):
         return {}
     table = {}
     for line in output.splitlines():
-        parts = line.strip().split(None, 3)
-        if len(parts) != 4 or not parts[0].isdigit() or not parts[1].isdigit():
+        parts = line.strip().split(None, 8)
+        if len(parts) != 9 or not parts[0].isdigit() or not parts[1].isdigit():
             continue
         table[int(parts[0])] = {
             "ppid": int(parts[1]),
             "tty": parts[2],
-            "command": parts[3],
+            "started_at": " ".join(parts[3:8]),
+            "command": parts[8],
         }
     current = os.getppid()
     fallback = None
+    selected = None
     for _ in range(12):
         info = table.get(current)
         if not info:
@@ -158,13 +249,20 @@ def process_context(provider):
         if fallback is None:
             fallback = (current, origin, info["tty"])
         if provider in command or (provider == "claude" and "claude-code" in command):
-            return {"process_id": current, "origin": origin, "tty": info["tty"]}
+            selected = (current, origin, info["tty"])
+            break
         parent = info["ppid"]
         if parent <= 1 or parent == current:
             break
         current = parent
-    if fallback:
-        return {"process_id": fallback[0], "origin": fallback[1], "tty": fallback[2]}
+    selected = selected or fallback
+    if selected:
+        return {
+            "process_id": selected[0],
+            "origin": selected[1],
+            "tty": selected[2],
+            "jump_context": jump_context(table, selected[0], selected[2]),
+        }
     return {}
 
 def main():
@@ -202,6 +300,7 @@ if __name__ == "__main__":
 pub struct LiveMonitor {
     sessions: Arc<RwLock<HashMap<String, LiveSession>>>,
     socket_ready: Arc<AtomicBool>,
+    database: Database,
 }
 
 impl LiveMonitor {
@@ -217,6 +316,7 @@ impl LiveMonitor {
         let monitor = Self {
             sessions: sessions.clone(),
             socket_ready: socket_ready.clone(),
+            database: database.clone(),
         };
         let socket_path = socket_path()?;
         if let Some(parent) = socket_path.parent() {
@@ -239,6 +339,7 @@ impl LiveMonitor {
         let transcript_socket_ready = socket_ready.clone();
         let transcript_app = app.clone();
         let transcript_watches = codex_transcripts.clone();
+        let transcript_database = database.clone();
         std::thread::spawn(move || {
             loop {
                 let updates = poll_codex_transcripts(&transcript_watches);
@@ -249,9 +350,22 @@ impl LiveMonitor {
                         signal,
                         live_append,
                     );
+                    if transition.as_deref() == Some("completed")
+                        && let Some(session) = transcript_sessions
+                            .read()
+                            .ok()
+                            .and_then(|items| items.get(&session_id).cloned())
+                    {
+                        let _ = transcript_database.complete_notch_session(&session);
+                    }
+                    let completed_sessions = transcript_database
+                        .notch_completed_sessions()
+                        .unwrap_or_default();
                     let snapshot = snapshot_from(
                         &transcript_sessions,
                         transcript_socket_ready.load(Ordering::SeqCst),
+                        completed_sessions,
+                        &transcript_database,
                     );
                     let _ = transcript_app.emit("live-update", &snapshot);
                     if let Some(status) = transition.as_deref()
@@ -315,7 +429,22 @@ impl LiveMonitor {
                         &session.status,
                     );
                     let transition = merge_session(&sessions, session);
-                    let snapshot = snapshot_from(&sessions, socket_ready.load(Ordering::SeqCst));
+                    if transition.as_deref() == Some("completed")
+                        && let Some(session) = sessions
+                            .read()
+                            .ok()
+                            .and_then(|items| items.get(&transitioned_session_id).cloned())
+                    {
+                        let _ = database.complete_notch_session(&session);
+                    }
+                    let completed_sessions =
+                        database.notch_completed_sessions().unwrap_or_default();
+                    let snapshot = snapshot_from(
+                        &sessions,
+                        socket_ready.load(Ordering::SeqCst),
+                        completed_sessions,
+                        &database,
+                    );
                     let _ = app.emit("live-update", &snapshot);
                     if transition.is_some()
                         && let Some(active) = snapshot
@@ -334,7 +463,12 @@ impl LiveMonitor {
 
     pub fn snapshot(&self) -> LiveSnapshot {
         prune_sessions(&self.sessions);
-        snapshot_from(&self.sessions, self.socket_ready.load(Ordering::SeqCst))
+        snapshot_from(
+            &self.sessions,
+            self.socket_ready.load(Ordering::SeqCst),
+            self.database.notch_completed_sessions().unwrap_or_default(),
+            &self.database,
+        )
     }
 
     pub fn session(&self, id: &str) -> Option<LiveSession> {
@@ -342,6 +476,23 @@ impl LiveMonitor {
             .read()
             .ok()
             .and_then(|sessions| sessions.get(id).cloned())
+    }
+
+    pub fn mark_notch_sessions_seen(&self, ids: &[String]) -> AppResult<()> {
+        let sessions = self
+            .sessions
+            .read()
+            .map(|sessions| {
+                ids.iter()
+                    .filter_map(|id| sessions.get(id))
+                    .filter(|session| {
+                        matches!(session.status.as_str(), "waiting" | "error" | "running")
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.database.mark_notch_sessions_seen(&sessions)
     }
 }
 
@@ -582,66 +733,70 @@ fn probe_codex_hooks() -> AppResult<CodexHookHealth> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| AppError::ProviderUnavailable("Codex stdin is unavailable".into()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::ProviderUnavailable("Codex stdout is unavailable".into()))?;
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if sender.send(line).is_err() {
-                break;
+    let probe_result = (|| {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::ProviderUnavailable("Codex stdin is unavailable".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::ProviderUnavailable("Codex stdout is unavailable".into()))?;
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
             }
-        }
-    });
-    write_json_line(
-        &mut stdin,
-        &json!({
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
-                "capabilities": {"experimentalApi":true}
-            }
-        }),
-    )?;
+        });
+        write_json_line(
+            &mut stdin,
+            &json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
+                    "capabilities": {"experimentalApi":true}
+                }
+            }),
+        )?;
 
-    let deadline = Instant::now() + StdDuration::from_secs(5);
-    let mut result = None;
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let line = match receiver.recv_timeout(remaining.min(StdDuration::from_millis(500))) {
-            Ok(line) => line,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        let Ok(payload) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        match payload.get("id").and_then(Value::as_i64) {
-            Some(1) => {
-                write_json_line(&mut stdin, &json!({"method":"initialized","params":{}}))?;
-                let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-                write_json_line(
-                    &mut stdin,
-                    &json!({"id":2,"method":"hooks/list","params":{"cwds":[cwd]}}),
-                )?;
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        let mut result = None;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = match receiver.recv_timeout(remaining.min(StdDuration::from_millis(500))) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            let Ok(payload) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match payload.get("id").and_then(Value::as_i64) {
+                Some(1) => {
+                    write_json_line(&mut stdin, &json!({"method":"initialized","params":{}}))?;
+                    let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                    write_json_line(
+                        &mut stdin,
+                        &json!({"id":2,"method":"hooks/list","params":{"cwds":[cwd]}}),
+                    )?;
+                }
+                Some(2) => {
+                    result = payload.get("result").cloned();
+                    break;
+                }
+                _ => {}
             }
-            Some(2) => {
-                result = payload.get("result").cloned();
-                break;
-            }
-            _ => {}
         }
-    }
+        let result = result
+            .ok_or_else(|| AppError::ProviderUnavailable("Codex hook probe timed out".into()))?;
+        Ok(codex_hook_health_from_list(&result))
+    })();
     let _ = child.kill();
-    let result =
-        result.ok_or_else(|| AppError::ProviderUnavailable("Codex hook probe timed out".into()))?;
-    Ok(codex_hook_health_from_list(&result))
+    let _ = child.wait();
+    probe_result
 }
 
 fn codex_hook_health_from_list(result: &Value) -> CodexHookHealth {
@@ -748,70 +903,455 @@ fn codex_hook_health_from_list(result: &Value) -> CodexHookHealth {
     }
 }
 
-pub fn jump_to_session(session: &LiveSession) -> AppResult<()> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JumpRoute {
+    CodexDesktop,
+    Cmux,
+    Tmux,
+    DirectTerminal,
+}
+
+#[derive(Clone, Debug)]
+struct ProcessRecord {
+    parent_id: u32,
+    command: String,
+}
+
+fn jump_route(session: &LiveSession) -> JumpRoute {
     if session.agent == "codex" && session.origin.as_deref() == Some("desktop") {
-        let mut url = url::Url::parse("codex://threads/")
-            .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
-        url.path_segments_mut()
-            .map_err(|_| AppError::InvalidRequest("invalid Codex URL".into()))?
-            .push(&session.source_session_id);
-        Command::new("/usr/bin/open")
-            .arg(url.as_str())
-            .spawn()
-            .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
-        return Ok(());
+        return JumpRoute::CodexDesktop;
     }
-    let Some(mut process_id) = session.process_id else {
+    if session.jump_context.as_ref().is_some_and(|context| {
+        context.cmux_workspace_id.is_some() || context.cmux_surface_id.is_some()
+    }) {
+        return JumpRoute::Cmux;
+    }
+    if session
+        .jump_context
+        .as_ref()
+        .is_some_and(|context| context.tmux_socket.is_some() && context.tmux_pane.is_some())
+    {
+        return JumpRoute::Tmux;
+    }
+    JumpRoute::DirectTerminal
+}
+
+pub fn jump_to_session(session: &LiveSession) -> AppResult<()> {
+    match jump_route(session) {
+        JumpRoute::CodexDesktop => jump_to_codex_desktop(session),
+        JumpRoute::Cmux => jump_to_cmux(session),
+        JumpRoute::Tmux => jump_to_tmux(session),
+        JumpRoute::DirectTerminal => jump_to_direct_terminal(session),
+    }
+}
+
+fn jump_to_codex_desktop(session: &LiveSession) -> AppResult<()> {
+    let mut url = url::Url::parse("codex://threads/")
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    url.path_segments_mut()
+        .map_err(|_| AppError::InvalidRequest("invalid Codex URL".into()))?
+        .push(&session.source_session_id);
+    run_checked(
+        Command::new("/usr/bin/open").arg(url.as_str()),
+        "Codex could not open the source task",
+    )
+}
+
+fn jump_to_cmux(session: &LiveSession) -> AppResult<()> {
+    let context = session
+        .jump_context
+        .as_ref()
+        .ok_or_else(|| AppError::InvalidRequest("cmux jump context is unavailable".into()))?;
+    let executable = trusted_cli_executable(context.cmux_executable.as_deref(), "cmux")
+        .or_else(|| {
+            trusted_cli_executable(
+                Some("/Applications/cmux.app/Contents/Resources/bin/cmux"),
+                "cmux",
+            )
+        })
+        .ok_or_else(|| AppError::InvalidRequest("cmux command is unavailable".into()))?;
+    let socket = context
+        .cmux_socket
+        .as_deref()
+        .filter(|value| valid_socket_path(value))
+        .ok_or_else(|| AppError::InvalidRequest("cmux socket is unavailable".into()))?;
+
+    let workspace = context.cmux_workspace_id.as_deref().map(|value| {
+        valid_target_id(value)
+            .then_some(value)
+            .ok_or_else(|| AppError::InvalidRequest("invalid cmux workspace identifier".into()))
+    });
+    let surface = context.cmux_surface_id.as_deref().map(|value| {
+        valid_target_id(value)
+            .then_some(value)
+            .ok_or_else(|| AppError::InvalidRequest("invalid cmux surface identifier".into()))
+    });
+    let workspace = workspace.transpose()?;
+    let surface = surface.transpose()?;
+    if workspace.is_none() && surface.is_none() {
+        return Err(AppError::InvalidRequest(
+            "cmux target is unavailable".into(),
+        ));
+    }
+
+    if let Some(workspace) = workspace {
+        run_checked(
+            Command::new(&executable).args([
+                "--socket",
+                socket,
+                "select-workspace",
+                "--workspace",
+                workspace,
+            ]),
+            "cmux could not select the source workspace; allow external socket control in cmux",
+        )?;
+    }
+    if let Some(surface) = surface {
+        run_checked(
+            Command::new(&executable).args(["--socket", socket, "focus-panel", "--panel", surface]),
+            "cmux could not focus the source surface; allow external socket control in cmux",
+        )?;
+    }
+    activate_host_application(Some("cmux"), Some("cmux"))
+}
+
+fn jump_to_tmux(session: &LiveSession) -> AppResult<()> {
+    let context = session
+        .jump_context
+        .as_ref()
+        .ok_or_else(|| AppError::InvalidRequest("tmux jump context is unavailable".into()))?;
+    let executable = trusted_cli_executable(context.tmux_executable.as_deref(), "tmux")
+        .or_else(|| trusted_cli_executable(Some("/opt/homebrew/bin/tmux"), "tmux"))
+        .or_else(|| trusted_cli_executable(Some("/usr/local/bin/tmux"), "tmux"))
+        .ok_or_else(|| AppError::InvalidRequest("tmux command is unavailable".into()))?;
+    let socket = context
+        .tmux_socket
+        .as_deref()
+        .filter(|value| valid_socket_path(value))
+        .ok_or_else(|| AppError::InvalidRequest("tmux socket is unavailable".into()))?;
+    let pane = context
+        .tmux_pane
+        .as_deref()
+        .filter(|value| valid_tmux_pane(value))
+        .ok_or_else(|| AppError::InvalidRequest("tmux pane is unavailable".into()))?;
+
+    run_checked(
+        Command::new(&executable).args(["-S", socket, "select-window", "-t", pane]),
+        "tmux could not select the source window",
+    )?;
+    run_checked(
+        Command::new(&executable).args(["-S", socket, "select-pane", "-t", pane]),
+        "tmux could not select the source pane",
+    )?;
+    activate_host_application(
+        context.terminal_kind.as_deref(),
+        context.host_app_name.as_deref(),
+    )
+}
+
+fn jump_to_direct_terminal(session: &LiveSession) -> AppResult<()> {
+    let process_id = session
+        .process_id
+        .ok_or_else(|| AppError::InvalidRequest("source process is no longer available".into()))?;
+    if let Some(expected) = session
+        .jump_context
+        .as_ref()
+        .and_then(|context| context.process_started_at.as_deref())
+    {
+        validate_process_identity(process_id, expected)?;
+    }
+    let processes = process_snapshot()?;
+    if !processes.contains_key(&process_id) {
         return Err(AppError::InvalidRequest(
             "source process is no longer available".into(),
         ));
-    };
-    for _ in 0..12 {
-        let command = Command::new("/bin/ps")
-            .args(["-p", &process_id.to_string(), "-o", "comm="])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-            .unwrap_or_default();
-        let app_name = if command.contains("Terminal.app") {
-            Some("Terminal")
-        } else if command.contains("iTerm.app") {
-            Some("iTerm")
-        } else if command.contains("Warp.app") {
-            Some("Warp")
-        } else if command.contains("Codex.app") {
-            Some("Codex")
-        } else {
-            None
-        };
-        if let Some(app_name) = app_name {
-            Command::new("/usr/bin/open")
-                .args(["-a", app_name])
-                .spawn()
-                .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
-            return Ok(());
+    }
+    let detected_host = host_application_for_process(process_id, &processes);
+    let context = session.jump_context.as_ref();
+    let terminal_kind = context
+        .and_then(|item| item.terminal_kind.as_deref())
+        .or_else(|| detected_host.as_deref().and_then(terminal_kind_for_app));
+    let host_app_name = detected_host
+        .as_deref()
+        .or_else(|| context.and_then(|item| item.host_app_name.as_deref()));
+    let tty = context.and_then(|item| item.tty.as_deref());
+
+    match terminal_kind {
+        Some("terminal") if tty.is_some_and(valid_tty) => focus_terminal_tty(tty.unwrap()),
+        Some("iterm") if tty.is_some_and(valid_tty) => focus_iterm_tty(tty.unwrap()),
+        _ => activate_host_application(terminal_kind, host_app_name),
+    }
+}
+
+fn run_checked(command: &mut Command, message: &str) -> AppResult<()> {
+    let status = command
+        .status()
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AppError::InvalidRequest(message.into()))
+    }
+}
+
+fn trusted_cli_executable(candidate: Option<&str>, expected_name: &str) -> Option<PathBuf> {
+    let path = Path::new(candidate?);
+    let trusted_prefix = path.starts_with("/opt/homebrew/bin")
+        || path.starts_with("/usr/local/bin")
+        || path.starts_with("/usr/bin")
+        || path.starts_with("/opt/local/bin")
+        || path.starts_with("/run/current-system/sw/bin")
+        || path.starts_with("/nix/store")
+        || dirs::home_dir().is_some_and(|home| path.starts_with(home.join(".nix-profile/bin")))
+        || path.starts_with("/Applications/cmux.app/Contents/Resources/bin");
+    (path.is_absolute()
+        && trusted_prefix
+        && path.file_name().and_then(|name| name.to_str()) == Some(expected_name)
+        && path.is_file())
+    .then(|| path.to_path_buf())
+}
+
+fn valid_socket_path(value: &str) -> bool {
+    let path = Path::new(value);
+    value.len() <= 512
+        && path.is_absolute()
+        && !path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+}
+
+fn valid_target_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 160
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_:.%".contains(character))
+}
+
+fn valid_tmux_pane(value: &str) -> bool {
+    value.strip_prefix('%').is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|char| char.is_ascii_digit())
+    })
+}
+
+fn valid_tty(value: &str) -> bool {
+    value.starts_with("/dev/tty")
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '/' | '_'))
+}
+
+fn validate_process_identity(process_id: u32, expected: &str) -> AppResult<()> {
+    let output = Command::new("/bin/ps")
+        .args(["-p", &process_id.to_string(), "-o", "lstart="])
+        .output()
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    let observed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || observed.is_empty() || observed != expected.trim() {
+        return Err(AppError::InvalidRequest(
+            "source process identity no longer matches".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn process_snapshot() -> AppResult<HashMap<u32, ProcessRecord>> {
+    let output = Command::new("/bin/ps")
+        .args(["-axo", "pid=,ppid=,comm="])
+        .output()
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    if !output.status.success() {
+        return Err(AppError::InvalidRequest(
+            "process list is unavailable".into(),
+        ));
+    }
+    Ok(parse_process_snapshot(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_process_snapshot(output: &str) -> HashMap<u32, ProcessRecord> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let process_id = fields.next()?.parse::<u32>().ok()?;
+            let parent_id = fields.next()?.parse::<u32>().ok()?;
+            let command = fields.collect::<Vec<_>>().join(" ");
+            if command.is_empty() {
+                return None;
+            }
+            Some((process_id, ProcessRecord { parent_id, command }))
+        })
+        .collect()
+}
+
+fn host_application_for_process(
+    mut process_id: u32,
+    processes: &HashMap<u32, ProcessRecord>,
+) -> Option<String> {
+    for _ in 0..24 {
+        let process = processes.get(&process_id)?;
+        if let Some(name) = app_name_from_command(&process.command)
+            && trusted_host_application(&name)
+        {
+            return Some(name);
         }
-        let parent = Command::new("/bin/ps")
-            .args(["-p", &process_id.to_string(), "-o", "ppid="])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .parse::<u32>()
-                    .ok()
-            });
-        let Some(parent) = parent else { break };
-        if parent <= 1 || parent == process_id {
+        if process.parent_id <= 1 || process.parent_id == process_id {
             break;
         }
-        process_id = parent;
+        process_id = process.parent_id;
     }
-    Err(AppError::InvalidRequest(
-        "the source terminal could not be identified".into(),
-    ))
+    None
+}
+
+fn app_name_from_command(command: &str) -> Option<String> {
+    let lower = command.to_ascii_lowercase();
+    let marker = ".app/";
+    let index = lower.find(marker)?;
+    let app_path = &command[..index + 4];
+    Path::new(app_path)
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+}
+
+fn trusted_host_application(name: &str) -> bool {
+    matches!(
+        name,
+        "Terminal"
+            | "iTerm"
+            | "iTerm2"
+            | "Warp"
+            | "cmux"
+            | "Ghostty"
+            | "WezTerm"
+            | "kitty"
+            | "Alacritty"
+            | "Hyper"
+            | "Rio"
+            | "Visual Studio Code"
+            | "Cursor"
+            | "Codex"
+    )
+}
+
+fn terminal_kind_for_app(name: &str) -> Option<&'static str> {
+    match name {
+        "Terminal" => Some("terminal"),
+        "iTerm" | "iTerm2" => Some("iterm"),
+        "Warp" => Some("warp"),
+        "cmux" => Some("cmux"),
+        "Ghostty" => Some("ghostty"),
+        "WezTerm" => Some("wezterm"),
+        "kitty" => Some("kitty"),
+        "Alacritty" => Some("alacritty"),
+        "Hyper" => Some("hyper"),
+        "Rio" => Some("rio"),
+        "Visual Studio Code" => Some("vscode"),
+        "Cursor" => Some("cursor"),
+        "Codex" => Some("codex"),
+        _ => None,
+    }
+}
+
+fn host_application_name(
+    terminal_kind: Option<&str>,
+    observed: Option<&str>,
+) -> Option<&'static str> {
+    match terminal_kind {
+        Some("terminal") => Some("Terminal"),
+        Some("iterm") => Some("iTerm"),
+        Some("warp") => Some("Warp"),
+        Some("cmux") => Some("cmux"),
+        Some("ghostty") => Some("Ghostty"),
+        Some("wezterm") => Some("WezTerm"),
+        Some("kitty") => Some("kitty"),
+        Some("alacritty") => Some("Alacritty"),
+        Some("hyper") => Some("Hyper"),
+        Some("rio") => Some("Rio"),
+        Some("cursor") => Some("Cursor"),
+        Some("vscode") if observed == Some("Cursor") => Some("Cursor"),
+        Some("vscode") => Some("Visual Studio Code"),
+        Some("codex") => Some("Codex"),
+        _ => observed
+            .filter(|name| trusted_host_application(name))
+            .and_then(|name| match name {
+                "iTerm2" => Some("iTerm"),
+                "Terminal" => Some("Terminal"),
+                "iTerm" => Some("iTerm"),
+                "Warp" => Some("Warp"),
+                "cmux" => Some("cmux"),
+                "Ghostty" => Some("Ghostty"),
+                "WezTerm" => Some("WezTerm"),
+                "kitty" => Some("kitty"),
+                "Alacritty" => Some("Alacritty"),
+                "Hyper" => Some("Hyper"),
+                "Rio" => Some("Rio"),
+                "Visual Studio Code" => Some("Visual Studio Code"),
+                "Cursor" => Some("Cursor"),
+                "Codex" => Some("Codex"),
+                _ => None,
+            }),
+    }
+}
+
+fn activate_host_application(terminal_kind: Option<&str>, observed: Option<&str>) -> AppResult<()> {
+    let application = host_application_name(terminal_kind, observed).ok_or_else(|| {
+        AppError::InvalidRequest("the source terminal could not be identified".into())
+    })?;
+    run_checked(
+        Command::new("/usr/bin/open").args(["-a", application]),
+        "the source terminal could not be activated",
+    )
+}
+
+fn focus_terminal_tty(tty: &str) -> AppResult<()> {
+    let script = format!(
+        r#"tell application "Terminal"
+repeat with windowItem in windows
+repeat with tabItem in tabs of windowItem
+if tty of tabItem is "{tty}" then
+set selected tab of windowItem to tabItem
+set index of windowItem to 1
+activate
+return "ok"
+end if
+end repeat
+end repeat
+error "terminal session not found"
+end tell"#
+    );
+    run_checked(
+        Command::new("/usr/bin/osascript").args(["-e", &script]),
+        "the source Terminal tab could not be focused",
+    )
+}
+
+fn focus_iterm_tty(tty: &str) -> AppResult<()> {
+    let script = format!(
+        r#"tell application "iTerm2"
+repeat with windowItem in windows
+repeat with tabItem in tabs of windowItem
+repeat with sessionItem in sessions of tabItem
+if tty of sessionItem is "{tty}" then
+tell sessionItem to select
+tell tabItem to select
+set index of windowItem to 1
+activate
+return "ok"
+end if
+end repeat
+end repeat
+end repeat
+error "iTerm session not found"
+end tell"#
+    );
+    run_checked(
+        Command::new("/usr/bin/osascript").args(["-e", &script]),
+        "the source iTerm session could not be focused",
+    )
 }
 
 fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, String)> {
@@ -890,6 +1430,7 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
         source_session_id,
         agent: agent.into(),
         project_label,
+        conversation_title: None,
         status: status.into(),
         phase: phase.into(),
         started_at: received_at.clone(),
@@ -912,6 +1453,10 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
             .get("origin")
             .and_then(Value::as_str)
             .map(str::to_string),
+        jump_context: object
+            .get("jump_context")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<LiveJumpContext>(value).ok()),
     };
     let raw = serde_json::to_string(envelope).ok()?;
     Some((session, raw, event_name))
@@ -956,12 +1501,14 @@ fn fold_codex_memory_activity(
     incoming.id = parent.id;
     incoming.source_session_id = parent.source_session_id;
     incoming.project_label = parent.project_label;
+    incoming.conversation_title = parent.conversation_title.or(incoming.conversation_title);
     incoming.started_at = parent.started_at;
     incoming.status = "running".into();
     incoming.phase = "reading".into();
     incoming.waiting_reason = None;
     incoming.process_id = parent.process_id.or(incoming.process_id);
     incoming.origin = parent.origin.or(incoming.origin);
+    incoming.jump_context = parent.jump_context.or(incoming.jump_context);
     incoming.actions = vec![LiveAction {
         kind: "memory".into(),
         label: "Memory".into(),
@@ -1430,9 +1977,15 @@ fn merge_session(
         existing.status = incoming.status.clone();
         existing.phase = incoming.phase;
         existing.project_label = incoming.project_label;
+        existing.conversation_title = incoming
+            .conversation_title
+            .or_else(|| existing.conversation_title.clone());
         existing.waiting_reason = incoming.waiting_reason;
         existing.process_id = incoming.process_id.or(existing.process_id);
         existing.origin = incoming.origin.or_else(|| existing.origin.clone());
+        existing.jump_context = incoming
+            .jump_context
+            .or_else(|| existing.jump_context.clone());
         existing.actions.extend(incoming.actions);
         if existing.actions.len() > 3 {
             existing.actions.drain(0..existing.actions.len() - 3);
@@ -1453,17 +2006,15 @@ fn merge_session(
 fn snapshot_from(
     sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
     socket_ready: bool,
+    mut completed_sessions: Vec<NotchCompletedSession>,
+    database: &Database,
 ) -> LiveSnapshot {
     let mut items = sessions
         .read()
         .map(|value| value.values().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
-    items.sort_by(|left, right| {
-        priority(&right.status)
-            .cmp(&priority(&left.status))
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    hydrate_conversation_titles(database, &mut items, &mut completed_sessions);
+    sort_live_sessions(&mut items);
     let urgent_session_id = items.first().map(|item| item.id.clone());
     let active_count = items
         .iter()
@@ -1472,10 +2023,140 @@ fn snapshot_from(
     LiveSnapshot {
         generated_at: Utc::now().to_rfc3339(),
         sessions: items,
+        completed_sessions,
         urgent_session_id,
         active_count,
         hook_status: hook_status(socket_ready),
     }
+}
+
+fn sort_live_sessions(items: &mut [LiveSession]) {
+    items.sort_by(|left, right| {
+        priority(&right.status)
+            .cmp(&priority(&left.status))
+            .then_with(|| left.started_at.cmp(&right.started_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn hydrate_conversation_titles(
+    database: &Database,
+    sessions: &mut [LiveSession],
+    completed_sessions: &mut [NotchCompletedSession],
+) {
+    let sources = sessions
+        .iter()
+        .chain(completed_sessions.iter().map(|item| &item.session))
+        .map(|session| (session.agent.clone(), session.source_session_id.clone()))
+        .collect::<Vec<_>>();
+    let mut titles = database
+        .live_conversation_titles(&sources)
+        .unwrap_or_default();
+    for (key, value) in codex_conversation_titles(&sources) {
+        titles.insert(key, value);
+    }
+    for session in sessions
+        .iter_mut()
+        .chain(completed_sessions.iter_mut().map(|item| &mut item.session))
+    {
+        let key = (session.agent.clone(), session.source_session_id.clone());
+        session.conversation_title = titles.get(&key).cloned().filter(|title| {
+            !title.eq_ignore_ascii_case(&session.project_label) && title.trim().len() > 1
+        });
+    }
+}
+
+fn codex_conversation_titles(sources: &[(String, String)]) -> HashMap<(String, String), String> {
+    let Some(home) = dirs::home_dir() else {
+        return HashMap::new();
+    };
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    codex_conversation_titles_from(&codex_home, sources)
+}
+
+fn codex_conversation_titles_from(
+    codex_home: &Path,
+    sources: &[(String, String)],
+) -> HashMap<(String, String), String> {
+    let source_ids = sources
+        .iter()
+        .filter(|(agent, _)| agent == "codex")
+        .map(|(_, source_session_id)| source_session_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut titles = HashMap::new();
+    if let Ok(index) = fs::File::open(codex_home.join("session_index.jsonl")) {
+        for line in BufReader::new(index).lines().map_while(Result::ok) {
+            let Ok(record) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(source_session_id) = record.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if !source_ids.contains(source_session_id) {
+                continue;
+            }
+            let title = record
+                .get("thread_name")
+                .and_then(Value::as_str)
+                .and_then(crate::privacy::sanitize_title);
+            if let Some(title) = title {
+                titles.insert(("codex".into(), source_session_id.into()), title);
+            }
+        }
+    }
+    for path in [
+        codex_home.join("state_5.sqlite"),
+        codex_home.join("sqlite/state_5.sqlite"),
+    ] {
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(connection) = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) else {
+            continue;
+        };
+        for (agent, source_session_id) in sources {
+            if agent != "codex" {
+                continue;
+            }
+            let key = (agent.clone(), source_session_id.clone());
+            if titles.contains_key(&key) {
+                continue;
+            }
+            let title = connection
+                .query_row(
+                    "SELECT COALESCE(NULLIF(name, ''), NULLIF(title, ''))
+                     FROM threads WHERE id=?1 LIMIT 1",
+                    params![source_session_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+                .flatten()
+                .or_else(|| {
+                    connection
+                        .query_row(
+                            "SELECT NULLIF(title, '') FROM threads WHERE id=?1 LIMIT 1",
+                            params![source_session_id],
+                            |row| row.get::<_, Option<String>>(0),
+                        )
+                        .optional()
+                        .ok()
+                        .flatten()
+                        .flatten()
+                })
+                .and_then(|value| crate::privacy::sanitize_title(&value));
+            if let Some(title) = title {
+                titles.insert(key, title);
+            }
+        }
+    }
+    titles
 }
 
 fn prune_sessions(sessions: &Arc<RwLock<HashMap<String, LiveSession>>>) {
@@ -1589,7 +2270,30 @@ fn source_matches_frontmost(session: &LiveSession, name: &str) -> bool {
     if session.origin.as_deref() == Some("desktop") {
         return name.contains("codex");
     }
-    name.contains("terminal") || name.contains("iterm") || name.contains("warp")
+    if let Some(context) = session.jump_context.as_ref()
+        && let Some(expected) = host_application_name(
+            context.terminal_kind.as_deref(),
+            context.host_app_name.as_deref(),
+        )
+    {
+        return name.contains(&expected.to_ascii_lowercase());
+    }
+    [
+        "terminal",
+        "iterm",
+        "warp",
+        "cmux",
+        "ghostty",
+        "wezterm",
+        "kitty",
+        "alacritty",
+        "hyper",
+        "rio",
+        "visual studio code",
+        "cursor",
+    ]
+    .iter()
+    .any(|candidate| name.contains(candidate))
 }
 
 #[cfg(target_os = "macos")]
@@ -2137,6 +2841,7 @@ mod tests {
             source_session_id: "parent-source".into(),
             agent: "codex".into(),
             project_label: "vibemeter".into(),
+            conversation_title: None,
             status: "running".into(),
             phase: "thinking".into(),
             started_at: (now - Duration::minutes(10)).to_rfc3339(),
@@ -2145,6 +2850,7 @@ mod tests {
             actions: Vec::new(),
             process_id: Some(42),
             origin: Some("desktop".into()),
+            jump_context: None,
         };
         let sessions = Arc::new(RwLock::new(HashMap::from([(
             parent.id.clone(),
@@ -2263,6 +2969,49 @@ mod tests {
     }
 
     #[test]
+    fn codex_sidebar_title_precedes_the_original_conversation_title() {
+        let directory = tempdir().expect("tempdir");
+        let source_session_id = "019fb361-9f23-7412-97c1-9218c487a191";
+        let database = Connection::open(directory.path().join("state_5.sqlite"))
+            .expect("Codex state database");
+        database
+            .execute_batch(
+                "CREATE TABLE threads(id TEXT PRIMARY KEY, name TEXT, title TEXT NOT NULL);
+                 INSERT INTO threads(id, name, title) VALUES(
+                    '019fb361-9f23-7412-97c1-9218c487a191',
+                    NULL,
+                    'notch 弹出栏在任务过多时，显示会不正常。总长度需要改为动态调整的'
+                 );",
+            )
+            .expect("original conversation title");
+        drop(database);
+        fs::write(
+            directory.path().join("session_index.jsonl"),
+            format!(
+                "{{\"id\":\"{source_session_id}\",\"thread_name\":\"初始标题\"}}\n\
+                 {{\"id\":\"another-thread\",\"thread_name\":\"不可泄漏\"}}\n\
+                 {{\"id\":\"{source_session_id}\",\"thread_name\":\"修复 Notch 弹出栏动态宽度\"}}\n"
+            ),
+        )
+        .expect("session index");
+
+        let titles = codex_conversation_titles_from(
+            directory.path(),
+            &[
+                ("codex".into(), source_session_id.into()),
+                ("claude-code".into(), "another-thread".into()),
+            ],
+        );
+        assert_eq!(
+            titles
+                .get(&("codex".into(), source_session_id.into()))
+                .map(String::as_str),
+            Some("修复 Notch 弹出栏动态宽度")
+        );
+        assert!(!titles.contains_key(&("claude-code".into(), "another-thread".into())));
+    }
+
+    #[test]
     fn codex_metadata_listener_reads_only_whitelisted_state() {
         let timestamp = Utc::now().to_rfc3339();
         let turn = serde_json::to_vec(&json!({
@@ -2332,12 +3081,195 @@ mod tests {
     }
 
     #[test]
+    fn running_phase_updates_do_not_reorder_projects() {
+        let mut first = jump_test_session("codex", "cli", None);
+        first.id = "first".into();
+        first.status = "running".into();
+        first.phase = "thinking".into();
+        first.started_at = "2026-07-31T10:00:00Z".into();
+        first.updated_at = "2026-07-31T10:05:00Z".into();
+        let mut second = first.clone();
+        second.id = "second".into();
+        second.phase = "running-tool".into();
+        second.started_at = "2026-07-31T10:01:00Z".into();
+        second.updated_at = "2026-07-31T10:06:00Z".into();
+
+        let mut sessions = vec![second.clone(), first.clone()];
+        sort_live_sessions(&mut sessions);
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+
+        first.phase = "running-tool".into();
+        first.updated_at = "2026-07-31T10:07:00Z".into();
+        second.phase = "thinking".into();
+        let mut sessions = vec![second.clone(), first];
+        sort_live_sessions(&mut sessions);
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+
+        sessions
+            .iter_mut()
+            .find(|session| session.id == "second")
+            .expect("second session")
+            .status = "waiting".into();
+        sort_live_sessions(&mut sessions);
+        assert_eq!(sessions[0].id, "second");
+    }
+
+    fn jump_test_session(
+        agent: &str,
+        origin: &str,
+        jump_context: Option<LiveJumpContext>,
+    ) -> LiveSession {
+        LiveSession {
+            id: "jump-test".into(),
+            source_session_id: "source-thread".into(),
+            agent: agent.into(),
+            project_label: "vibemeter".into(),
+            conversation_title: None,
+            status: "completed".into(),
+            phase: "completed".into(),
+            started_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+            waiting_reason: None,
+            actions: Vec::new(),
+            process_id: Some(42),
+            origin: Some(origin.into()),
+            jump_context,
+        }
+    }
+
+    #[test]
+    fn jump_routes_distinguish_desktop_cmux_tmux_and_direct_terminals() {
+        let desktop = jump_test_session("codex", "desktop", None);
+        assert_eq!(jump_route(&desktop), JumpRoute::CodexDesktop);
+
+        let cmux = jump_test_session(
+            "claude-code",
+            "cli",
+            Some(LiveJumpContext {
+                cmux_workspace_id: Some("workspace:3".into()),
+                cmux_surface_id: Some("surface:7".into()),
+                tmux_socket: Some("/tmp/tmux-501/default".into()),
+                tmux_pane: Some("%4".into()),
+                ..LiveJumpContext::default()
+            }),
+        );
+        assert_eq!(jump_route(&cmux), JumpRoute::Cmux);
+
+        let tmux = jump_test_session(
+            "codex",
+            "cli",
+            Some(LiveJumpContext {
+                tmux_socket: Some("/private/tmp/tmux-501/default".into()),
+                tmux_pane: Some("%9".into()),
+                ..LiveJumpContext::default()
+            }),
+        );
+        assert_eq!(jump_route(&tmux), JumpRoute::Tmux);
+        assert_eq!(
+            jump_route(&jump_test_session("claude-code", "cli", None)),
+            JumpRoute::DirectTerminal
+        );
+    }
+
+    #[test]
+    fn process_ancestry_recognizes_supported_terminal_hosts() {
+        let terminal = parse_process_snapshot(
+            "42 30 /opt/homebrew/bin/codex\n30 20 /bin/zsh\n20 1 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal\n",
+        );
+        assert_eq!(
+            host_application_for_process(42, &terminal).as_deref(),
+            Some("Terminal")
+        );
+
+        let cursor = parse_process_snapshot(
+            "52 50 /opt/homebrew/bin/claude\n50 10 /bin/zsh\n10 1 /Applications/Cursor.app/Contents/MacOS/Cursor\n",
+        );
+        assert_eq!(
+            host_application_for_process(52, &cursor).as_deref(),
+            Some("Cursor")
+        );
+
+        let detached_tmux = parse_process_snapshot(
+            "62 60 /opt/homebrew/bin/codex\n60 2 /bin/zsh\n2 1 tmux: server\n",
+        );
+        assert_eq!(host_application_for_process(62, &detached_tmux), None);
+    }
+
+    #[test]
+    fn jump_identifiers_and_host_names_are_strictly_validated() {
+        assert!(valid_tty("/dev/ttys004"));
+        assert!(!valid_tty("/dev/ttys004\" & do shell script \"bad"));
+        assert!(valid_tmux_pane("%12"));
+        assert!(!valid_tmux_pane("main:1.2"));
+        assert!(valid_target_id("workspace:4E92-1"));
+        assert!(!valid_target_id("workspace 4; rm"));
+        assert!(valid_socket_path("/private/tmp/tmux-501/default"));
+        assert!(valid_socket_path(
+            "/Users/example/.local/state/cmux/cmux.sock"
+        ));
+        assert!(!valid_socket_path("../../tmp/tmux.sock"));
+        assert_eq!(
+            host_application_name(Some("vscode"), Some("Cursor")),
+            Some("Cursor")
+        );
+        assert_eq!(host_application_name(None, Some("Unknown")), None);
+    }
+
+    #[test]
+    fn hook_jump_context_stays_backend_only_and_failed_commands_are_not_success() {
+        let envelope = json!({
+            "provider":"codex",
+            "received_at":Utc::now().to_rfc3339(),
+            "process_id":42,
+            "origin":"cli",
+            "jump_context":{
+                "tty":"/dev/ttys004",
+                "terminalKind":"cmux",
+                "cmuxWorkspaceId":"workspace:2",
+                "cmuxSurfaceId":"surface:8"
+            },
+            "payload":{
+                "session_id":"jump-context",
+                "hook_event_name":"Stop",
+                "cwd":"/tmp/project"
+            }
+        });
+        let (session, _, _) = session_from_envelope(&envelope).expect("session");
+        let context = session.jump_context.as_ref().expect("jump context");
+        assert_eq!(context.tty.as_deref(), Some("/dev/ttys004"));
+        assert_eq!(context.cmux_surface_id.as_deref(), Some("surface:8"));
+        assert!(
+            serde_json::to_value(&session)
+                .expect("serialize session")
+                .get("jumpContext")
+                .is_none()
+        );
+        let mut successful_command = Command::new("/usr/bin/true");
+        let mut failed_command = Command::new("/usr/bin/false");
+        assert!(run_checked(&mut successful_command, "failed").is_ok());
+        assert!(run_checked(&mut failed_command, "failed").is_err());
+    }
+
+    #[test]
     fn foreground_matching_stays_provider_and_origin_specific() {
         let desktop = LiveSession {
             id: "desktop".into(),
             source_session_id: "thread".into(),
             agent: "codex".into(),
             project_label: "project".into(),
+            conversation_title: None,
             status: "running".into(),
             phase: "thinking".into(),
             started_at: Utc::now().to_rfc3339(),
@@ -2346,6 +3278,7 @@ mod tests {
             actions: Vec::new(),
             process_id: None,
             origin: Some("desktop".into()),
+            jump_context: None,
         };
         let mut cli = desktop.clone();
         cli.origin = Some("cli".into());
@@ -2353,6 +3286,13 @@ mod tests {
         assert!(!source_matches_frontmost(&desktop, "Terminal"));
         assert!(source_matches_frontmost(&cli, "iTerm2"));
         assert!(!source_matches_frontmost(&cli, "VibeMeter"));
+        cli.jump_context = Some(LiveJumpContext {
+            terminal_kind: Some("cmux".into()),
+            host_app_name: Some("cmux".into()),
+            ..LiveJumpContext::default()
+        });
+        assert!(source_matches_frontmost(&cli, "cmux"));
+        assert!(!source_matches_frontmost(&cli, "Terminal"));
         assert!(!notification_allowed_for_origin(&desktop, "completed"));
         assert!(notification_allowed_for_origin(&cli, "completed"));
         assert!(notification_allowed_for_origin(&desktop, "waiting"));

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LiveSession } from "../types";
 import {
   activeProviderCounts,
+  conversationTitleForSession,
   expandedHeightForSessions,
   formatLiveElapsed,
   leftWingWidthForSession,
@@ -80,6 +81,27 @@ describe("Notch session selection", () => {
     ).toBe(154);
   });
 
+  it("keeps the available conversation title for CSS to truncate", () => {
+    expect(
+      conversationTitleForSession({
+        projectLabel: "vibemeter",
+        conversationTitle: "修复 Notch 排序",
+      }),
+    ).toBe("修复 Notch 排序");
+    expect(
+      conversationTitleForSession({
+        projectLabel: "AnExtremelyLongProjectNameThatConsumesTheWholeRow",
+        conversationTitle: "Conversation title",
+      }),
+    ).toBe("Conversation title");
+    expect(
+      conversationTitleForSession({
+        projectLabel: "vibemeter",
+        conversationTitle: "VibeMeter",
+      }),
+    ).toBeUndefined();
+  });
+
   it("fits one session closely and grows with the visible instance count", () => {
     const one = expandedHeightForSessions([session("one", "running")], 32);
     const waiting = expandedHeightForSessions([session("waiting", "waiting")], 32);
@@ -87,8 +109,44 @@ describe("Notch session selection", () => {
       [session("one", "running"), session("two", "running")],
       32,
     );
-    expect(one).toBe(168);
-    expect(waiting).toBe(186);
-    expect(two).toBe(255);
+    expect(one).toBe(170);
+    expect(waiting).toBe(188);
+    expect(two).toBe(257);
+  });
+
+  it("keeps growing past the former four-session height limit", () => {
+    const four = expandedHeightForSessions(
+      [
+        session("one", "running"),
+        session("two", "running"),
+        session("three", "running"),
+        session("four", "running"),
+      ],
+      32,
+    );
+    expect(four).toBe(431);
+  });
+
+  it("accounts for the completed group without compressing active cards", () => {
+    const collapsed = expandedHeightForSessions([session("active", "running")], 32, {
+      completedCount: 2,
+      completedExpanded: false,
+    });
+    const expanded = expandedHeightForSessions([session("active", "running")], 32, {
+      completedCount: 2,
+      completedExpanded: true,
+    });
+    const withJumpError = expandedHeightForSessions([], 32, {
+      completedCount: 1,
+      completedExpanded: true,
+      completedErrorCount: 1,
+    });
+    const withActiveJumpError = expandedHeightForSessions([session("active", "running")], 32, {
+      activeErrorCount: 1,
+    });
+    expect(collapsed).toBe(205);
+    expect(expanded).toBe(379);
+    expect(withJumpError).toBe(223);
+    expect(withActiveJumpError).toBe(188);
   });
 });

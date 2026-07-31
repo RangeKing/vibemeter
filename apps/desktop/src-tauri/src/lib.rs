@@ -19,10 +19,10 @@ use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     ComparisonItem, ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse,
-    LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, OverviewResponse, PhraseCloudResponse,
-    PlaybookItem, ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail,
-    SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus,
-    TaskSummary, VctiProfile,
+    LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, NotchClearResult, OverviewResponse,
+    PhraseCloudResponse, PlaybookItem, ProjectControl, ProviderUsage, SavePlaybookRequest,
+    SessionDetail, SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest,
+    SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -155,6 +155,43 @@ fn jump_to_live_session(state: State<'_, AppState>, id: String) -> AppResult<()>
         .session(&id)
         .ok_or_else(|| AppError::InvalidRequest("live session is no longer active".into()))?;
     live::jump_to_session(&session)
+}
+
+#[tauri::command]
+fn mark_notch_sessions_seen(state: State<'_, AppState>, ids: Vec<String>) -> AppResult<()> {
+    state.live.mark_notch_sessions_seen(&ids)
+}
+
+#[tauri::command]
+fn jump_to_notch_completed_session(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    let completed = state
+        .database
+        .notch_completed_session(&id)?
+        .ok_or_else(|| {
+            AppError::InvalidRequest("completed session is no longer available".into())
+        })?;
+    live::jump_to_session(&completed.session)?;
+    state.database.delete_notch_completed_session(&id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_notch_completed_session(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.database.delete_notch_completed_session(&id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_notch_completed_sessions(state: State<'_, AppState>) -> AppResult<NotchClearResult> {
+    state.database.clear_notch_completed_sessions()
+}
+
+#[tauri::command]
+fn undo_clear_notch_completed_sessions(
+    state: State<'_, AppState>,
+    token: String,
+) -> AppResult<u64> {
+    state.database.undo_clear_notch_completed_sessions(&token)
 }
 
 #[tauri::command]
@@ -787,6 +824,11 @@ pub fn run() {
             repair_live_hooks,
             uninstall_live_hooks,
             jump_to_live_session,
+            mark_notch_sessions_seen,
+            jump_to_notch_completed_session,
+            delete_notch_completed_session,
+            clear_notch_completed_sessions,
+            undo_clear_notch_completed_sessions,
             set_notch_expanded,
             get_notch_state,
             set_notch_pinned,

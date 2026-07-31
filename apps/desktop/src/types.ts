@@ -218,6 +218,7 @@ export interface LiveSession {
   sourceSessionId: string;
   agent: "claude-code" | "codex";
   projectLabel: string;
+  conversationTitle?: string;
   status: "waiting" | "error" | "running" | "idle" | "completed";
   phase: string;
   startedAt: string;
@@ -226,6 +227,17 @@ export interface LiveSession {
   actions: LiveAction[];
   processId?: number;
   origin?: "cli" | "desktop";
+}
+
+export interface NotchCompletedSession {
+  session: LiveSession;
+  cycleStartedAt: string;
+  completedAt: string;
+}
+
+export interface NotchClearResult {
+  token: string;
+  count: number;
 }
 
 export interface HookProviderStatus {
@@ -244,6 +256,7 @@ export interface HookStatus {
 export interface LiveSnapshot {
   generatedAt: string;
   sessions: LiveSession[];
+  completedSessions: NotchCompletedSession[];
   urgentSessionId?: string;
   activeCount: number;
   hookStatus: HookStatus;

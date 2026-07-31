@@ -4,6 +4,7 @@ import {
   BookOpenText,
   BrainCircuit,
   Check,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   CircleDot,
@@ -14,6 +15,8 @@ import {
   ShieldCheck,
   Shrink,
   Terminal,
+  Trash2,
+  Undo2,
   X,
 } from "lucide-react";
 import type { CSSProperties } from "react";
@@ -35,7 +38,7 @@ const MIN_SINGLE_PROJECT_LEFT_WING_WIDTH = 88;
 const MAX_SINGLE_PROJECT_LEFT_WING_WIDTH = 154;
 const EXPANDED_NOTCH_WIDTH = 440;
 const MIN_EXPANDED_HEIGHT = 150;
-const MAX_EXPANDED_HEIGHT = 352;
+const EXPANDED_HEIGHT_SLOP = 2;
 const DEFAULT_NOTCH_STATE: NotchUiState = {
   available: true,
   enabled: true,
@@ -251,50 +254,109 @@ export function leftWingWidthForSession(session?: Pick<LiveSession, "projectLabe
   );
 }
 
+export function conversationTitleForSession(
+  session: Pick<LiveSession, "projectLabel" | "conversationTitle">,
+) {
+  const title = session.conversationTitle?.trim();
+  if (!title || title.toLocaleLowerCase() === session.projectLabel.trim().toLocaleLowerCase()) {
+    return undefined;
+  }
+  return title;
+}
+
 export function expandedHeightForSessions(
   sessions: Pick<LiveSession, "status">[],
   hardwareHeight: number,
+  options: {
+    completedCount?: number;
+    completedExpanded?: boolean;
+    completedErrorCount?: number;
+    activeErrorCount?: number;
+    showClearUndo?: boolean;
+  } = {},
 ) {
-  if (!sessions.length) return MIN_EXPANDED_HEIGHT;
-  const cardHeights = sessions.reduce(
-    (height, session) =>
-      height + 80 + (session.status === "waiting" || session.status === "error" ? 18 : 0),
-    0,
+  const blockHeights = sessions.map(
+    (session) => 80 + (session.status === "waiting" || session.status === "error" ? 18 : 0),
   );
-  const gaps = Math.max(0, sessions.length - 1) * 7;
-  const desiredHeight = hardwareHeight + 36 + 20 + cardHeights + gaps;
-  return Math.round(Math.min(MAX_EXPANDED_HEIGHT, Math.max(MIN_EXPANDED_HEIGHT, desiredHeight)));
+  const completedCount = options.completedCount ?? 0;
+  if (completedCount > 0) {
+    const completedCardsHeight = options.completedExpanded
+      ? 7 +
+        completedCount * 80 +
+        (options.completedErrorCount ?? 0) * 18 +
+        Math.max(0, completedCount - 1) * 7
+      : 0;
+    blockHeights.push(28 + completedCardsHeight);
+  }
+  if (options.showClearUndo) blockHeights.push(32);
+  if (!blockHeights.length) return MIN_EXPANDED_HEIGHT;
+  const gaps = Math.max(0, blockHeights.length - 1) * 7;
+  const desiredHeight =
+    hardwareHeight +
+    36 +
+    20 +
+    blockHeights.reduce((sum, height) => sum + height, 0) +
+    (options.activeErrorCount ?? 0) * 18 +
+    gaps;
+  return Math.round(Math.max(MIN_EXPANDED_HEIGHT, desiredHeight + EXPANDED_HEIGHT_SLOP));
 }
 
 export function NotchSurface({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const snapshot = useLiveSnapshot();
   const [notchState, setNotchState] = useState(DEFAULT_NOTCH_STATE);
+  const [notchStateReady, setNotchStateReady] = useState(false);
   const [keepExpandedDuringClose, setKeepExpandedDuringClose] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [completedExpanded, setCompletedExpanded] = useState(true);
+  const [sessionListScrollable, setSessionListScrollable] = useState(false);
+  const [activeJumpError, setActiveJumpError] = useState<string>();
+  const [completedJumpError, setCompletedJumpError] = useState<string>();
+  const [clearUndo, setClearUndo] = useState<{ token: string; count: number }>();
   const lastActivity = useRef<boolean | undefined>(undefined);
+  const clearUndoTimeout = useRef<number | undefined>(undefined);
+  const sessionListRef = useRef<HTMLDivElement>(null);
   const sessions = snapshot.data?.sessions ?? [];
   const providerCounts = useMemo(() => activeProviderCounts(sessions), [sessions]);
   const activeSessions = providerCounts.active;
+  const activeSessionSignature = activeSessions
+    .map((session) => session.id)
+    .sort()
+    .join("|");
+  const activeSessionIds = useMemo(
+    () => new Set(activeSessions.map((session) => session.id)),
+    [activeSessions],
+  );
+  const completedSessions = (snapshot.data?.completedSessions ?? []).filter(
+    (completed) => !activeSessionIds.has(completed.session.id),
+  );
+  useEffect(() => {
+    if (activeJumpError && !activeSessionIds.has(activeJumpError)) {
+      setActiveJumpError(undefined);
+    }
+  }, [activeJumpError, activeSessionIds]);
   const rightSession = pickRightWingSession(sessions, now);
-  const recentCompletion =
-    rightSession?.status === "completed" &&
-    now - new Date(rightSession.updatedAt).getTime() < COMPLETION_CUE_MS;
-  const hasActivity = activeSessions.length > 0 || recentCompletion;
-  const singleWingSession =
-    activeSessions.length === 1
-      ? activeSessions[0]
-      : activeSessions.length === 0 && recentCompletion
-        ? rightSession
-        : undefined;
-  const visibleSessions =
-    activeSessions.length > 0 ? activeSessions : recentCompletion && rightSession ? [rightSession] : [];
+  const hasActivity = activeSessions.length > 0;
+  const singleWingSession = activeSessions.length === 1 ? activeSessions[0] : undefined;
+  const visibleSessions = activeSessions;
   const codexCount = providerCounts.codex;
   const claudeCount = providerCounts.claudeCode;
   const desiredLeftWingWidth = leftWingWidthForSession(singleWingSession);
   const desiredExpandedHeight = expandedHeightForSessions(
     visibleSessions,
     notchState.hardwareHeight,
+    {
+      completedCount: completedSessions.length,
+      completedExpanded,
+      completedErrorCount: completedJumpError ? 1 : 0,
+      activeErrorCount: activeSessions.some(
+        (session) =>
+          session.id === activeJumpError && session.status !== "waiting" && session.status !== "error",
+      )
+        ? 1
+        : 0,
+      showClearUndo: Boolean(clearUndo),
+    },
   );
   const style = {
     "--notch-hardware-width": `${notchState.hardwareWidth}px`,
@@ -322,10 +384,16 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void api.notchState().then((state) => {
-      if (!disposed) setNotchState(state);
+      if (!disposed) {
+        setNotchState(state);
+        setNotchStateReady(true);
+      }
     });
     void listen<NotchUiState>("notch-state", (event) => {
-      if (!disposed) setNotchState(event.payload);
+      if (!disposed) {
+        setNotchState(event.payload);
+        setNotchStateReady(true);
+      }
     }).then((cleanup) => {
       if (disposed) cleanup();
       else unlisten = cleanup;
@@ -335,6 +403,25 @@ export function NotchSurface({ locale }: { locale: Locale }) {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!notchStateReady || !notchState.enabled || !activeSessionSignature) return;
+    const ids = activeSessionSignature.split("|");
+    void api.markNotchSessionsSeen(ids).then(() => snapshot.refetch());
+    const interval = window.setInterval(() => {
+      void api.markNotchSessionsSeen(ids);
+    }, 60_000);
+    return () => window.clearInterval(interval);
+  }, [activeSessionSignature, notchState.enabled, notchStateReady, snapshot.refetch]);
+
+  useEffect(
+    () => () => {
+      if (clearUndoTimeout.current !== undefined) {
+        window.clearTimeout(clearUndoTimeout.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (notchState.expanded) {
@@ -356,11 +443,79 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     void api.setNotchLayout(desiredLeftWingWidth, desiredExpandedHeight);
   }, [desiredExpandedHeight, desiredLeftWingWidth]);
 
+  useLayoutEffect(() => {
+    const element = sessionListRef.current;
+    if (!element || !notchState.expanded) {
+      setSessionListScrollable(false);
+      return;
+    }
+    const update = () => {
+      setSessionListScrollable(element.scrollHeight - element.clientHeight > 2);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [
+    activeSessionSignature,
+    clearUndo,
+    completedExpanded,
+    completedSessions.length,
+    desiredExpandedHeight,
+    notchState.expanded,
+  ]);
+
   const toggleExpanded = async (expanded: boolean) => {
     await api.setNotchExpanded(expanded);
   };
   const togglePinned = async () => {
     await api.setNotchPinned(!notchState.pinned);
+  };
+  const jumpToActive = async (id: string) => {
+    try {
+      await api.jumpToLiveSession(id);
+      setActiveJumpError(undefined);
+    } catch {
+      setActiveJumpError(id);
+    }
+  };
+  const removeCompleted = async (id: string) => {
+    await api.deleteNotchCompletedSession(id);
+    if (completedJumpError === id) setCompletedJumpError(undefined);
+    await snapshot.refetch();
+  };
+  const jumpToCompleted = async (id: string) => {
+    try {
+      await api.jumpToNotchCompletedSession(id);
+      setCompletedJumpError(undefined);
+      await snapshot.refetch();
+    } catch {
+      setCompletedJumpError(id);
+    }
+  };
+  const clearCompleted = async () => {
+    const result = await api.clearNotchCompletedSessions();
+    if (!result.count) return;
+    setCompletedJumpError(undefined);
+    setClearUndo(result);
+    if (clearUndoTimeout.current !== undefined) {
+      window.clearTimeout(clearUndoTimeout.current);
+    }
+    clearUndoTimeout.current = window.setTimeout(() => {
+      setClearUndo(undefined);
+      clearUndoTimeout.current = undefined;
+    }, 5_000);
+    await snapshot.refetch();
+  };
+  const undoClearCompleted = async () => {
+    if (!clearUndo) return;
+    const restored = await api.undoClearNotchCompletedSessions(clearUndo.token);
+    if (clearUndoTimeout.current !== undefined) {
+      window.clearTimeout(clearUndoTimeout.current);
+      clearUndoTimeout.current = undefined;
+    }
+    setClearUndo(undefined);
+    if (restored) await snapshot.refetch();
   };
 
   if (!notchState.enabled) return null;
@@ -438,57 +593,170 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         </span>
         <small>{t("notch.activeCount", { count: activeSessions.length })}</small>
       </div>
-      <div className={`notch-session-list ${visibleSessions.length ? "" : "is-empty"}`}>
-        {visibleSessions.length ? (
-          visibleSessions.map((session, index) => {
-            const reason = liveReason(session, t);
-            return (
-              <article
-                key={session.id}
-                className={`status-${session.status}`}
-                style={{ "--notch-session-index": index } as CSSProperties}
-              >
-                <div className="notch-session-top">
-                  <span className={`notch-agent-dot provider-${session.agent}`}>
-                    <ProviderMark agent={session.agent} size={14} />
-                  </span>
-                  <span>
-                    <strong>{session.projectLabel}</strong>
-                    <small>
-                      {agentName(session.agent)} · {t("notch.elapsed", {
-                        value: formatLiveElapsed(
-                          session.startedAt,
-                          session.status === "completed"
-                            ? new Date(session.updatedAt).getTime()
-                            : now,
-                        ),
-                      })}
-                    </small>
-                  </span>
-                  <span className="notch-phase">
-                    <AgentActivityGlyph session={session} compact />
-                    {t(`live.phase.${session.phase}`, { defaultValue: session.phase })}
-                  </span>
-                </div>
-                {reason ? <p>{reason}</p> : null}
-                <footer>
-                  <NotchActionFlow actions={session.actions} t={t} />
-                  <button
-                    onClick={() => void api.jumpToLiveSession(session.id)}
-                    aria-label={t("live.jump")}
+      <div
+        ref={sessionListRef}
+        className={`notch-session-list${sessionListScrollable ? " is-scrollable" : ""} ${
+          visibleSessions.length || completedSessions.length || clearUndo ? "" : "is-empty"
+        }`}
+      >
+        {visibleSessions.map((session, index) => {
+          const reason =
+            activeJumpError === session.id ? t("notch.jumpFailed") : liveReason(session, t);
+          const conversationTitle = conversationTitleForSession(session);
+          return (
+            <article
+              key={session.id}
+              className={`status-${session.status}`}
+              style={{ "--notch-session-index": index } as CSSProperties}
+            >
+              <div className="notch-session-top">
+                <span className={`notch-agent-dot provider-${session.agent}`}>
+                  <ProviderMark agent={session.agent} size={14} />
+                </span>
+                <span>
+                  <span
+                    className={`notch-session-title-line${conversationTitle ? " has-conversation" : ""}`}
                   >
-                    <ArrowUpRight size={13} />
-                  </button>
-                </footer>
-              </article>
-            );
-          })
-        ) : (
+                    <strong>{session.projectLabel}</strong>
+                    {conversationTitle ? (
+                      <>
+                        <i aria-hidden="true">·</i>
+                        <span>{conversationTitle}</span>
+                      </>
+                    ) : null}
+                  </span>
+                  <small>
+                    {agentName(session.agent)} · {t("notch.elapsed", {
+                      value: formatLiveElapsed(session.startedAt, now),
+                    })}
+                  </small>
+                </span>
+                <span className="notch-phase">
+                  <AgentActivityGlyph session={session} compact />
+                  {t(`live.phase.${session.phase}`, { defaultValue: session.phase })}
+                </span>
+              </div>
+              {reason ? <p>{reason}</p> : null}
+              <footer>
+                <NotchActionFlow actions={session.actions} t={t} />
+                <button
+                  onClick={() => void jumpToActive(session.id)}
+                  aria-label={t("live.jump")}
+                  title={t("live.jump")}
+                >
+                  <ArrowUpRight size={13} />
+                </button>
+              </footer>
+            </article>
+          );
+        })}
+        {completedSessions.length ? (
+          <section className="notch-completed-section">
+            <div className="notch-completed-header">
+              <button
+                className="notch-completed-toggle"
+                onClick={() => setCompletedExpanded((expanded) => !expanded)}
+                aria-expanded={completedExpanded}
+              >
+                <ChevronDown
+                  size={12}
+                  className={completedExpanded ? "is-expanded" : ""}
+                  aria-hidden="true"
+                />
+                <strong>{t("notch.completedCount", { count: completedSessions.length })}</strong>
+              </button>
+              <button
+                className="notch-completed-clear"
+                onClick={() => void clearCompleted()}
+                aria-label={t("notch.clearCompleted")}
+                title={t("notch.clearCompleted")}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            {completedExpanded
+              ? completedSessions.map((completed, index) => {
+                  const session = completed.session;
+                  const conversationTitle = conversationTitleForSession(session);
+                  return (
+                    <article
+                      key={session.id}
+                      className="status-completed"
+                      style={{ "--notch-session-index": visibleSessions.length + index } as CSSProperties}
+                    >
+                      <div className="notch-session-top">
+                        <span className={`notch-agent-dot provider-${session.agent}`}>
+                          <ProviderMark agent={session.agent} size={14} />
+                        </span>
+                        <span>
+                          <span
+                            className={`notch-session-title-line${conversationTitle ? " has-conversation" : ""}`}
+                          >
+                            <strong>{session.projectLabel}</strong>
+                            {conversationTitle ? (
+                              <>
+                                <i aria-hidden="true">·</i>
+                                <span>{conversationTitle}</span>
+                              </>
+                            ) : null}
+                          </span>
+                          <small>
+                            {agentName(session.agent)} · {t("notch.totalElapsed", {
+                              value: formatLiveElapsed(
+                                completed.cycleStartedAt,
+                                new Date(completed.completedAt).getTime(),
+                              ),
+                            })}
+                          </small>
+                        </span>
+                        <span className="notch-phase">
+                          <AgentActivityGlyph session={session} compact />
+                          {t("live.phase.completed")}
+                        </span>
+                      </div>
+                      {completedJumpError === session.id ? (
+                        <p>{t("notch.jumpFailed")}</p>
+                      ) : null}
+                      <footer>
+                        <NotchActionFlow actions={session.actions} t={t} />
+                        <span className="notch-completed-actions">
+                          <button
+                            onClick={() => void removeCompleted(session.id)}
+                            aria-label={t("notch.removeCompleted")}
+                            title={t("notch.removeCompleted")}
+                          >
+                            <X size={12} />
+                          </button>
+                          <button
+                            onClick={() => void jumpToCompleted(session.id)}
+                            aria-label={t("live.jump")}
+                            title={t("live.jump")}
+                          >
+                            <ArrowUpRight size={13} />
+                          </button>
+                        </span>
+                      </footer>
+                    </article>
+                  );
+                })
+              : null}
+          </section>
+        ) : null}
+        {clearUndo ? (
+          <div className="notch-clear-undo" role="status">
+            <span>{t("notch.clearedCount", { count: clearUndo.count })}</span>
+            <button onClick={() => void undoClearCompleted()}>
+              <Undo2 size={12} />
+              {t("notch.undoClear")}
+            </button>
+          </div>
+        ) : null}
+        {!visibleSessions.length && !completedSessions.length && !clearUndo ? (
           <div className="notch-empty">
             <strong>VibeMeter</strong>
             <span>{t("notch.noActivity")}</span>
           </div>
-        )}
+        ) : null}
       </div>
     </section>
   );

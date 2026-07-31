@@ -6,7 +6,7 @@ use crate::models::{
 use base64::Engine as _;
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use once_cell::sync::Lazy;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{Child as PtyChild, CommandBuilder, PtySize, native_pty_system};
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
@@ -811,62 +811,65 @@ fn fetch_codex_usage() -> AppResult<ProviderUsage> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| AppError::ProviderUnavailable("Codex stdin is unavailable".into()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::ProviderUnavailable("Codex stdout is unavailable".into()))?;
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if sender.send(line).is_err() {
-                break;
+    let probe_result: AppResult<Value> = (|| {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::ProviderUnavailable("Codex stdin is unavailable".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::ProviderUnavailable("Codex stdout is unavailable".into()))?;
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
             }
-        }
-    });
-    write_json_line(
-        &mut stdin,
-        &json!({
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
-                "capabilities": {"experimentalApi":true}
-            }
-        }),
-    )?;
+        });
+        write_json_line(
+            &mut stdin,
+            &json!({
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
+                    "capabilities": {"experimentalApi":true}
+                }
+            }),
+        )?;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut result = None;
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let Ok(line) = receiver.recv_timeout(remaining.min(Duration::from_millis(500))) else {
-            continue;
-        };
-        let Ok(payload) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        match payload.get("id").and_then(Value::as_i64) {
-            Some(1) => {
-                write_json_line(&mut stdin, &json!({"method":"initialized","params":{}}))?;
-                write_json_line(
-                    &mut stdin,
-                    &json!({"id":2,"method":"account/rateLimits/read","params":{}}),
-                )?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut result = None;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Ok(line) = receiver.recv_timeout(remaining.min(Duration::from_millis(500))) else {
+                continue;
+            };
+            let Ok(payload) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match payload.get("id").and_then(Value::as_i64) {
+                Some(1) => {
+                    write_json_line(&mut stdin, &json!({"method":"initialized","params":{}}))?;
+                    write_json_line(
+                        &mut stdin,
+                        &json!({"id":2,"method":"account/rateLimits/read","params":{}}),
+                    )?;
+                }
+                Some(2) => {
+                    result = payload.get("result").cloned();
+                    break;
+                }
+                _ => {}
             }
-            Some(2) => {
-                result = payload.get("result").cloned();
-                break;
-            }
-            _ => {}
         }
-    }
+        result.ok_or_else(|| AppError::ProviderUnavailable("Codex quota request timed out".into()))
+    })();
     let _ = child.kill();
-    let payload = result
-        .ok_or_else(|| AppError::ProviderUnavailable("Codex quota request timed out".into()))?;
+    let _ = child.wait();
+    let payload = probe_result?;
     codex_usage_from_value(&payload)
 }
 
@@ -1101,58 +1104,73 @@ fn probe_claude_cli(probe_dir: &Path) -> AppResult<ProviderUsage> {
         .spawn_command(command)
         .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
     drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
-    let mut writer = pair
-        .master
-        .take_writer()
-        .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut chunk = [0_u8; 8192];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => {
-                    if sender.send(chunk[..count].to_vec()).is_err() {
-                        break;
+    let probe_result: AppResult<Vec<u8>> = (|| {
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => {
+                        if sender.send(chunk[..count].to_vec()).is_err() {
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 
-    std::thread::sleep(Duration::from_millis(1200));
-    writer.write_all(b"/usage\r")?;
-    writer.flush()?;
-    let deadline = Instant::now() + Duration::from_secs(14);
-    let mut capture = Vec::new();
-    let mut last_enter = Instant::now();
-    while Instant::now() < deadline && capture.len() < 2 * 1024 * 1024 {
-        if let Ok(chunk) = receiver.recv_timeout(Duration::from_millis(300)) {
-            capture.extend_from_slice(&chunk);
-        }
-        let text = strip_terminal_codes(&String::from_utf8_lossy(&capture));
-        if text.to_ascii_lowercase().contains("current session") && PERCENT.is_match(&text) {
-            std::thread::sleep(Duration::from_millis(700));
-            while let Ok(chunk) = receiver.try_recv() {
+        std::thread::sleep(Duration::from_millis(1200));
+        writer.write_all(b"/usage\r")?;
+        writer.flush()?;
+        let deadline = Instant::now() + Duration::from_secs(14);
+        let mut capture = Vec::new();
+        let mut last_enter = Instant::now();
+        while Instant::now() < deadline && capture.len() < 2 * 1024 * 1024 {
+            if let Ok(chunk) = receiver.recv_timeout(Duration::from_millis(300)) {
                 capture.extend_from_slice(&chunk);
             }
-            break;
+            let text = strip_terminal_codes(&String::from_utf8_lossy(&capture));
+            if text.to_ascii_lowercase().contains("current session") && PERCENT.is_match(&text) {
+                std::thread::sleep(Duration::from_millis(700));
+                while let Ok(chunk) = receiver.try_recv() {
+                    capture.extend_from_slice(&chunk);
+                }
+                break;
+            }
+            if last_enter.elapsed() >= Duration::from_secs(2) {
+                let _ = writer.write_all(b"\r");
+                let _ = writer.flush();
+                last_enter = Instant::now();
+            }
         }
-        if last_enter.elapsed() >= Duration::from_secs(2) {
-            let _ = writer.write_all(b"\r");
-            let _ = writer.flush();
-            last_enter = Instant::now();
-        }
-    }
-    let _ = writer.write_all(&[3]);
-    let _ = writer.flush();
-    let _ = child.kill();
+        let _ = writer.write_all(&[3]);
+        let _ = writer.flush();
+        Ok(capture)
+    })();
+    terminate_pty_child(child.as_mut());
+    let capture = probe_result?;
     let text = strip_terminal_codes(&String::from_utf8_lossy(&capture));
     claude_cli_usage_from_text(&text)
+}
+
+fn terminate_pty_child(child: &mut dyn PtyChild) {
+    #[cfg(unix)]
+    if let Some(child) = child.downcast_mut::<std::process::Child>() {
+        let _ = std::process::Child::kill(child);
+        let _ = std::process::Child::wait(child);
+        return;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn claude_cli_usage_from_text(text: &str) -> AppResult<ProviderUsage> {
@@ -1271,6 +1289,36 @@ mod tests {
         assert_eq!(usage.windows.len(), 2);
         assert_eq!(usage.windows[0].used_percent, Some(18.0));
         assert_eq!(usage.windows[1].used_percent, Some(24.0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pty_probe_child_is_reaped_after_termination() {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 4,
+                cols: 20,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("pty");
+        let mut command = CommandBuilder::new("/bin/sleep");
+        command.arg("30");
+        let mut child = pair.slave.spawn_command(command).expect("child");
+        let process_id = child.process_id().expect("process id");
+        terminate_pty_child(child.as_mut());
+
+        let status = Command::new("/bin/ps")
+            .args(["-p", &process_id.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("ps status");
+        assert!(
+            !status.success(),
+            "terminated child should not remain a zombie"
+        );
     }
 
     #[test]

@@ -587,6 +587,22 @@ pub struct LiveAction {
     pub occurred_at: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveJumpContext {
+    pub tty: Option<String>,
+    pub terminal_kind: Option<String>,
+    pub host_app_name: Option<String>,
+    pub process_started_at: Option<String>,
+    pub tmux_socket: Option<String>,
+    pub tmux_pane: Option<String>,
+    pub tmux_executable: Option<String>,
+    pub cmux_socket: Option<String>,
+    pub cmux_workspace_id: Option<String>,
+    pub cmux_surface_id: Option<String>,
+    pub cmux_executable: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveSession {
@@ -594,6 +610,8 @@ pub struct LiveSession {
     pub source_session_id: String,
     pub agent: String,
     pub project_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_title: Option<String>,
     pub status: String,
     pub phase: String,
     pub started_at: String,
@@ -602,6 +620,23 @@ pub struct LiveSession {
     pub actions: Vec<LiveAction>,
     pub process_id: Option<u32>,
     pub origin: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub jump_context: Option<LiveJumpContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotchCompletedSession {
+    pub session: LiveSession,
+    pub cycle_started_at: String,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotchClearResult {
+    pub token: String,
+    pub count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -626,6 +661,7 @@ pub struct HookStatus {
 pub struct LiveSnapshot {
     pub generated_at: String,
     pub sessions: Vec<LiveSession>,
+    pub completed_sessions: Vec<NotchCompletedSession>,
     pub urgent_session_id: Option<String>,
     pub active_count: u64,
     pub hook_status: HookStatus,

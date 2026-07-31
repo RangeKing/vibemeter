@@ -18,7 +18,7 @@ const NOTCH_EXPANDED_HEIGHT: f64 = 168.0;
 const NOTCH_MIN_LEFT_WING_WIDTH: f64 = 68.0;
 const NOTCH_MAX_LEFT_WING_WIDTH: f64 = 160.0;
 const NOTCH_MIN_EXPANDED_HEIGHT: f64 = 150.0;
-const NOTCH_MAX_EXPANDED_HEIGHT: f64 = 352.0;
+const NOTCH_SCREEN_BOTTOM_MARGIN: f64 = 16.0;
 const NOTCH_HOVER_EXPAND_DELAY: Duration = Duration::from_millis(300);
 const NOTCH_HOVER_COLLAPSE_DELAY: Duration = Duration::from_millis(500);
 const NOTCH_COLLAPSE_ANIMATION_DURATION: Duration = Duration::from_millis(260);
@@ -469,8 +469,7 @@ pub fn set_notch_layout(
 ) -> tauri::Result<()> {
     let left_wing_width = finite_or(left_wing_width, NOTCH_LEFT_WING_WIDTH)
         .clamp(NOTCH_MIN_LEFT_WING_WIDTH, NOTCH_MAX_LEFT_WING_WIDTH);
-    let expanded_height = finite_or(expanded_height, NOTCH_EXPANDED_HEIGHT)
-        .clamp(NOTCH_MIN_EXPANDED_HEIGHT, NOTCH_MAX_EXPANDED_HEIGHT);
+    let expanded_height = clamp_expanded_height(expanded_height, current_geometry());
     let left_changed = NOTCH_LEFT_WING_WIDTH_BITS.swap(left_wing_width.to_bits(), Ordering::SeqCst)
         != left_wing_width.to_bits();
     let height_changed = NOTCH_EXPANDED_HEIGHT_BITS
@@ -545,6 +544,12 @@ fn current_geometry() -> NotchGeometry {
 
 fn finite_or(value: f64, fallback: f64) -> f64 {
     if value.is_finite() { value } else { fallback }
+}
+
+fn clamp_expanded_height(value: f64, geometry: NotchGeometry) -> f64 {
+    let screen_max =
+        (geometry.screen_height - NOTCH_SCREEN_BOTTOM_MARGIN).max(NOTCH_MIN_EXPANDED_HEIGHT);
+    finite_or(value, NOTCH_EXPANDED_HEIGHT).clamp(NOTCH_MIN_EXPANDED_HEIGHT, screen_max)
 }
 
 fn current_left_wing_width() -> f64 {
@@ -763,6 +768,16 @@ mod tests {
         assert_eq!(layout.width, NOTCH_EXPANDED_WIDTH);
         assert_eq!(layout.height, 186.0);
         assert_eq!(layout.left_of_hardware_center, NOTCH_EXPANDED_WIDTH / 2.0);
+    }
+
+    #[test]
+    fn expanded_height_grows_with_content_until_the_screen_bottom_margin() {
+        let geometry = NotchGeometry {
+            screen_height: 500.0,
+            ..NotchGeometry::default()
+        };
+        assert_eq!(clamp_expanded_height(429.0, geometry), 429.0);
+        assert_eq!(clamp_expanded_height(900.0, geometry), 484.0);
     }
 
     #[test]

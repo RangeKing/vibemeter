@@ -3,12 +3,12 @@ use crate::models::{
     AgentKind, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem, CoverageNotice,
     DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, GitCommitEvidence,
     GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat,
-    InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem,
-    LiveTimelinePoint, OverviewResponse, OverviewTotals, ParseState, PhraseAgentCount, PhraseCloud,
-    PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
-    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail,
-    SessionListFilters, SessionSummary, SessionsResponse, SourceStatus, TaskSummary, TokenUsage,
-    VctiProfile,
+    InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem, LiveSession,
+    LiveTimelinePoint, NotchClearResult, NotchCompletedSession, OverviewResponse, OverviewTotals,
+    ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem, PhraseCloudResponse,
+    PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase, ProjectControl, Provenance,
+    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionSummary, SessionsResponse,
+    SourceStatus, TaskSummary, TokenUsage, VctiProfile,
 };
 use chrono::{DateTime, Duration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -405,6 +405,28 @@ CREATE INDEX IF NOT EXISTS live_events_status_idx ON live_events(status, receive
 PRAGMA user_version = 10;
 "#;
 
+const MIGRATION_V11: &str = r#"
+CREATE TABLE IF NOT EXISTS notch_session_history (
+    id TEXT PRIMARY KEY,
+    session_json TEXT NOT NULL,
+    cycle_started_at TEXT NOT NULL,
+    seen_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    cleared_at TEXT
+);
+CREATE INDEX IF NOT EXISTS notch_session_history_completed_idx
+    ON notch_session_history(status, completed_at DESC);
+CREATE INDEX IF NOT EXISTS notch_session_history_seen_idx
+    ON notch_session_history(status, seen_at);
+PRAGMA user_version = 11;
+"#;
+
+const MIGRATION_V12: &str = r#"
+ALTER TABLE notch_session_history ADD COLUMN jump_context_json TEXT;
+PRAGMA user_version = 12;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -455,6 +477,12 @@ impl Database {
         }
         if version < 10 {
             connection.execute_batch(MIGRATION_V10)?;
+        }
+        if version < 11 {
+            connection.execute_batch(MIGRATION_V11)?;
+        }
+        if version < 12 {
+            connection.execute_batch(MIGRATION_V12)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -1156,6 +1184,224 @@ impl Database {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn mark_notch_sessions_seen(&self, sessions: &[LiveSession]) -> AppResult<()> {
+        if sessions.is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        prune_notch_session_history(&transaction, now)?;
+        for session in sessions {
+            let session_json = serde_json::to_string(session)?;
+            let jump_context_json = session
+                .jump_context
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            transaction.execute(
+                "INSERT INTO notch_session_history(
+                    id, session_json, cycle_started_at, seen_at,
+                    completed_at, status, cleared_at, jump_context_json
+                 ) VALUES(?1, ?2, ?3, ?4, NULL, 'active', NULL, ?5)
+                 ON CONFLICT(id) DO UPDATE SET
+                    session_json=excluded.session_json,
+                    jump_context_json=COALESCE(
+                        excluded.jump_context_json,
+                        notch_session_history.jump_context_json
+                    ),
+                    cycle_started_at=CASE
+                        WHEN notch_session_history.status='completed'
+                        THEN excluded.seen_at
+                        ELSE notch_session_history.cycle_started_at
+                    END,
+                    seen_at=excluded.seen_at,
+                    completed_at=CASE
+                        WHEN notch_session_history.status='completed'
+                        THEN NULL
+                        ELSE notch_session_history.completed_at
+                    END,
+                    status='active',
+                    cleared_at=NULL",
+                params![
+                    session.id,
+                    session_json,
+                    session.started_at,
+                    now_text,
+                    jump_context_json
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn live_conversation_titles(
+        &self,
+        sources: &[(String, String)],
+    ) -> AppResult<HashMap<(String, String), String>> {
+        if sources.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT title
+             FROM sessions
+             WHERE agent=?1
+               AND source_session_id=?2
+               AND title IS NOT NULL
+               AND TRIM(title)<>''
+             ORDER BY COALESCE(ended_at, started_at) DESC
+             LIMIT 1",
+        )?;
+        let mut titles = HashMap::new();
+        for (agent, source_session_id) in sources {
+            let key = (agent.clone(), source_session_id.clone());
+            if titles.contains_key(&key) {
+                continue;
+            }
+            let raw = statement
+                .query_row(params![agent, source_session_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .optional()?;
+            if let Some(title) = raw.and_then(|value| crate::privacy::sanitize_title(&value)) {
+                titles.insert(key, title);
+            }
+        }
+        Ok(titles)
+    }
+
+    pub fn complete_notch_session(&self, session: &LiveSession) -> AppResult<bool> {
+        let now = Utc::now();
+        let completed_at = session.updated_at.clone();
+        let session_json = serde_json::to_string(session)?;
+        let jump_context_json = session
+            .jump_context
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let updated = transaction.execute(
+            "UPDATE notch_session_history
+             SET session_json=?2,
+                 seen_at=?3,
+                 completed_at=?4,
+                 status='completed',
+                 cleared_at=NULL,
+                 jump_context_json=COALESCE(?5, jump_context_json)
+             WHERE id=?1 AND status='active'",
+            params![
+                session.id,
+                session_json,
+                now.to_rfc3339(),
+                completed_at,
+                jump_context_json
+            ],
+        )?;
+        prune_notch_session_history(&transaction, now)?;
+        transaction.commit()?;
+        Ok(updated > 0)
+    }
+
+    pub fn notch_completed_sessions(&self) -> AppResult<Vec<NotchCompletedSession>> {
+        let now = Utc::now();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        prune_notch_session_history(&transaction, now)?;
+        let rows = {
+            let mut statement = transaction.prepare(
+                "SELECT session_json, cycle_started_at, completed_at, jump_context_json
+                 FROM notch_session_history
+                 WHERE status='completed'
+                   AND cleared_at IS NULL
+                   AND completed_at IS NOT NULL
+                 ORDER BY completed_at DESC, id ASC
+                 LIMIT 10",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        transaction.commit()?;
+        rows.into_iter()
+            .map(
+                |(session_json, cycle_started_at, completed_at, jump_context_json)| {
+                    let mut session: LiveSession = serde_json::from_str(&session_json)?;
+                    session.jump_context = jump_context_json
+                        .as_deref()
+                        .map(serde_json::from_str)
+                        .transpose()?;
+                    Ok(NotchCompletedSession {
+                        session,
+                        cycle_started_at,
+                        completed_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    pub fn notch_completed_session(&self, id: &str) -> AppResult<Option<NotchCompletedSession>> {
+        Ok(self
+            .notch_completed_sessions()?
+            .into_iter()
+            .find(|completed| completed.session.id == id))
+    }
+
+    pub fn delete_notch_completed_session(&self, id: &str) -> AppResult<bool> {
+        let connection = self.connect()?;
+        Ok(connection.execute(
+            "DELETE FROM notch_session_history WHERE id=?1 AND status='completed'",
+            params![id],
+        )? > 0)
+    }
+
+    pub fn clear_notch_completed_sessions(&self) -> AppResult<NotchClearResult> {
+        let now = Utc::now();
+        let token = now.to_rfc3339();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        prune_notch_session_history(&transaction, now)?;
+        let count = transaction.execute(
+            "UPDATE notch_session_history
+             SET cleared_at=?1
+             WHERE status='completed' AND cleared_at IS NULL",
+            params![token],
+        )?;
+        transaction.commit()?;
+        Ok(NotchClearResult {
+            token,
+            count: count as u64,
+        })
+    }
+
+    pub fn undo_clear_notch_completed_sessions(&self, token: &str) -> AppResult<u64> {
+        let cleared_at = DateTime::parse_from_rfc3339(token)
+            .map_err(|_| AppError::InvalidRequest("invalid Notch clear token".into()))?
+            .with_timezone(&Utc);
+        if Utc::now().signed_duration_since(cleared_at) > Duration::seconds(5) {
+            return Ok(0);
+        }
+        let connection = self.connect()?;
+        let restored = connection.execute(
+            "UPDATE notch_session_history
+             SET cleared_at=NULL
+             WHERE status='completed' AND cleared_at=?1",
+            params![token],
+        )?;
+        Ok(restored as u64)
     }
 
     pub fn purge_expired_live_events(&self) -> AppResult<u64> {
@@ -2170,6 +2416,30 @@ impl Database {
         )?;
         Ok(())
     }
+}
+
+fn prune_notch_session_history(transaction: &Transaction<'_>, now: DateTime<Utc>) -> AppResult<()> {
+    let cutoff = (now - Duration::hours(24)).to_rfc3339();
+    transaction.execute(
+        "DELETE FROM notch_session_history
+         WHERE (status='completed' AND completed_at<?1)
+            OR (status='active' AND seen_at<?1)",
+        params![cutoff],
+    )?;
+    transaction.execute(
+        "DELETE FROM notch_session_history
+         WHERE status='completed'
+           AND cleared_at IS NULL
+           AND id NOT IN (
+               SELECT id
+               FROM notch_session_history
+               WHERE status='completed' AND cleared_at IS NULL
+               ORDER BY completed_at DESC, id ASC
+               LIMIT 10
+           )",
+        [],
+    )?;
+    Ok(())
 }
 
 fn replace_session_children(
@@ -4293,6 +4563,29 @@ mod concurrency_tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Barrier};
 
+    fn notch_session(id: &str, status: &str, started_at: &str, updated_at: &str) -> LiveSession {
+        LiveSession {
+            id: id.into(),
+            source_session_id: format!("source-{id}"),
+            agent: "codex".into(),
+            project_label: format!("project-{id}"),
+            conversation_title: None,
+            status: status.into(),
+            phase: if status == "completed" {
+                "completed".into()
+            } else {
+                "thinking".into()
+            },
+            started_at: started_at.into(),
+            updated_at: updated_at.into(),
+            waiting_reason: None,
+            actions: Vec::new(),
+            process_id: None,
+            origin: Some("desktop".into()),
+            jump_context: None,
+        }
+    }
+
     #[test]
     fn derives_verification_state_from_observed_evidence() {
         assert_eq!(derive_verification_state(0, 0, 0, 1), "verified");
@@ -5110,5 +5403,178 @@ mod concurrency_tests {
         for worker in workers {
             worker.join().expect("database worker should finish");
         }
+    }
+
+    #[test]
+    fn live_conversation_titles_are_bounded_and_sanitized() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("live-title.sqlite"))
+            .expect("database should open");
+        let mut state = ParseState::new(AgentKind::Codex, "conversation-source".into());
+        state.started_at = Some("2026-07-31T10:00:00Z".into());
+        state.ended_at = Some("2026-07-31T10:05:00Z".into());
+        state.title = Some("[$skill]([path]) Repair stable Notch ordering".into());
+        state.project_label = Some("vibemeter".into());
+        database
+            .persist_parse_state("conversation-file", 1, 1, 1, &state)
+            .expect("session title should persist");
+
+        let titles = database
+            .live_conversation_titles(&[("codex".into(), "conversation-source".into())])
+            .expect("title lookup should succeed");
+        assert_eq!(
+            titles
+                .get(&("codex".into(), "conversation-source".into()))
+                .map(String::as_str),
+            Some("Repair stable Notch ordering")
+        );
+    }
+
+    #[test]
+    fn notch_completion_history_persists_cycles_and_supports_clear_undo() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("notch-history.sqlite"))
+            .expect("database should open");
+        let now = Utc::now();
+        let started_at = (now - Duration::minutes(15)).to_rfc3339();
+        let mut session = notch_session("retained", "running", &started_at, &started_at);
+        session.jump_context = Some(crate::models::LiveJumpContext {
+            terminal_kind: Some("cmux".into()),
+            cmux_socket: Some("/tmp/cmux.sock".into()),
+            cmux_workspace_id: Some("workspace:2".into()),
+            cmux_surface_id: Some("surface:8".into()),
+            ..crate::models::LiveJumpContext::default()
+        });
+        database
+            .mark_notch_sessions_seen(&[session.clone()])
+            .expect("running task should be marked as seen");
+        session.status = "completed".into();
+        session.phase = "completed".into();
+        session.updated_at = (now - Duration::minutes(2)).to_rfc3339();
+        assert!(
+            database
+                .complete_notch_session(&session)
+                .expect("completion should persist")
+        );
+
+        let completed = database
+            .notch_completed_sessions()
+            .expect("completed task should load");
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].cycle_started_at, started_at);
+        assert_eq!(completed[0].completed_at, session.updated_at);
+        assert_eq!(
+            completed[0]
+                .session
+                .jump_context
+                .as_ref()
+                .and_then(|context| context.cmux_surface_id.as_deref()),
+            Some("surface:8")
+        );
+
+        session.status = "running".into();
+        session.phase = "thinking".into();
+        database
+            .mark_notch_sessions_seen(&[session.clone()])
+            .expect("resumed task should start a new cycle");
+        assert!(
+            database
+                .notch_completed_sessions()
+                .expect("resumed task should leave completed")
+                .is_empty()
+        );
+        session.status = "completed".into();
+        session.phase = "completed".into();
+        session.updated_at = Utc::now().to_rfc3339();
+        database
+            .complete_notch_session(&session)
+            .expect("resumed completion should persist");
+        let resumed = database
+            .notch_completed_sessions()
+            .expect("resumed completion should load");
+        assert_eq!(resumed.len(), 1);
+        assert_ne!(resumed[0].cycle_started_at, started_at);
+
+        let clear = database
+            .clear_notch_completed_sessions()
+            .expect("clear should succeed");
+        assert_eq!(clear.count, 1);
+        assert!(
+            database
+                .notch_completed_sessions()
+                .expect("cleared list")
+                .is_empty()
+        );
+        assert_eq!(
+            database
+                .undo_clear_notch_completed_sessions(&clear.token)
+                .expect("undo should succeed"),
+            1
+        );
+        assert_eq!(
+            database
+                .notch_completed_sessions()
+                .expect("restored list")
+                .len(),
+            1
+        );
+        assert!(
+            database
+                .delete_notch_completed_session("retained")
+                .expect("single delete should succeed")
+        );
+        assert!(
+            database
+                .notch_completed_sessions()
+                .expect("deleted list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn notch_completion_history_keeps_only_ten_recent_tasks_for_twenty_four_hours() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("notch-history-cap.sqlite"))
+            .expect("database should open");
+        let now = Utc::now();
+        for index in 0..11 {
+            let started_at = (now - Duration::minutes(20 + index)).to_rfc3339();
+            let completed_at = (now - Duration::minutes(index)).to_rfc3339();
+            let mut session = notch_session(
+                &format!("recent-{index}"),
+                "running",
+                &started_at,
+                &started_at,
+            );
+            database
+                .mark_notch_sessions_seen(&[session.clone()])
+                .expect("task should be marked as seen");
+            session.status = "completed".into();
+            session.phase = "completed".into();
+            session.updated_at = completed_at;
+            database
+                .complete_notch_session(&session)
+                .expect("completion should persist");
+        }
+        let expired_started = (now - Duration::hours(26)).to_rfc3339();
+        let expired_completed = (now - Duration::hours(25)).to_rfc3339();
+        let mut expired = notch_session("expired", "running", &expired_started, &expired_started);
+        database
+            .mark_notch_sessions_seen(&[expired.clone()])
+            .expect("expired task should be marked as seen");
+        expired.status = "completed".into();
+        expired.phase = "completed".into();
+        expired.updated_at = expired_completed;
+        database
+            .complete_notch_session(&expired)
+            .expect("expired completion should be processed");
+
+        let completed = database
+            .notch_completed_sessions()
+            .expect("completed tasks should load");
+        assert_eq!(completed.len(), 10);
+        assert_eq!(completed[0].session.id, "recent-0");
+        assert!(completed.iter().all(|item| item.session.id != "recent-10"));
+        assert!(completed.iter().all(|item| item.session.id != "expired"));
     }
 }

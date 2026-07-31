@@ -8,6 +8,7 @@ import type {
   MenuBarSnapshot,
   LiveActivityResponse,
   LiveSnapshot,
+  NotchClearResult,
   NotchUiState,
   HookStatus,
   OverviewResponse,
@@ -32,6 +33,15 @@ export const api = {
   repairLiveHooks: () => invoke<HookStatus>("repair_live_hooks"),
   uninstallLiveHooks: () => invoke<HookStatus>("uninstall_live_hooks"),
   jumpToLiveSession: (id: string) => invoke<void>("jump_to_live_session", { id }),
+  markNotchSessionsSeen: (ids: string[]) => invoke<void>("mark_notch_sessions_seen", { ids }),
+  jumpToNotchCompletedSession: (id: string) =>
+    invoke<void>("jump_to_notch_completed_session", { id }),
+  deleteNotchCompletedSession: (id: string) =>
+    invoke<void>("delete_notch_completed_session", { id }),
+  clearNotchCompletedSessions: () =>
+    invoke<NotchClearResult>("clear_notch_completed_sessions"),
+  undoClearNotchCompletedSessions: (token: string) =>
+    invoke<number>("undo_clear_notch_completed_sessions", { token }),
   setNotchExpanded: (expanded: boolean) => invoke<void>("set_notch_expanded", { expanded }),
   notchState: () => invoke<NotchUiState>("get_notch_state"),
   setNotchPinned: (pinned: boolean) => invoke<void>("set_notch_pinned", { pinned }),
