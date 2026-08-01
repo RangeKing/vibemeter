@@ -159,10 +159,25 @@ export interface OverviewResponse {
   agents: DistributionItem[];
   models: DistributionItem[];
   tools: DistributionItem[];
+  skills: SkillUsageSummary;
   behavior: BehaviorSummary;
   recentSessions: SessionSummary[];
   coverage: CoverageNotice[];
   indexStatus: IndexStatus;
+}
+
+export interface SkillUsageItem {
+  name: string;
+  invocationCount: number;
+  sessionCount: number;
+}
+
+export interface SkillUsageSummary {
+  mostUsed: SkillUsageItem[];
+  leastUsed: SkillUsageItem[];
+  installedWithoutUsage: string[];
+  installedCount: number;
+  usedCount: number;
 }
 
 export interface PhraseAgentCount {
@@ -594,6 +609,7 @@ export interface MenuBarSnapshot {
   usage: TokenUsage;
   costUsd?: number;
   heatmap: DailyUsagePoint[];
+  hourly: HourlyUsagePoint[];
   providers: ProviderUsage[];
   indexStatus: IndexStatus;
 }

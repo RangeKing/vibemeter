@@ -6,6 +6,16 @@ VibeMeter is a local-first macOS activity tracker for AI coding. It shows live C
 
 ![VibeMeter icon](vibemeter.png)
 
+## Key screens
+
+| VCTI profile | Live activity with Notch |
+| --- | --- |
+| ![VCTI profile](docs/assets/screenshots/vcti.png) | ![Live activity and Notch](docs/assets/screenshots/live.png) |
+| Data | Share |
+| ![Data page](docs/assets/screenshots/data.png) | ![Share page](docs/assets/screenshots/share.png) |
+
+<p align="center"><img src="docs/assets/screenshots/menubar.png" width="420" alt="Menu-bar analytics popover"></p>
+
 ## Core surfaces
 
 - **VCTI:** Build an evidence-bound AI coding profile with explicit dimensions, confidence, and supporting behavior. Default landing page; insufficient data stays insufficient.
@@ -13,6 +23,78 @@ VibeMeter is a local-first macOS activity tracker for AI coding. It shows live C
 - **Data:** Review sessions, tokens, time, cost, models, tools, activity, and work events.
 
 Share and Settings are utility surfaces. Share Studio is preview-first with five common aspect presets and collapsed copy/display/metric controls. Catchphrases and insight cards live on VCTI; comparison bars and session replay live on Data. Sources remain a transitional route opened from Settings. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. `aftervibe` remains only as a legacy database migration identifier.
+
+## VCTI: 24 AI coding personalities
+
+VCTI groups collaboration behavior into six stages with four personalities in each stage. The names make the patterns memorable; the result still comes from verifiable local behavior. When the evidence is too thin, VibeMeter keeps collecting instead of forcing a type.
+
+![The 24 VCTI personalities](apps/desktop/src/assets/vcti/vcti-types-atlas-v2.webp)
+
+### Starting Style
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-start-v2.png" width="620" alt="VCTI Starting Style: VIBE, SPEC, HACK, and MIX"></p>
+
+| Code | Personality | In one line |
+| --- | --- | --- |
+| `VIBE` | Vibe Lead | The spec can wait; the feeling has to arrive first. |
+| `SPEC` | Spec Owner | A task without acceptance criteria has not received a building permit. |
+| `HACK` | Shortcut Hacker | The orthodox answer is still reading docs; your side route already runs. |
+| `MIX` | Stack Stitcher | You turn wheels, frames, and engines into a vehicle that runs. |
+
+### Agent Direction
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-agent-v2.png" width="620" alt="VCTI Agent Direction: YOLO, LOOP, BOSS, and SWARM"></p>
+
+| Code | Personality | In one line |
+| --- | --- | --- |
+| `YOLO` | All-in Operator | Select all, execute, accept, pray—no wasted motion. |
+| `LOOP` | One-more-version | There is no failure between you and the agent, only another version. |
+| `BOSS` | Agent Foreman | You write less code and get better at arranging how code gets written. |
+| `SWARM` | Parallel Maniac | The product is not live, but the agent org chart already is. |
+
+### Quality Control
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-quality-v2.png" width="620" alt="VCTI Quality Control: DIFF, TEST, DOCS, and UNDO"></p>
+
+| Code | Personality | In one line |
+| --- | --- | --- |
+| `DIFF` | Diff Supervisor | Agents may improvise; every line still answers for itself. |
+| `TEST` | Test Gatekeeper | A page opening merely qualifies it to enter testing. |
+| `DOCS` | Docs Diehard | Knowledge that only lives in chat is one cleanup away from extinction. |
+| `UNDO` | Rollback Master | You let anything happen because you know how to make it unhappen. |
+
+### Debug & Repair
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-debug-v2.png" width="620" alt="VCTI Debug and Repair: DEBUG, PATCH, STACK, and AUTO"></p>
+
+| Code | Personality | In one line |
+| --- | --- | --- |
+| `DEBUG` | Bug Detective | Others see an error; you see an unorganized clue. |
+| `PATCH` | Patch Hero | Stop the leak first; restoring service is the present priority. |
+| `STACK` | Infra Maximalist | A button problem eventually gets its own service layer. |
+| `AUTO` | Automation Maniac | Anything done manually twice is challenging your principles. |
+
+### Delivery Rhythm
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-delivery-v2.png" width="620" alt="VCTI Delivery Rhythm: SHIP, RUSH, MVP, and DETAIL"></p>
+
+| Code | Personality | In one line |
+| --- | --- | --- |
+| `SHIP` | Release Warrior | While others debate field names, your preview link is already in chat. |
+| `RUSH` | Sprint Burner | You cruise steadily, then compress the final push into one intense closing window. |
+| `MVP` | Barebones Builder | The flow works and the data stays put—time to invite the first users. |
+| `DETAIL` | Detail Controller | The feature shipped long ago; the final two pixels have not. |
+
+### Tool Relationship
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-tools-v2.png" width="620" alt="VCTI Tool Relationship: FORK, TOKEN, CACHE, and BUDDY"></p>
+
+| Code | Personality | In one line |
+| --- | --- | --- |
+| `FORK` | Tool Hopper | Every new tool is a long-term relationship until the next one appears. |
+| `TOKEN` | Token Accountant | Every model call opens a cost report in your head. |
+| `CACHE` | Context Hoarder | Give the agent every background fact and it will find the answer somewhere. |
+| `BUDDY` | Cyber Partner | A genuinely compatible agent is worth building a long relationship with. |
 
 ## Live monitoring
 
@@ -71,6 +153,8 @@ apps/desktop/src-tauri/target/release/bundle/macos/VibeMeter.app
 ```
 
 The checked local delivery copy is `release/VibeMeter.app`. It is currently Apple Silicon and ad-hoc signed, not notarized.
+
+For a release, keep the versions in both `package.json` files, `Cargo.toml`, and `tauri.conf.json` in sync, then push the matching `vX.Y.Z` tag. GitHub Actions runs the full validation suite, builds Apple Silicon and Intel DMG and ZIP packages, and creates the GitHub Release. These artifacts are ad-hoc signed; Apple notarization remains a separate distribution step.
 
 ## Repository layout
 

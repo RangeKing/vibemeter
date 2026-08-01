@@ -204,6 +204,7 @@ pub fn consider_title(state: &mut ParseState, text: Option<&str>) {
         return;
     };
     let trimmed = text.trim();
+    crate::skill_usage::observe_explicit_invocations(state, trimmed);
     if trimmed.is_empty()
         || trimmed.starts_with('<')
         || trimmed.starts_with("You are ")

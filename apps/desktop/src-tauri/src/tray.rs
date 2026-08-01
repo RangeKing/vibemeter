@@ -157,6 +157,7 @@ pub fn setup(
             .no_activate(true)
             .with_window(|window| {
                 window
+                    .accept_first_mouse(true)
                     .resizable(false)
                     .decorations(false)
                     .transparent(true)
@@ -255,7 +256,19 @@ fn install_notch_event_monitors(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     let click_app_handle = app.clone();
     let click_handler: RcBlock<dyn Fn(NonNull<NSEvent>)> = RcBlock::new(move |_| {
-        if NOTCH_EXPANDED.load(Ordering::SeqCst) && !NOTCH_PINNED.load(Ordering::SeqCst) {
+        if !NOTCH_EXPANDED.load(Ordering::SeqCst) {
+            return;
+        }
+        if point_in_expanded_panel(current_geometry(), mouse_location()) {
+            // A click inside a hover-opened panel is deliberate interaction, not
+            // an outside-click dismissal. Promote it to a key panel so the same
+            // pointer sequence reaches the webview controls reliably.
+            if NOTCH_EXPANDED_FROM_HOVER.load(Ordering::SeqCst) {
+                let _ = set_notch_expanded_internal(&click_app_handle, true, false);
+            }
+            return;
+        }
+        if !NOTCH_PINNED.load(Ordering::SeqCst) {
             let _ = set_notch_expanded(&click_app_handle, false);
         }
     });

@@ -1,4 +1,4 @@
-import type { DailyUsagePoint, RangeKey } from "../types";
+import type { DailyUsagePoint, HourlyUsagePoint, RangeKey } from "../types";
 import { tokenTotal } from "./format";
 
 export const MENU_ACTIVITY_MAX_BARS = 15;
@@ -9,6 +9,8 @@ export type MenuActivityBucket = {
   endDate: string;
   value: number;
   sessions: number;
+  startHour?: number;
+  endHour?: number;
 };
 
 const RANGE_DAYS: Record<RangeKey, number> = {
@@ -32,7 +34,28 @@ export function buildMenuActivity(
   points: DailyUsagePoint[],
   referenceTime: Date,
   range: RangeKey,
+  hourlyPoints: HourlyUsagePoint[] = [],
 ): MenuActivityBucket[] {
+  if (range === "today") {
+    const date = localDateKey(referenceTime);
+    const values = Array.from({ length: 12 }, () => 0);
+    for (const point of hourlyPoints) {
+      if (!point.hour.startsWith(`${date}T`)) continue;
+      const hour = Number.parseInt(point.hour.slice(11, 13), 10);
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
+      values[Math.floor(hour / 2)] += tokenTotal(point.usage);
+    }
+    return values.map((value, index) => ({
+      key: `${date}T${String(index * 2).padStart(2, "0")}:00`,
+      startDate: date,
+      endDate: date,
+      startHour: index * 2,
+      endHour: (index + 1) * 2,
+      value,
+      sessions: 0,
+    }));
+  }
+
   const observed = new Map<string, { value: number; sessions: number }>();
   for (const point of points) {
     const current = observed.get(point.date) ?? { value: 0, sessions: 0 };

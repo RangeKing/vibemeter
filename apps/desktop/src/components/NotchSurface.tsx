@@ -19,7 +19,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { TFunction } from "i18next";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -328,6 +328,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const lastActivity = useRef<boolean | undefined>(undefined);
   const clearUndoTimeout = useRef<number | undefined>(undefined);
   const sessionListRef = useRef<HTMLDivElement>(null);
+  const pendingActions = useRef(new Set<string>());
   const sessions = snapshot.data?.sessions ?? [];
   const providerCounts = useMemo(() => activeProviderCounts(sessions), [sessions]);
   const activeSessions = providerCounts.active;
@@ -482,6 +483,36 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   };
   const togglePinned = async () => {
     await api.setNotchPinned(!notchState.pinned);
+  };
+  const runImmediateAction = async (key: string, action: () => Promise<void>) => {
+    if (pendingActions.current.has(key)) return;
+    pendingActions.current.add(key);
+    try {
+      await action();
+    } finally {
+      pendingActions.current.delete(key);
+    }
+  };
+  const onActionPointerDown = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    key: string,
+    action: () => Promise<void>,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void runImmediateAction(key, action);
+  };
+  const onActionClick = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    key: string,
+    action: () => Promise<void>,
+  ) => {
+    // Pointer activation is handled on pointerdown so a hover-opened NSPanel
+    // cannot swallow the first click. detail=0 preserves keyboard activation.
+    if (event.detail !== 0) return;
+    event.stopPropagation();
+    void runImmediateAction(key, action);
   };
   const jumpToActive = async (id: string) => {
     try {
@@ -652,7 +683,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
               <footer>
                 <NotchActionFlow actions={session.actions} t={t} />
                 <button
-                  onClick={() => void jumpToActive(session.id)}
+                  onPointerDown={(event) => onActionPointerDown(event, `jump:${session.id}`, () => jumpToActive(session.id))}
+                  onClick={(event) => onActionClick(event, `jump:${session.id}`, () => jumpToActive(session.id))}
                   aria-label={t("live.jump")}
                   title={t("live.jump")}
                 >
@@ -733,14 +765,16 @@ export function NotchSurface({ locale }: { locale: Locale }) {
                         <NotchActionFlow actions={session.actions} t={t} />
                         <span className="notch-completed-actions">
                           <button
-                            onClick={() => void removeCompleted(session.id)}
+                            onPointerDown={(event) => onActionPointerDown(event, `remove:${session.id}`, () => removeCompleted(session.id))}
+                            onClick={(event) => onActionClick(event, `remove:${session.id}`, () => removeCompleted(session.id))}
                             aria-label={t("notch.removeCompleted")}
                             title={t("notch.removeCompleted")}
                           >
                             <X size={12} />
                           </button>
                           <button
-                            onClick={() => void jumpToCompleted(session.id)}
+                            onPointerDown={(event) => onActionPointerDown(event, `jump-completed:${session.id}`, () => jumpToCompleted(session.id))}
+                            onClick={(event) => onActionClick(event, `jump-completed:${session.id}`, () => jumpToCompleted(session.id))}
                             aria-label={t("live.jump")}
                             title={t("live.jump")}
                           >

@@ -83,6 +83,7 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
     data.heatmap,
     Number.isNaN(generatedAt.getTime()) ? new Date() : generatedAt,
     data.range,
+    data.hourly,
   );
   const maxDay = Math.max(...activityDays.map((item) => item.value), 1);
   const activateHeatmap = (index: number) => {
@@ -115,7 +116,11 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
             const startLabel = dateFormat.format(new Date(`${item.startDate}T12:00:00`));
             const endLabel = dateFormat.format(new Date(`${item.endDate}T12:00:00`));
             const dateLabel = item.startDate === item.endDate ? startLabel : `${startLabel}–${endLabel}`;
-            const detail = `${dateLabel} · ${formatCompact(item.value, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`;
+            const hourLabel = item.startHour === undefined
+              ? ""
+              : ` · ${String(item.startHour).padStart(2, "0")}:00–${String(item.endHour).padStart(2, "0")}:00`;
+            const sessionLabel = item.startHour === undefined ? ` · ${item.sessions} ${t("metrics.sessions")}` : "";
+            const detail = `${dateLabel}${hourLabel} · ${formatCompact(item.value, locale)} Token${sessionLabel}`;
             const height = item.value > 0 ? `${Math.max(12, Math.sqrt(item.value / maxDay) * 100)}%` : "4px";
             return (
               <HeatmapCell

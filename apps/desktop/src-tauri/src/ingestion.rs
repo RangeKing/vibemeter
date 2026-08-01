@@ -460,7 +460,11 @@ fn index_cursor_database(database: &Database, force: bool) -> AppResult<()> {
         let model: Option<String> = row.get(2)?;
         let updated: i64 = row.get(3)?;
         let key = stable_hash(&format!("cursor:{id}"));
-        if !force && database.load_cursor(&key)?.is_some() {
+        if !force
+            && database
+                .load_cursor(&key)?
+                .is_some_and(|cursor| cursor.state.parser_version == PARSER_VERSION)
+        {
             continue;
         }
         let stamp = timestamp_from_millis(updated);
@@ -500,7 +504,11 @@ fn index_hermes_database(database: &Database, force: bool) -> AppResult<()> {
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
         let key = stable_hash(&format!("hermes:{id}"));
-        if !force && database.load_cursor(&key)?.is_some() {
+        if !force
+            && database
+                .load_cursor(&key)?
+                .is_some_and(|cursor| cursor.state.parser_version == PARSER_VERSION)
+        {
             continue;
         }
         let started: f64 = row.get(2)?;

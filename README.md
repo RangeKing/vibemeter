@@ -9,6 +9,16 @@ VibeMeter 是一款本机优先的 macOS AI 编程活动追踪器。它在 MacBo
 
 ![VibeMeter icon](vibemeter.png)
 
+## 关键界面
+
+| VCTI 人格 | 实时活动（含 Notch） |
+| --- | --- |
+| ![VCTI 人格页](docs/assets/screenshots/vcti.png) | ![实时活动与 Notch](docs/assets/screenshots/live.png) |
+| 数据 | 分享 |
+| ![数据页](docs/assets/screenshots/data.png) | ![分享页](docs/assets/screenshots/share.png) |
+
+<p align="center"><img src="docs/assets/screenshots/menubar.png" width="420" alt="菜单栏数据弹窗"></p>
+
 ## 三个核心入口
 
 - **VCTI**：使用本机可验证的行为信号生成 AI 编程人格、维度、置信度和证据；默认打开页；数据不足时明确显示不足，不强行判型。
@@ -16,6 +26,78 @@ VibeMeter 是一款本机优先的 macOS AI 编程活动追踪器。它在 MacBo
 - **Data**：汇总会话、Token、时长、成本、Agent、模型、工具、活跃时间与工作事件。
 
 分享与设置作为工具入口。口头禅与洞察卡片并入 VCTI，对比条与会话回放在 Data。数据源暂为过渡路由（侧栏不展示），从设置打开。复盘工作区暂不进入 VibeMeter；其旧实现保留在 TokenGraph。`aftervibe` 仅作为旧数据库迁移兼容标识，不再出现在产品界面。
+
+## VCTI：24 种 AI 编程人格
+
+VCTI 把协作行为分成六个环节，每个环节包含四种人格。名称负责让特征好记，最终结果仍由本机可验证的行为信号确定；证据不足时，VibeMeter 会继续收集，而不是强行判型。
+
+![VCTI 24 种人格总览](apps/desktop/src/assets/vcti/vcti-types-atlas-v2.webp)
+
+### 起手方式派
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-start-v2.png" width="620" alt="VCTI 起手方式派：VIBE、SPEC、HACK 与 MIX"></p>
+
+| 代号 | 人格 | 一句话介绍 |
+| --- | --- | --- |
+| `VIBE` | 感觉对了就开干 | 规格还没成形，第一版已经替你把感觉试出来了。 |
+| `SPEC` | 开工判官 | 边界先钉死、验收先写清，Agent 想跑偏都没路。 |
+| `HACK` | 邪修玩家 | 正门还在排队，你已经从侧门把结果拎回来了。 |
+| `MIX` | 能拼就别造 | 轮子不用造，能把一地零件拼成车才是本事。 |
+
+### Agent 驾驭派
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-agent-v2.png" width="620" alt="VCTI Agent 驾驭派：YOLO、LOOP、BOSS 与 SWARM"></p>
+
+| 代号 | 人格 | 一句话介绍 |
+| --- | --- | --- |
+| `YOLO` | 全选就开冲 | 权限全开，验收随缘——先让 Agent 跑起来再说。 |
+| `LOOP` | 不行就重开 | 第一版只是开价，你总能把 Agent 磨到改口。 |
+| `BOSS` | Agent 包工头 | 别人把 Agent 当助手，你已经给它们排班、派活、验收。 |
+| `SWARM` | 多开狂魔 | 能并行绝不排队，Agent 不够就再开一队。 |
+
+### 质量守护派
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-quality-v2.png" width="620" alt="VCTI 质量守护派：DIFF、TEST、DOCS 与 UNDO"></p>
+
+| 代号 | 人格 | 一句话介绍 |
+| --- | --- | --- |
+| `DIFF` | 逐行验尸官 | 嘴上说“放手去做”，眼睛却没放过一行 Diff。 |
+| `TEST` | 测试守门员 | 没过测试的代码，在你这里连“能跑”都不算。 |
+| `DOCS` | 失忆预防针 | 聊天会过期，文档才是你留给下一个 Agent 的记忆。 |
+| `UNDO` | 后悔药批发商 | 你敢把改动推到底，因为回滚路线早就铺好了。 |
+
+### 排障修复派
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-debug-v2.png" width="620" alt="VCTI 排障修复派：DEBUG、PATCH、STACK 与 AUTO"></p>
+
+| 代号 | 人格 | 一句话介绍 |
+| --- | --- | --- |
+| `DEBUG` | Bug 侦探 | 别人修报错，你追凶：非得揪出第一个倒下的环节。 |
+| `PATCH` | 哪里漏补哪里 | 先把血止住、服务拉起，根治排在下一张单。 |
+| `STACK` | 大炮打蚊子 | 问题只要够小，你就敢给它配一整套基础设施。 |
+| `AUTO` | 手动过敏症 | 手动重复一次叫工作，第二次就该判脚本接管。 |
+
+### 交付推进派
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-delivery-v2.png" width="620" alt="VCTI 交付推进派：SHIP、RUSH、MVP 与 DETAIL"></p>
+
+| 代号 | 人格 | 一句话介绍 |
+| --- | --- | --- |
+| `SHIP` | 发版战神 | 讨论还没收尾，你的可用链接已经先到了。 |
+| `RUSH` | 爆肝冲刺王 | 平时留着油，冲刺一来就把进度条一脚踩满。 |
+| `MVP` | 先跑再说 | 不等精装交房，先让真实用户住进毛坯里。 |
+| `DETAIL` | 细节控 | 功能已经交付，你还在审最后两个像素。 |
+
+### 资源策略派
+
+<p align="center"><img src="apps/desktop/src/assets/vcti/vcti-types-tools-v2.png" width="620" alt="VCTI 资源策略派：FORK、TOKEN、CACHE 与 BUDDY"></p>
+
+| 代号 | 人格 | 一句话介绍 |
+| --- | --- | --- |
+| `FORK` | 见一个爱一个 | 新工具一冒头，你的旧工具立刻被打入冷宫。 |
+| `TOKEN` | 每句都算账 | Agent 每多想一步，你脑内的 Token 计价器就跳一下。 |
+| `CACHE` | 背景全塞给它 | 上下文宁可塞满，也不让 Agent 猜一个前提。 |
+| `BUDDY` | 搭子养成系 | 工具会换，默契会攒；你把同一个 Agent 越用越顺手。 |
 
 ## 实时监看
 
@@ -93,6 +175,8 @@ apps/desktop/src-tauri/target/release/bundle/macos/VibeMeter.app
 ```
 
 本机交付副本位于 `release/VibeMeter.app`。当前构建为 Apple Silicon、ad-hoc 签名，未做 Apple notarization；实机与自动化记录见 [VALIDATION.md](VALIDATION.md)。
+
+发布新版本时，先同步 `package.json`、桌面端 `package.json`、`Cargo.toml` 与 `tauri.conf.json` 的版本号，再推送对应的 `vX.Y.Z` 标签。GitHub Actions 会先运行完整校验，然后分别构建 Apple Silicon 与 Intel 的 DMG 和 ZIP，并创建 GitHub Release。构建产物采用 ad-hoc 签名，Apple 公证仍是独立的分发步骤。
 
 ## 项目边界
 

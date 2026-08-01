@@ -8,13 +8,20 @@ use crate::models::{
     ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem, PhraseCloudResponse,
     PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase, ProjectControl, Provenance,
     SavePlaybookRequest, SessionDetail, SessionListFilters, SessionSummary, SessionsResponse,
-    SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
 };
 use chrono::{DateTime, Duration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
+
+type RangeUsageActivity = (
+    TokenUsage,
+    Option<f64>,
+    Vec<DailyUsagePoint>,
+    Vec<HourlyUsagePoint>,
+);
 
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sources (
@@ -427,6 +434,18 @@ ALTER TABLE notch_session_history ADD COLUMN jump_context_json TEXT;
 PRAGMA user_version = 12;
 "#;
 
+const MIGRATION_V13: &str = r#"
+CREATE TABLE IF NOT EXISTS skill_usage (
+    session_id TEXT NOT NULL,
+    skill TEXT NOT NULL,
+    count INTEGER NOT NULL,
+    PRIMARY KEY(session_id, skill),
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS skill_usage_skill_idx ON skill_usage(skill);
+PRAGMA user_version = 13;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -483,6 +502,9 @@ impl Database {
         }
         if version < 12 {
             connection.execute_batch(MIGRATION_V12)?;
+        }
+        if version < 13 {
+            connection.execute_batch(MIGRATION_V13)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -1045,6 +1067,7 @@ impl Database {
         let agents = query_usage_distribution(&connection, "agent", "agent", &start_date)?;
         let models = query_usage_distribution(&connection, "model", "model", &start_date)?;
         let tools = query_tools(&connection, &start_timestamp)?;
+        let skills = query_skills(&connection, &start_timestamp)?;
         let behavior = query_behavior_summary(&connection, &start_timestamp)?;
         let recent_sessions = query_session_rows(
             &connection,
@@ -1092,6 +1115,7 @@ impl Database {
             agents,
             models,
             tools,
+            skills,
             behavior,
             recent_sessions,
             coverage,
@@ -2358,18 +2382,21 @@ impl Database {
         Ok(items)
     }
 
-    pub fn range_usage_and_heatmap(
-        &self,
-        range: &str,
-    ) -> AppResult<(TokenUsage, Option<f64>, Vec<DailyUsagePoint>)> {
+    pub fn range_usage_and_activity(&self, range: &str) -> AppResult<RangeUsageActivity> {
         let connection = self.connect()?;
         let start_date = range_start(range);
         let start_timestamp = format!("{start_date}T00:00:00Z");
         let totals = query_overview_totals(&connection, &start_timestamp, &start_date)?;
+        let hourly = if range == "today" {
+            query_hourly(&connection, &start_date)?
+        } else {
+            Vec::new()
+        };
         Ok((
             totals.usage,
             totals.estimated_cost_usd,
             query_daily(&connection, &start_date)?,
+            hourly,
         ))
     }
 
@@ -2439,6 +2466,10 @@ fn replace_session_children(
     )?;
     transaction.execute(
         "DELETE FROM tool_usage WHERE session_id=?1",
+        params![session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM skill_usage WHERE session_id=?1",
         params![session_id],
     )?;
     transaction.execute(
@@ -2524,6 +2555,12 @@ fn replace_session_children(
         transaction.execute(
             "INSERT INTO tool_usage(session_id, tool, count) VALUES(?1, ?2, ?3)",
             params![session_id, tool, sql_i64(*count)],
+        )?;
+    }
+    for (skill, count) in &state.skill_counts {
+        transaction.execute(
+            "INSERT INTO skill_usage(session_id, skill, count) VALUES(?1, ?2, ?3)",
+            params![session_id, skill, sql_i64(*count)],
         )?;
     }
     for file_hash in &state.touched_file_hashes {
@@ -3455,14 +3492,10 @@ fn query_overview_totals(
     start_date: &str,
 ) -> AppResult<OverviewTotals> {
     let usage_row = connection.query_row(
-        "SELECT COUNT(DISTINCT session_id), COALESCE(SUM(active_seconds),0),
+        "SELECT COUNT(DISTINCT session_id),
                 COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),
-                COALESCE(SUM(cache_write_1h_tokens),0), COALESCE(SUM(reasoning_tokens),0),
-                SUM(estimated_cost_usd),
-                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN
-                    input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + cache_write_1h_tokens
-                ELSE 0 END),0), COALESCE(SUM(errors),0)
+                COALESCE(SUM(cache_write_1h_tokens),0), COALESCE(SUM(reasoning_tokens),0)
          FROM daily_usage
          WHERE date >= ?1
            AND (
@@ -3475,21 +3508,19 @@ fn query_overview_totals(
         |row| {
             Ok((
                 read_u64(row, 0)?,
-                read_u64(row, 1)?,
                 TokenUsage {
-                    input_tokens: read_u64(row, 2)?,
-                    output_tokens: read_u64(row, 3)?,
-                    cache_read_tokens: read_u64(row, 4)?,
-                    cache_write_tokens: read_u64(row, 5)?,
-                    cache_write_1h_tokens: read_u64(row, 6)?,
-                    reasoning_tokens: read_u64(row, 7)?,
+                    input_tokens: read_u64(row, 1)?,
+                    output_tokens: read_u64(row, 2)?,
+                    cache_read_tokens: read_u64(row, 3)?,
+                    cache_write_tokens: read_u64(row, 4)?,
+                    cache_write_1h_tokens: read_u64(row, 5)?,
+                    reasoning_tokens: read_u64(row, 6)?,
                 },
-                row.get::<_, Option<f64>>(8)?,
-                read_u64(row, 9)?,
-                read_u64(row, 10)?,
             ))
         },
     )?;
+    let (estimated_cost_usd, cost_coverage_tokens) =
+        query_overview_cost(connection, start_date)?;
     let evidence_row = connection.query_row(
         "SELECT
                 COALESCE(SUM(CASE WHEN files_touched > 0 THEN 1 ELSE 0 END),0),
@@ -3551,11 +3582,11 @@ fn query_overview_totals(
         params![start_timestamp],
         |result| read_u64(result, 0),
     )?;
-    let total_tokens = usage_row.2.total();
+    let total_tokens = usage_row.1.total();
     let cost_coverage = if total_tokens == 0 {
         0.0
     } else {
-        (usage_row.4 as f64 / total_tokens as f64).clamp(0.0, 1.0)
+        (cost_coverage_tokens as f64 / total_tokens as f64).clamp(0.0, 1.0)
     };
     let verification_rate = if evidence_row.0 == 0 {
         None
@@ -3569,8 +3600,8 @@ fn query_overview_totals(
         session_count: usage_row.0,
         active_seconds: session_row.1,
         active_days: session_row.2,
-        usage: usage_row.2,
-        estimated_cost_usd: usage_row.3,
+        usage: usage_row.1,
+        estimated_cost_usd,
         cost_coverage,
         verification_rate,
         longest_uninterrupted_seconds: evidence_row.2,
@@ -3580,6 +3611,78 @@ fn query_overview_totals(
         errors: session_row.3,
         retries: evidence_row.5,
     })
+}
+
+fn query_overview_cost(connection: &Connection, start_date: &str) -> AppResult<(Option<f64>, u64)> {
+    let mut statement = connection.prepare(
+        "SELECT agent, model, SUM(estimated_cost_usd),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NOT NULL THEN
+                    input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + cache_write_1h_tokens
+                ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN input_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN output_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_read_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_write_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_write_1h_tokens ELSE 0 END),0)
+         FROM daily_usage
+         WHERE date >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )
+         GROUP BY agent, model",
+    )?;
+    let rows = statement.query_map(params![start_date], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<f64>>(2)?,
+            read_u64(row, 3)?,
+            TokenUsage {
+                input_tokens: read_u64(row, 4)?,
+                output_tokens: read_u64(row, 5)?,
+                cache_read_tokens: read_u64(row, 6)?,
+                cache_write_tokens: read_u64(row, 7)?,
+                cache_write_1h_tokens: read_u64(row, 8)?,
+                reasoning_tokens: 0,
+            },
+        ))
+    })?;
+
+    let mut total_cost = 0.0;
+    let mut has_cost = false;
+    let mut coverage_tokens = 0_u64;
+    for row in rows {
+        let (agent, model, stored_cost, stored_coverage_tokens, missing_usage) = row?;
+        if let Some(cost) = stored_cost {
+            total_cost += cost;
+            has_cost = true;
+            coverage_tokens = coverage_tokens.saturating_add(stored_coverage_tokens);
+        }
+        if missing_usage.total() > 0
+            && let Some(agent) = stored_agent_kind(&agent)
+            && let Some(cost) = crate::pricing::estimate_cost(agent, &model, &missing_usage)
+        {
+            total_cost += cost;
+            has_cost = true;
+            coverage_tokens = coverage_tokens.saturating_add(missing_usage.total());
+        }
+    }
+    Ok((has_cost.then_some(total_cost), coverage_tokens))
+}
+
+fn stored_agent_kind(agent: &str) -> Option<AgentKind> {
+    match agent {
+        "claude-code" => Some(AgentKind::ClaudeCode),
+        "codex" => Some(AgentKind::Codex),
+        "kimi-code" => Some(AgentKind::KimiCode),
+        "cursor" => Some(AgentKind::Cursor),
+        "openclaw" => Some(AgentKind::OpenClaw),
+        "hermes" => Some(AgentKind::Hermes),
+        _ => None,
+    }
 }
 
 fn query_daily(connection: &Connection, start_date: &str) -> AppResult<Vec<DailyUsagePoint>> {
@@ -3945,6 +4048,70 @@ fn query_tools(connection: &Connection, start_timestamp: &str) -> AppResult<Vec<
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn query_skills(connection: &Connection, start_timestamp: &str) -> AppResult<SkillUsageSummary> {
+    let mut statement = connection.prepare(
+        "SELECT su.skill, SUM(su.count), COUNT(DISTINCT su.session_id)
+         FROM skill_usage su JOIN sessions s ON s.id=su.session_id
+         WHERE s.started_at >= ?1
+           AND (
+                NOT EXISTS(SELECT 1 FROM sources)
+                OR s.agent IN (
+                    SELECT agent FROM sources WHERE available=1 AND selected=1
+                )
+           )
+         GROUP BY su.skill",
+    )?;
+    let used = statement
+        .query_map(params![start_timestamp], |row| {
+            Ok(SkillUsageItem {
+                name: row.get(0)?,
+                invocation_count: read_u64(row, 1)?,
+                session_count: read_u64(row, 2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(build_skill_usage_summary(
+        used,
+        crate::skill_usage::installed_skill_names(),
+    ))
+}
+
+fn build_skill_usage_summary(
+    mut used: Vec<SkillUsageItem>,
+    mut installed: Vec<String>,
+) -> SkillUsageSummary {
+    used.sort_by(|left, right| {
+        right
+            .invocation_count
+            .cmp(&left.invocation_count)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    installed.sort();
+    installed.dedup();
+    let used_names = used
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect::<HashSet<_>>();
+    let installed_without_usage = installed
+        .iter()
+        .filter(|name| !used_names.contains(name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut least_used = used.clone();
+    least_used.sort_by(|left, right| {
+        left.invocation_count
+            .cmp(&right.invocation_count)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    SkillUsageSummary {
+        most_used: used.iter().take(5).cloned().collect(),
+        least_used: least_used.into_iter().take(5).collect(),
+        installed_without_usage,
+        installed_count: installed.len() as u64,
+        used_count: used.len() as u64,
+    }
 }
 
 fn query_tasks(
@@ -4716,10 +4883,69 @@ mod concurrency_tests {
             .expect("overview totals");
         assert_eq!(totals.usage.total(), 200);
         assert_eq!(totals.session_count, 1);
+        assert!(totals.estimated_cost_usd.is_some());
+        assert_eq!(totals.cost_coverage, 1.0);
         let distribution = query_usage_distribution(&connection, "agent", "agent", "2026-07-20")
             .expect("agent distribution");
         assert_eq!(distribution[0].label, "claude-code");
         assert_eq!(distribution[0].value, 200.0);
+    }
+
+    #[test]
+    fn overview_cost_estimates_missing_historical_rows_for_the_selected_range() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("historical-cost.sqlite"))
+            .expect("database should open");
+        let today = Local::now().date_naive();
+        let recent_date = today - Duration::days(10);
+        let older_date = today - Duration::days(60);
+        let persist = |id: &str, date: chrono::NaiveDate, input_tokens: u64| {
+            let date = date.format("%Y-%m-%d").to_string();
+            let usage = TokenUsage {
+                input_tokens,
+                ..TokenUsage::default()
+            };
+            let mut state = ParseState::new(AgentKind::Codex, id.into());
+            state.started_at = Some(format!("{date}T08:00:00Z"));
+            state.ended_at = Some(format!("{date}T08:10:00Z"));
+            state.current_model = Some("gpt-5.6-sol".into());
+            state.usage = usage.clone();
+            state.daily = HashMap::from([(
+                date,
+                DailyAggregate {
+                    usage,
+                    events: 1,
+                    estimated_cost_usd: None,
+                    ..DailyAggregate::default()
+                },
+            )]);
+            database
+                .persist_parse_state(id, 1, 1, 1, &state)
+                .expect("state should persist");
+        };
+        persist("recent", recent_date, 1_000_000);
+        persist("older", older_date, 2_000_000);
+
+        let connection = database.connect().expect("database connection");
+        let month_start = (today - Duration::days(29))
+            .format("%Y-%m-%d")
+            .to_string();
+        let ninety_day_start = (today - Duration::days(89))
+            .format("%Y-%m-%d")
+            .to_string();
+        let month = query_overview_totals(&connection, "1970-01-01T00:00:00Z", &month_start)
+            .expect("month totals");
+        let ninety_days = query_overview_totals(
+            &connection,
+            "1970-01-01T00:00:00Z",
+            &ninety_day_start,
+        )
+        .expect("ninety-day totals");
+
+        assert_eq!(month.estimated_cost_usd, Some(5.0));
+        assert_eq!(ninety_days.estimated_cost_usd, Some(15.0));
+        assert_eq!(month.cost_coverage, 1.0);
+        assert_eq!(ninety_days.cost_coverage, 1.0);
     }
 
     #[test]
@@ -5598,5 +5824,39 @@ mod concurrency_tests {
         assert_eq!(completed[0].session.id, "recent-0");
         assert!(completed.iter().all(|item| item.session.id != "recent-10"));
         assert!(completed.iter().all(|item| item.session.id != "expired"));
+    }
+
+    #[test]
+    fn skill_summary_keeps_low_frequency_and_unrecorded_installs_separate() {
+        let summary = build_skill_usage_summary(
+            vec![
+                SkillUsageItem {
+                    name: "frequent".into(),
+                    invocation_count: 9,
+                    session_count: 4,
+                },
+                SkillUsageItem {
+                    name: "occasional".into(),
+                    invocation_count: 2,
+                    session_count: 2,
+                },
+                SkillUsageItem {
+                    name: "rare".into(),
+                    invocation_count: 1,
+                    session_count: 1,
+                },
+            ],
+            vec![
+                "frequent".into(),
+                "occasional".into(),
+                "rare".into(),
+                "unused".into(),
+            ],
+        );
+        assert_eq!(summary.most_used[0].name, "frequent");
+        assert_eq!(summary.least_used[0].name, "rare");
+        assert_eq!(summary.installed_without_usage, vec!["unused"]);
+        assert_eq!(summary.used_count, 3);
+        assert_eq!(summary.installed_count, 4);
     }
 }

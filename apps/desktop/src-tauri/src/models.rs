@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.2.1";
+pub const PARSER_VERSION: &str = "6.3.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -234,6 +234,8 @@ pub struct ParseState {
     pub touched_file_hashes: HashSet<String>,
     pub tool_counts: HashMap<String, u64>,
     #[serde(default)]
+    pub skill_counts: HashMap<String, u64>,
+    #[serde(default)]
     pub events: Vec<CanonicalEvent>,
     #[serde(default)]
     pub phrase_counts: HashMap<String, PhraseAggregate>,
@@ -302,6 +304,7 @@ impl ParseState {
             seen_tool_ids: HashSet::new(),
             touched_file_hashes: HashSet::new(),
             tool_counts: HashMap::new(),
+            skill_counts: HashMap::new(),
             events: Vec::new(),
             phrase_counts: HashMap::new(),
             last_phrase_fingerprints: HashMap::new(),
@@ -519,10 +522,29 @@ pub struct OverviewResponse {
     pub agents: Vec<DistributionItem>,
     pub models: Vec<DistributionItem>,
     pub tools: Vec<DistributionItem>,
+    pub skills: SkillUsageSummary,
     pub behavior: BehaviorSummary,
     pub recent_sessions: Vec<SessionSummary>,
     pub coverage: Vec<CoverageNotice>,
     pub index_status: IndexStatus,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillUsageItem {
+    pub name: String,
+    pub invocation_count: u64,
+    pub session_count: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillUsageSummary {
+    pub most_used: Vec<SkillUsageItem>,
+    pub least_used: Vec<SkillUsageItem>,
+    pub installed_without_usage: Vec<String>,
+    pub installed_count: u64,
+    pub used_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1057,6 +1079,7 @@ pub struct MenuBarSnapshot {
     pub usage: TokenUsage,
     pub cost_usd: Option<f64>,
     pub heatmap: Vec<DailyUsagePoint>,
+    pub hourly: Vec<HourlyUsagePoint>,
     pub providers: Vec<ProviderUsage>,
     pub index_status: IndexStatus,
 }

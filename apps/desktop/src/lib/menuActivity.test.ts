@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DailyUsagePoint, TokenUsage } from "../types";
+import type { DailyUsagePoint, HourlyUsagePoint, TokenUsage } from "../types";
 import { buildMenuActivity, MENU_ACTIVITY_MAX_BARS } from "./menuActivity";
 
 const emptyUsage: TokenUsage = {
@@ -24,7 +24,35 @@ function point(date: string, inputTokens: number, sessionCount: number): DailyUs
   };
 }
 
+function hourlyPoint(hour: string, inputTokens: number): HourlyUsagePoint {
+  return {
+    hour,
+    agent: "codex",
+    model: "gpt-test",
+    usage: { ...emptyUsage, inputTokens },
+  };
+}
+
 describe("menu activity", () => {
+  it("splits today into twelve fixed two-hour buckets", () => {
+    const buckets = buildMenuActivity(
+      [point("2026-07-31", 99, 2)],
+      new Date("2026-07-31T12:00:00"),
+      "today",
+      [
+        hourlyPoint("2026-07-31T00:00", 10),
+        hourlyPoint("2026-07-31T01:00", 20),
+        hourlyPoint("2026-07-31T02:00", 30),
+        hourlyPoint("2026-07-30T23:00", 40),
+      ],
+    );
+
+    expect(buckets).toHaveLength(12);
+    expect(buckets[0]).toMatchObject({ startHour: 0, endHour: 2, value: 30 });
+    expect(buckets[1]).toMatchObject({ startHour: 2, endHour: 4, value: 30 });
+    expect(buckets.at(-1)).toMatchObject({ startHour: 22, endHour: 24, value: 0 });
+  });
+
   it("fills a seven-day range and combines same-day rows", () => {
     const days = buildMenuActivity(
       [point("2026-07-31", 10, 1), point("2026-07-31", 20, 2), point("2026-07-20", 4, 1)],

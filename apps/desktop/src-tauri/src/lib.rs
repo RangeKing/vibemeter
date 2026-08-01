@@ -12,6 +12,7 @@ mod phrases;
 mod pricing;
 mod privacy;
 mod providers;
+mod skill_usage;
 mod tray;
 mod vcti;
 
@@ -488,13 +489,14 @@ async fn get_menu_bar_snapshot(
     }
     let index_status = current_index_status(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let (usage, cost_usd, heatmap) = database.range_usage_and_heatmap(&range)?;
+        let (usage, cost_usd, heatmap, hourly) = database.range_usage_and_activity(&range)?;
         Ok(MenuBarSnapshot {
             generated_at: Utc::now().to_rfc3339(),
             range,
             usage,
             cost_usd,
             heatmap,
+            hourly,
             providers,
             index_status,
         })

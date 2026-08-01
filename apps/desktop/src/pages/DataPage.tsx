@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { EChartsCoreOption } from "echarts";
-import { ArrowRight, BarChart3, CalendarDays, Merge, Scale, Sparkles, Workflow } from "lucide-react";
+import { ArrowRight, BarChart3, Blocks, CalendarDays, Merge, Scale, Sparkles, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
@@ -266,7 +266,7 @@ export function DataPage({ locale }: { locale: Locale }) {
   return (
     <div className="page data-page">
       <header className="data-header">
-        <div><span className="eyebrow"><BarChart3 size={13} />{t("data.eyebrow")}</span><h1>{t("data.title")}</h1><p>{t("data.description")}</p></div>
+        <div><span className="eyebrow"><BarChart3 size={13} />{t("data.eyebrow")}</span><h1>{locale === "zh-CN" ? <>你与 Agent<br />一起完成的工作</> : t("data.title")}</h1><p>{t("data.description")}</p></div>
         <div className="data-header-actions">
           <div className="data-agent-chips" role="group" aria-label={t("data.agentFilter")}>
             {availableAgents.length ? availableAgents.map((agent) => {
@@ -306,7 +306,7 @@ export function DataPage({ locale }: { locale: Locale }) {
             <span className="output"><i /><em>{t("metrics.output")}</em><b>{formatCompact(ledgerUsage.outputTokens, locale)}</b></span>
             <span className="cache"><i /><em>{t("metrics.cache")}</em><b>{formatCompact(ledgerCacheTokens, locale)}</b></span>
           </div>
-          <small>{t("data.localTokenFootnote")}</small>
+          <small className="data-token-footnote" title={t("data.localTokenFootnote")}>{t("data.localTokenFootnote")}</small>
         </div>
         <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
         <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(ledgerDays || data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
@@ -372,6 +372,35 @@ export function DataPage({ locale }: { locale: Locale }) {
           <EChart option={toolOption(data.tools, colors, locale)} ariaLabel={t("data.tools")} style={{ height: 240 }} />
         </section>
       </div>
+
+      <section className="data-panel skill-usage-panel">
+        <header className="panel-heading">
+          <div><h2>{t("data.skillUsage")}</h2><p>{t("data.skillUsageBody")}</p></div>
+          <span className="skill-evidence-badge"><Blocks size={14} />{t("data.skillExplicitOnly")}</span>
+        </header>
+        <div className="skill-usage-grid">
+          <article className="skill-ranking most-used">
+            <header><span>{t("data.skillMostUsed")}</span><strong>{t("data.skillUsedTotal", { count: data.skills.usedCount })}</strong></header>
+            {data.skills.mostUsed.length ? data.skills.mostUsed.map((skill, index) => (
+              <div key={skill.name}><i>{String(index + 1).padStart(2, "0")}</i><strong>{skill.name}</strong><span>{t("data.skillInvocationCount", { count: skill.invocationCount })}</span></div>
+            )) : <p>{t("data.skillNoUsage")}</p>}
+          </article>
+          <article className="skill-ranking least-used">
+            <header><span>{t("data.skillLeastUsed")}</span><strong>{t("data.skillItemCount", { count: data.skills.leastUsed.length })}</strong></header>
+            {data.skills.leastUsed.length ? data.skills.leastUsed.map((skill) => (
+              <div key={skill.name}><i>↓</i><strong>{skill.name}</strong><span>{t("data.skillInvocationCount", { count: skill.invocationCount })}</span></div>
+            )) : <p>{t("data.skillNoUsage")}</p>}
+          </article>
+          <article className="skill-unused">
+            <header><span>{t("data.skillNotRecorded")}</span><strong>{data.skills.installedWithoutUsage.length}</strong></header>
+            <p>{t("data.skillNotRecordedBody", { count: data.skills.installedCount })}</p>
+            <div>
+              {data.skills.installedWithoutUsage.slice(0, 12).map((skill) => <span key={skill}>{skill}</span>)}
+              {data.skills.installedWithoutUsage.length > 12 ? <span>+{data.skills.installedWithoutUsage.length - 12}</span> : null}
+            </div>
+          </article>
+        </div>
+      </section>
 
       <section className="data-panel comparison-panel">
         <header className="panel-heading"><div><h2>{t("insights.comparison")}</h2><p>{t("data.comparisonBody")}</p></div><Scale size={17} /></header>
