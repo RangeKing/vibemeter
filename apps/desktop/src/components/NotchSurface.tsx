@@ -37,6 +37,7 @@ const MULTI_PROVIDER_LEFT_WING_WIDTH = 88;
 const MIN_SINGLE_PROJECT_LEFT_WING_WIDTH = 88;
 const MAX_SINGLE_PROJECT_LEFT_WING_WIDTH = 154;
 const EXPANDED_NOTCH_WIDTH = 440;
+const NOTCH_CLOSE_TRANSITION_MS = 300;
 const MIN_EXPANDED_HEIGHT = 150;
 const EXPANDED_HEIGHT_SLOP = 2;
 const DEFAULT_NOTCH_STATE: NotchUiState = {
@@ -266,6 +267,19 @@ export function leftWingWidthForSession(session?: Pick<LiveSession, "projectLabe
   );
 }
 
+export function collapsedMorphInsets(
+  hardwareWidth: number,
+  leftWingWidth: number,
+  rightWingWidth: number,
+  hasActivity: boolean,
+) {
+  const hardwareInset = Math.max(0, (EXPANDED_NOTCH_WIDTH - hardwareWidth) / 2);
+  return {
+    left: Math.max(0, hardwareInset - (hasActivity ? leftWingWidth : 0)),
+    right: Math.max(0, hardwareInset - (hasActivity ? rightWingWidth : 0)),
+  };
+}
+
 export function conversationTitleForSession(
   session: Pick<LiveSession, "projectLabel" | "conversationTitle">,
 ) {
@@ -371,15 +385,19 @@ export function NotchSurface({ locale }: { locale: Locale }) {
       showClearUndo: Boolean(clearUndo),
     },
   );
+  const collapsedInsets = collapsedMorphInsets(
+    notchState.hardwareWidth,
+    notchState.leftWingWidth,
+    notchState.rightWingWidth,
+    hasActivity,
+  );
   const style = {
     "--notch-hardware-width": `${notchState.hardwareWidth}px`,
     "--notch-hardware-height": `${notchState.hardwareHeight}px`,
     "--notch-left-wing-width": `${notchState.leftWingWidth}px`,
     "--notch-right-wing-width": `${notchState.rightWingWidth}px`,
-    "--notch-collapsed-side-inset": `${Math.max(
-      0,
-      (EXPANDED_NOTCH_WIDTH - notchState.hardwareWidth) / 2,
-    )}px`,
+    "--notch-collapsed-left-inset": `${collapsedInsets.left}px`,
+    "--notch-collapsed-right-inset": `${collapsedInsets.right}px`,
   } as CSSProperties;
 
   const hasTimedSession = sessions.some(
@@ -442,7 +460,10 @@ export function NotchSurface({ locale }: { locale: Locale }) {
       return;
     }
     if (!keepExpandedDuringClose) return;
-    const timeout = window.setTimeout(() => setKeepExpandedDuringClose(false), 260);
+    const timeout = window.setTimeout(
+      () => setKeepExpandedDuringClose(false),
+      NOTCH_CLOSE_TRANSITION_MS,
+    );
     return () => window.clearTimeout(timeout);
   }, [keepExpandedDuringClose, notchState.expanded]);
 
@@ -566,49 +587,45 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const showExpandedSurface = notchState.expanded || keepExpandedDuringClose;
   const isClosing = showExpandedSurface && !notchState.expanded;
 
-  if (!showExpandedSurface) {
-    return (
-      <div
-        className={`notch-island notch-island-collapsed${hasActivity ? " has-activity" : " is-idle"}`}
-        style={style}
-      >
-        <button
-          className="notch-collapsed-shell"
-          onClick={() => void toggleExpanded(true)}
-          aria-label={t("notch.open")}
-        >
-          <span className={`notch-wing notch-wing-left${singleWingSession ? "" : " is-multi"}`}>
-            {singleWingSession ? (
-              <span className={`notch-single-project provider-${singleWingSession.agent}`}>
-                <ProviderMark agent={singleWingSession.agent} />
-                <strong>{singleWingSession.projectLabel}</strong>
-              </span>
-            ) : (
-              <span className="notch-provider-cluster">
-                <ProviderCount agent="codex" count={codexCount} />
-                <ProviderCount agent="claude-code" count={claudeCount} />
-              </span>
-            )}
-          </span>
-          <span className="notch-hardware" />
-          <span className={`notch-wing notch-wing-right status-${rightSession?.status ?? "idle"}`}>
-            {rightSession ? (
-              <>
-                <AgentActivityGlyph session={rightSession} compact />
-                <strong>{notchPhaseLabel(rightSession.phase, t)}</strong>
-              </>
-            ) : null}
-          </span>
-        </button>
-      </div>
-    );
-  }
-
   return (
     <section
-      className={`notch-island notch-island-expanded${isClosing ? " is-closing" : ""}`}
+      className={`notch-island notch-island-morph ${
+        notchState.expanded ? "is-expanded" : isClosing ? "is-closing" : "is-collapsed"
+      }${hasActivity ? " has-activity" : " is-idle"}`}
       style={style}
     >
+      <button
+        className="notch-collapsed-shell"
+        onClick={() => void toggleExpanded(true)}
+        aria-label={t("notch.open")}
+        aria-hidden={showExpandedSurface}
+        tabIndex={showExpandedSurface ? -1 : 0}
+      >
+        <span className={`notch-wing notch-wing-left${singleWingSession ? "" : " is-multi"}`}>
+          {singleWingSession ? (
+            <span className={`notch-single-project provider-${singleWingSession.agent}`}>
+              <ProviderMark agent={singleWingSession.agent} />
+              <strong>{singleWingSession.projectLabel}</strong>
+            </span>
+          ) : (
+            <span className="notch-provider-cluster">
+              <ProviderCount agent="codex" count={codexCount} />
+              <ProviderCount agent="claude-code" count={claudeCount} />
+            </span>
+          )}
+        </span>
+        <span className="notch-hardware" />
+        <span className={`notch-wing notch-wing-right status-${rightSession?.status ?? "idle"}`}>
+          {rightSession ? (
+            <>
+              <AgentActivityGlyph session={rightSession} compact />
+              <strong>{notchPhaseLabel(rightSession.phase, t)}</strong>
+            </>
+          ) : null}
+        </span>
+      </button>
+      {showExpandedSurface ? (
+        <div className="notch-island-expanded">
       <header className="notch-expanded-bridge">
         <span className="notch-expanded-left">
           <ProviderCount agent="codex" count={codexCount} />
@@ -804,6 +821,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           </div>
         ) : null}
       </div>
+        </div>
+      ) : null}
     </section>
   );
 }

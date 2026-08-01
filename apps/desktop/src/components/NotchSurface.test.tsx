@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LiveSession } from "../types";
 import {
   activeProviderCounts,
+  collapsedMorphInsets,
   conversationTitleForSession,
   expandedHeightForSessions,
   formatLiveElapsed,
@@ -79,6 +80,11 @@ describe("Notch session selection", () => {
         projectLabel: "AnExtremelyLongProjectNameThatMustBeClamped",
       }),
     ).toBe(154);
+  });
+
+  it("morphs to the real asymmetric compact wings instead of the hardware cutout", () => {
+    expect(collapsedMorphInsets(180, 88, 98, true)).toEqual({ left: 42, right: 32 });
+    expect(collapsedMorphInsets(180, 88, 98, false)).toEqual({ left: 130, right: 130 });
   });
 
   it("keeps the available conversation title for CSS to truncate", () => {

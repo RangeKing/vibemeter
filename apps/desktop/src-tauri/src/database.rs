@@ -3519,8 +3519,7 @@ fn query_overview_totals(
             ))
         },
     )?;
-    let (estimated_cost_usd, cost_coverage_tokens) =
-        query_overview_cost(connection, start_date)?;
+    let (estimated_cost_usd, cost_coverage_tokens) = query_overview_cost(connection, start_date)?;
     let evidence_row = connection.query_row(
         "SELECT
                 COALESCE(SUM(CASE WHEN files_touched > 0 THEN 1 ELSE 0 END),0),
@@ -4927,20 +4926,13 @@ mod concurrency_tests {
         persist("older", older_date, 2_000_000);
 
         let connection = database.connect().expect("database connection");
-        let month_start = (today - Duration::days(29))
-            .format("%Y-%m-%d")
-            .to_string();
-        let ninety_day_start = (today - Duration::days(89))
-            .format("%Y-%m-%d")
-            .to_string();
+        let month_start = (today - Duration::days(29)).format("%Y-%m-%d").to_string();
+        let ninety_day_start = (today - Duration::days(89)).format("%Y-%m-%d").to_string();
         let month = query_overview_totals(&connection, "1970-01-01T00:00:00Z", &month_start)
             .expect("month totals");
-        let ninety_days = query_overview_totals(
-            &connection,
-            "1970-01-01T00:00:00Z",
-            &ninety_day_start,
-        )
-        .expect("ninety-day totals");
+        let ninety_days =
+            query_overview_totals(&connection, "1970-01-01T00:00:00Z", &ninety_day_start)
+                .expect("ninety-day totals");
 
         assert_eq!(month.estimated_cost_usd, Some(5.0));
         assert_eq!(ninety_days.estimated_cost_usd, Some(15.0));
