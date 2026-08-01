@@ -5,6 +5,8 @@ description = "Track your agents. Discover your coding type."
 authors = ["VibeMeter"]
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/RangeKing/vibemeter"
+homepage = "https://github.com/RangeKing/vibemeter"
 
 [lib]
 name = "vibemeter_lib"

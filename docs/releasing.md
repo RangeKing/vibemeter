@@ -1,6 +1,6 @@
 # 发布 VibeMeter
 
-GitHub Release 以 `apps/desktop/src-tauri/tauri.conf.json` 中的版本号为准。推送匹配的 `v*` 标签后，`Release` workflow 会先执行完整校验，再构建 Apple Silicon `.app` 并上传到同名 GitHub Release。
+GitHub Release 以 `apps/desktop/src-tauri/tauri.conf.json` 中的版本号为准。推送匹配的 `v*` 标签后，`Release` workflow 会先执行完整校验，再分别构建 Apple Silicon 与 Intel 的 DMG、ZIP，并上传到同名 GitHub Release。
 
 ## 正常发版
 

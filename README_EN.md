@@ -1,12 +1,39 @@
-# VibeMeter
+<p align="center">
+  <img src="docs/assets/vibemeter-banner.png" alt="VibeMeter — a local-first AI coding activity tracker for macOS" width="100%">
+</p>
 
-> Track your agents. Discover your coding type.
+<h1 align="center">VibeMeter</h1>
 
-VibeMeter is a local-first macOS activity tracker for AI coding. It shows live Claude Code and Codex status in the MacBook Notch and menu bar, turns local agent sessions into traceable analytics and replay, and builds an evolving VCTI profile from observed behavior.
+<p align="center">
+  <strong>Know what your agents are doing.</strong><br>
+  Track your agents. Discover your coding type.
+</p>
 
-![VibeMeter icon](vibemeter.png)
+<p align="center">
+  <a href="https://github.com/RangeKing/vibemeter/releases"><img alt="Version" src="https://img.shields.io/badge/version-v0.1.0-9B87F5"></a>
+  <a href="https://github.com/RangeKing/vibemeter/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RangeKing/vibemeter/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-222222?logo=apple">
+  <img alt="Local first" src="https://img.shields.io/badge/data-local--first-79C7A3">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-F29A72"></a>
+</p>
 
-## Key screens
+<p align="center">
+  <a href="README.md">🇨🇳 中文</a> · 🇺🇸 <strong>English</strong>
+</p>
+
+VibeMeter brings live status, long-term analytics, and your VCTI profile into one local-first macOS app. A glance at the Notch tells you whether Claude Code or Codex is thinking, reading, using a tool, or waiting for you. Sessions, tokens, cost, models, tools, and Skill usage stay on your Mac and become a history you can inspect and share. Once the evidence is strong enough, 24 VCTI personalities turn that history into a recognizable picture of how you build with agents.
+
+VibeMeter does not control your agents, approve requests, or modify source repositories. If a signal is unavailable, the UI says so instead of dressing missing data up as zero.
+
+## ✨ Three views. One clear picture.
+
+- **Understand at a glance.** The Notch shows live Claude Code and Codex stages, priority, and recent structured actions. The menu-bar popover covers time ranges, tokens, cost, activity trends, and remaining quota.
+- **Learn from every session.** Data brings together sessions, input/output/cache tokens, time, cost, agents, models, tools, Skills, activity patterns, and work events.
+- **Turn behavior into identity.** VCTI maps verifiable local behavior to 24 AI coding personalities, with dimensions, confidence, and evidence. Thin evidence stays explicitly incomplete.
+
+Share and Settings remain utility surfaces. Catchphrases and insight cards live on VCTI; comparison bars and session replay live on Data. Sources remain a transitional route opened from Settings. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. `aftervibe` remains only as a legacy database migration identifier.
+
+## 📸 Key screens
 
 | VCTI profile | Live activity with Notch |
 | --- | --- |
@@ -16,15 +43,7 @@ VibeMeter is a local-first macOS activity tracker for AI coding. It shows live C
 
 <p align="center"><img src="docs/assets/screenshots/menubar.png" width="420" alt="Menu-bar analytics popover"></p>
 
-## Core surfaces
-
-- **VCTI:** Build an evidence-bound AI coding profile with explicit dimensions, confidence, and supporting behavior. Default landing page; insufficient data stays insufficient.
-- **Live:** See whether Claude Code or Codex is running, waiting, in error, or complete. The Live page adds today's timeline, concurrency lanes, and waiting/error history. Jump back to the source app or terminal without approving requests or sending prompts.
-- **Data:** Review sessions, tokens, time, cost, models, tools, activity, and work events.
-
-Share and Settings are utility surfaces. Share Studio is preview-first with five common aspect presets and collapsed copy/display/metric controls. Catchphrases and insight cards live on VCTI; comparison bars and session replay live on Data. Sources remain a transitional route opened from Settings. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. `aftervibe` remains only as a legacy database migration identifier.
-
-## VCTI: 24 AI coding personalities
+## 🧬 VCTI: 24 AI coding personalities
 
 VCTI groups collaboration behavior into six stages with four personalities in each stage. The names make the patterns memorable; the result still comes from verifiable local behavior. When the evidence is too thin, VibeMeter keeps collecting instead of forcing a type.
 
@@ -96,7 +115,7 @@ VCTI groups collaboration behavior into six stages with four personalities in ea
 | `CACHE` | Context Hoarder | Give the agent every background fact and it will find the answer somewhere. |
 | `BUDDY` | Cyber Partner | A genuinely compatible agent is worth building a long relationship with. |
 
-## Live monitoring
+## ⚡ Live monitoring
 
 After onboarding, VibeMeter can install managed local hooks for detected Claude Code and Codex installations:
 
@@ -110,7 +129,7 @@ After onboarding, VibeMeter can install managed local hooks for detected Claude 
 
 The Notch disappears into the physical cutout while idle. During activity, a compact left wing shows Codex and Claude Code instance counts and the right wing shows one highest-priority state. Click or deliberately hover over the cutout/wings for about 300 ms to expand. A hover-opened panel collapses about 500 ms after exit; clicking elsewhere also collapses unless that expansion is temporarily pinned. Manual close and app restart reset the pin. Notch and menu-bar visibility can be controlled independently. Macs without a physical Notch keep the menu-bar and main-window paths.
 
-## Catchphrases
+## 💬 Catchphrases
 
 Historical source text is scanned transiently in local memory. VibeMeter stores only derived phrase counts, session counts, and source attribution:
 
@@ -126,7 +145,7 @@ Historical source text is scanned transiently in local memory. VibeMeter stores 
 
 Raw live-hook envelopes are retained for at most 90 days. Long-term VCTI and activity features use derived metrics.
 
-## Privacy boundaries
+## 🔐 Privacy boundaries
 
 - Source histories and source repositories remain read-only.
 - The VibeMeter index lives at `~/Library/Application Support/com.vibemeter.desktop/vibemeter.sqlite`.
@@ -136,7 +155,11 @@ Raw live-hook envelopes are retained for at most 90 days. Long-term VCTI and act
 
 See [docs/privacy.md](docs/privacy.md) and [docs/vibemeter-migration.md](docs/vibemeter-migration.md).
 
-## Development
+## 🎨 Share Studio
+
+Share Studio includes six public templates across usage, developer retrospective, agent comparison, session recap, VCTI identity, and catchphrases. It is preview-first, supports five common aspect-ratio presets in the UI, and exports deterministic PNG or SVG output in Simplified Chinese or English, light or dark. Every export passes through Share Guard before it leaves the app.
+
+## 🧰 Development
 
 Requirements: macOS 14+, Node.js 22+, Rust stable, and Xcode Command Line Tools.
 
@@ -152,11 +175,11 @@ The Tauri bundle is written to:
 apps/desktop/src-tauri/target/release/bundle/macos/VibeMeter.app
 ```
 
-The checked local delivery copy is `release/VibeMeter.app`. It is currently Apple Silicon and ad-hoc signed, not notarized.
+Local builds are ad-hoc signed and are not notarized.
 
 For a release, keep the versions in both `package.json` files, `Cargo.toml`, and `tauri.conf.json` in sync, then push the matching `vX.Y.Z` tag. GitHub Actions runs the full validation suite, builds Apple Silicon and Intel DMG and ZIP packages, and creates the GitHub Release. These artifacts are ad-hoc signed; Apple notarization remains a separate distribution step.
 
-## Repository layout
+## 🗂️ Repository layout
 
 ```text
 apps/desktop/src/                 React UI, state, charts, and localization
@@ -165,4 +188,8 @@ apps/desktop/src-tauri/tests/     Rust integration tests
 docs/                             Architecture, privacy, and migration records
 ```
 
-VibeMeter is available under the [MIT License](LICENSE). It is not affiliated with or endorsed by the coding-agent providers named above.
+## 🤝 Contributing
+
+Issues and pull requests are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) first. Use synthetic fixtures and screenshots; never commit real conversations, credentials, databases, or local build artifacts.
+
+VibeMeter is available under the [MIT License](LICENSE). The bundled Space Grotesk font is distributed under the [SIL Open Font License 1.1](apps/desktop/src/assets/fonts/OFL.txt). VibeMeter is not affiliated with or endorsed by the coding-agent providers named above.

@@ -68,6 +68,9 @@ apps/desktop/src-tauri/target/
 apps/desktop/test-results/
 apps/desktop/playwright-report/
 
+# Local delivery copies. Tagged releases are built and uploaded by GitHub Actions.
+/release/
+
 # Local databases and sidecars.
 *.sqlite
 *.sqlite3

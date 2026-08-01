@@ -9,7 +9,7 @@ Historical agent records                  Claude Code / Codex Hook events
                  ↘                         ↙
                     SQLite evidence store
                     ├─ range analytics and work events
-                    ├─ Aftervibe reviews and replay
+                    ├─ session ledger and replay
                     ├─ catchphrase counts and attribution
                     ├─ VCTI derived behavior
                     └─ deterministic share rendering
@@ -31,7 +31,8 @@ Historical agent records                  Claude Code / Codex Hook events
 - `migration.rs`: copy-forward database discovery and SQLite online backup;
 - `database.rs`: schema, queries, task grouping, phrase/live storage, and retention;
 - `phrases.rs`: deterministic local phrase extraction and compaction;
-- `review_engine.rs`: evidence-backed Aftervibe rules;
+- `skill_usage.rs`: explicit Skill-use extraction and aggregation;
+- `pricing.rs`: API-equivalent model pricing with dated aliases;
 - `vcti.rs`: behavior features, sample gates, and type matching;
 - `providers.rs`: optional provider status and account-usage queries;
 - `export.rs`: deterministic SVG and PNG rendering;
@@ -41,6 +42,6 @@ Historical agent records                  Claude Code / Codex Hook events
 
 Source records and repositories remain read-only. Historical text used for catchphrases is processed transiently and is not stored as phrase source text. Raw Hook envelopes expire after 90 days; long-term features use derived counters and evidence references.
 
-Provider-specific fields must not leak into shared UI or query contracts. A provider is considered supported only when its data is represented end-to-end in analytics, VCTI, replay/review, sharing, source status, and attribution. Exact live monitoring is currently limited to Claude Code and Codex.
+Provider-specific fields must not leak into shared UI or query contracts. A provider is considered supported only when its data is represented end-to-end in analytics, VCTI, replay, sharing, source status, and attribution. Exact live monitoring is currently limited to Claude Code and Codex.
 
 Preview and export share one deterministic render model. Privacy review and Share Guard run before every exposed export path.

@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest a focused improvement to VibeMeter
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        VibeMeter is local-first and evidence-bound. Please explain the user problem before proposing an interface or implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What is difficult today, and who encounters it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe what a successful result would let the user do.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Product area
+      options:
+        - VCTI
+        - Live
+        - Data
+        - Share
+        - Settings
+        - Notch
+        - Menu-bar popover
+        - Provider support
+        - Developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or simpler options have you tried?
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Product boundaries
+      options:
+        - label: This proposal keeps source histories and repositories read-only.
+          required: true
+        - label: This proposal can represent unavailable data honestly instead of inventing zero values.
+          required: true

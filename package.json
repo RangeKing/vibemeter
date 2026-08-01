@@ -1,7 +1,20 @@
 {
   "name": "vibemeter",
   "version": "0.1.0",
+  "description": "Track your agents. Discover your coding type.",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RangeKing/vibemeter.git"
+  },
+  "homepage": "https://github.com/RangeKing/vibemeter#readme",
+  "bugs": {
+    "url": "https://github.com/RangeKing/vibemeter/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "apps/desktop"
   ],

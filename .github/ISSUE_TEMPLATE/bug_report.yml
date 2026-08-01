@@ -1,0 +1,85 @@
+name: Bug report
+description: Report a reproducible problem in VibeMeter
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve VibeMeter. Use synthetic examples only. Do not include prompts, source code, credentials, private repository names, absolute home paths, databases, or transcripts.
+
+  - type: input
+    id: version
+    attributes:
+      label: VibeMeter version
+      description: The version shown in the app or release name.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mac
+    attributes:
+      label: Mac architecture
+      options:
+        - Apple Silicon
+        - Intel
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      multiple: true
+      options:
+        - VCTI
+        - Live
+        - Data
+        - Share
+        - Settings
+        - Notch
+        - Menu-bar popover
+        - Import or provider adapter
+        - Build or release
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: List the smallest safe steps or synthetic fixture that reproduces the problem.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Add a sanitized screenshot or log excerpt if useful. Remove personal and repository information first.
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed prompts, source code, credentials, private paths, repository identities, databases, and transcripts.
+          required: true
+        - label: This is not a security vulnerability. Security reports belong in GitHub Private Vulnerability Reporting.
+          required: true

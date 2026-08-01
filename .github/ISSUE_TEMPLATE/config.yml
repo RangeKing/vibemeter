@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/RangeKing/vibemeter/security/advisories/new
+    about: Report credentials, privacy failures, Hook integrity issues, or other security-sensitive defects privately.
