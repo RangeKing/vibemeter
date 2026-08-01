@@ -2007,12 +2007,6 @@ fn render_agent_comparison_card(
     );
     let content_top = render_flow_header(svg, request, title, &summary, margin, width, palette);
     let panel_width = width as f64 - margin * 2.0;
-    let max_tokens = agents
-        .iter()
-        .map(|item| item.usage.total())
-        .max()
-        .unwrap_or(1)
-        .max(1);
     let draw = |svg: &mut String, panel_y: f64| -> f64 {
         let gap = 14.0;
         let available = (height as f64 - panel_y - 170.0).max(520.0);
@@ -2037,7 +2031,6 @@ fn render_agent_comparison_card(
             panel_y,
             hero_width,
             cluster_height,
-            max_tokens,
             true,
             palette,
         );
@@ -2052,7 +2045,6 @@ fn render_agent_comparison_card(
                     panel_y + index as f64 * (side_height + gap),
                     side_width,
                     side_height,
-                    max_tokens,
                     false,
                     palette,
                 );
@@ -2072,82 +2064,93 @@ fn render_agent_comparison_tile(
     y: f64,
     width: f64,
     height: f64,
-    max_tokens: u64,
     hero: bool,
     palette: Palette,
 ) {
     bento_tile(svg, x, y, width, height, palette.tile, palette);
-    let pad = if hero { 38.0 } else { 28.0 };
-    let mark_size = if hero { 138.0 } else { 88.0 };
+    let compact = !hero && height < 360.0;
+    let pad = if hero {
+        38.0
+    } else if compact {
+        24.0
+    } else {
+        30.0
+    };
+    let mark_size = if hero {
+        138.0
+    } else if compact {
+        72.0
+    } else {
+        94.0
+    };
     agent_mark(svg, x + pad, y + pad, &item.agent, mark_size, palette);
     text_block_display(
         svg,
         x + pad + mark_size + 22.0,
         y + pad + mark_size * 0.68,
         width - pad * 2.0 - mark_size - 22.0,
-        if hero { 54.0 } else { 42.0 },
+        if hero {
+            58.0
+        } else if compact {
+            40.0
+        } else {
+            48.0
+        },
         700,
         palette.text,
         &agent_label(&item.label),
         2,
     );
-    let value_y = y + height * if hero { 0.60 } else { 0.62 };
-    text(
-        svg,
-        x + pad,
-        value_y
-            - if hero {
-                202.0
-            } else if width < 420.0 {
-                98.0
+    if compact {
+        let metric_y = y + height - 82.0;
+        text(
+            svg,
+            x + pad,
+            metric_y,
+            30.0,
+            680,
+            palette.muted,
+            loc::text(&request.locale, "metric.tokens"),
+            None,
+        );
+        text(
+            svg,
+            x + width - pad,
+            metric_y + 7.0,
+            (height * 0.23).clamp(52.0, 72.0),
+            720,
+            palette.accent,
+            &loc::format_number(&request.locale, item.usage.total()),
+            Some("end"),
+        );
+    } else {
+        let value_y = y + height * if hero { 0.60 } else { 0.62 };
+        text(
+            svg,
+            x + pad,
+            value_y - if hero { 202.0 } else { 142.0 },
+            if hero { 44.0 } else { 38.0 },
+            680,
+            palette.muted,
+            loc::text(&request.locale, "metric.tokens"),
+            None,
+        );
+        text(
+            svg,
+            x + pad,
+            value_y,
+            if hero {
+                (width * 0.20).clamp(132.0, 226.0)
             } else {
-                142.0
+                (width * 0.17).clamp(96.0, 158.0)
             },
-        if hero { 40.0 } else { 34.0 },
-        650,
-        palette.muted,
-        loc::text(&request.locale, "metric.tokens"),
-        None,
-    );
-    text(
-        svg,
-        x + pad,
-        value_y,
-        if hero {
-            226.0
-        } else if width < 420.0 {
-            92.0
-        } else {
-            148.0
-        },
-        720,
-        palette.accent,
-        &loc::format_number(&request.locale, item.usage.total()),
-        Some("d"),
-    );
-    let bar_height = if hero { 58.0 } else { 48.0 };
-    let bar_y = y + height - if hero { 164.0 } else { 136.0 };
-    let bar_width = width - pad * 2.0;
-    rect(
-        svg,
-        x + pad,
-        bar_y,
-        bar_width,
-        bar_height,
-        bar_height / 2.0,
-        palette.hairline,
-        None,
-    );
-    rect(
-        svg,
-        x + pad,
-        bar_y,
-        bar_width * item.usage.total() as f64 / max_tokens.max(1) as f64,
-        bar_height,
-        bar_height / 2.0,
-        palette.accent,
-        None,
-    );
+            720,
+            palette.accent,
+            &loc::format_number(&request.locale, item.usage.total()),
+            Some("d"),
+        );
+    }
+    let content_width = width - pad * 2.0;
     let detail = if hero || width > 460.0 {
         format!(
             "{} {} · {} · {} {}",
@@ -2164,13 +2167,30 @@ fn render_agent_comparison_tile(
             loc::text(&request.locale, "metric.sessions")
         )
     };
+    let detail_y = y + height - if compact { 28.0 } else { 50.0 };
+    line(
+        svg,
+        x + pad,
+        detail_y - if compact { 38.0 } else { 52.0 },
+        x + width - pad,
+        detail_y - if compact { 38.0 } else { 52.0 },
+        palette.hairline,
+        2.0,
+        Some("0.9"),
+    );
     text_block(
         svg,
         x + pad,
-        bar_y + bar_height + 34.0,
-        bar_width,
-        if hero { 36.0 } else { 33.0 },
-        560,
+        detail_y,
+        content_width,
+        if hero {
+            42.0
+        } else if compact {
+            28.0
+        } else {
+            38.0
+        },
+        620,
         palette.muted,
         &detail,
         1,
@@ -2813,20 +2833,37 @@ fn render_usage_trend(
     let values = savitzky_golay_smooth(&raw_values);
     let chart_y = y + 66.0;
     let chart_height = (height - 78.0).max(110.0);
-    let max = values.iter().copied().fold(1.0_f64, f64::max);
+    let max = raw_values
+        .iter()
+        .chain(values.iter())
+        .copied()
+        .fold(1.0_f64, f64::max);
+    let axis_width = (width * 0.095).clamp(82.0, 118.0);
+    let plot_x = x + axis_width;
+    let plot_width = (width - axis_width).max(120.0);
     let mut points = Vec::new();
     for (index, value) in values.iter().enumerate() {
-        let px = x + index as f64 * width / (values.len() - 1) as f64;
+        let px = plot_x + index as f64 * plot_width / (values.len() - 1) as f64;
         let py = chart_y + chart_height - chart_height * *value / max;
         points.push((px, py));
     }
-    for grid in 0..=3 {
+    for (grid, tick) in trend_tick_values(max).iter().enumerate() {
         let gy = chart_y + grid as f64 * chart_height / 3.0;
+        text(
+            svg,
+            plot_x - 14.0,
+            gy + 8.0,
+            (width * 0.024).clamp(22.0, 30.0),
+            560,
+            palette.muted,
+            &loc::format_number(&request.locale, *tick),
+            Some("end"),
+        );
         line(
             svg,
-            x,
+            plot_x,
             gy,
-            x + width,
+            plot_x + plot_width,
             gy,
             palette.hairline,
             2.0,
@@ -2839,6 +2876,15 @@ fn render_usage_trend(
         circle(svg, *px, *py, 12.0, palette.surface_strong, None);
         stroked_circle(svg, *px, *py, 12.0, palette.accent, 5.0, None, None, 0.0);
     }
+}
+
+fn trend_tick_values(max: f64) -> [u64; 4] {
+    [
+        max.round() as u64,
+        (max * 2.0 / 3.0).round() as u64,
+        (max / 3.0).round() as u64,
+        0,
+    ]
 }
 
 fn mirror_index(index: isize, length: usize) -> usize {
@@ -3244,11 +3290,22 @@ fn render_brand(
         "VibeMeter",
         Some("d"),
     );
+    let right = width as f64 - x;
     text(
         svg,
-        width as f64 - x,
-        y,
-        if emphasized { 30.0 } else { 24.0 },
+        right,
+        y - 10.0,
+        if emphasized { 29.0 } else { 24.0 },
+        620,
+        palette.text,
+        "github.com/RangeKing/vibemeter",
+        Some("end"),
+    );
+    text(
+        svg,
+        right,
+        y + 24.0,
+        if emphasized { 24.0 } else { 21.0 },
         460,
         palette.muted,
         loc::text(&request.locale, "brand.tagline"),
@@ -3800,6 +3857,14 @@ mod tests {
     }
 
     #[test]
+    fn usage_trend_has_four_descending_axis_ticks() {
+        assert_eq!(
+            trend_tick_values(3_000_000.0),
+            [3_000_000, 2_000_000, 1_000_000, 0]
+        );
+    }
+
+    #[test]
     fn catchphrase_share_uses_a_champion_frame_and_honest_empty_state() {
         let directory = tempfile::tempdir().expect("tempdir");
         let database = Database::open(directory.path().join("vibemeter.sqlite")).expect("database");
@@ -3825,6 +3890,7 @@ mod tests {
         let result = preview(&database, request).expect("preview");
         assert!(result.svg.contains("它最离不开的一句"));
         assert!(result.svg.contains("至少需要两个会话重复同一句短语"));
+        assert!(result.svg.contains("github.com/RangeKing/vibemeter"));
         let png = render_png_bytes(&result.svg).expect("png");
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     }

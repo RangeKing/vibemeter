@@ -2,7 +2,7 @@ export const enUS = {
   app: {
     name: "VibeMeter",
     tagline: "Track your agents. Discover your coding type.",
-    localOnly: "Local · Private · Config changes backed up",
+    localOnly: "Local · Private",
   },
   migration: {
     title: "Navigation got simpler",
@@ -702,8 +702,8 @@ export const enUS = {
     finish: "Enter VibeMeter",
   },
   menubar: {
-    todayUsage: "Today · Token usage",
-    recentActivity: "Last 15 days",
+    tokenUsage: "Token usage",
+    rangeActivity: "{{range}} activity",
     providerStatus: "Provider status",
     today: "Today",
     outcomes: "Observed task threads",
@@ -735,7 +735,7 @@ export const zhCN = {
   app: {
     name: "VibeMeter",
     tagline: "追踪你的 Agent，发现你的 AI 编程人格。",
-    localOnly: "本机处理 · 隐私优先 · 配置变更有备份",
+    localOnly: "本机处理 · 隐私优先",
   },
   migration: {
     title: "导航更简单了",
@@ -1435,8 +1435,8 @@ export const zhCN = {
     finish: "进入 VibeMeter",
   },
   menubar: {
-    todayUsage: "今天 · Token 消耗",
-    recentActivity: "近 15 天活跃",
+    tokenUsage: "Token 消耗",
+    rangeActivity: "{{range}}活跃",
     providerStatus: "提供商状态",
     today: "今天",
     outcomes: "已观测任务脉络",

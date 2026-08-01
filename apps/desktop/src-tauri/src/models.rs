@@ -1053,8 +1053,9 @@ pub struct ProviderUsage {
 #[serde(rename_all = "camelCase")]
 pub struct MenuBarSnapshot {
     pub generated_at: String,
-    pub today_usage: TokenUsage,
-    pub today_cost_usd: Option<f64>,
+    pub range: String,
+    pub usage: TokenUsage,
+    pub cost_usd: Option<f64>,
     pub heatmap: Vec<DailyUsagePoint>,
     pub providers: Vec<ProviderUsage>,
     pub index_status: IndexStatus,

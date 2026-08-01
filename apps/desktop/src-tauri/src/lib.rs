@@ -468,7 +468,16 @@ fn refresh_index(app: AppHandle, state: State<'_, AppState>, force: bool) -> boo
 }
 
 #[tauri::command]
-async fn get_menu_bar_snapshot(state: State<'_, AppState>) -> AppResult<MenuBarSnapshot> {
+async fn get_menu_bar_snapshot(
+    state: State<'_, AppState>,
+    range: String,
+) -> AppResult<MenuBarSnapshot> {
+    if !matches!(
+        range.as_str(),
+        "today" | "7d" | "30d" | "90d" | "180d" | "year"
+    ) {
+        return Err(AppError::InvalidRequest("unsupported menu range".into()));
+    }
     let database = state.database.clone();
     let mut providers = state.providers.snapshot();
     for provider in &mut providers {
@@ -479,11 +488,12 @@ async fn get_menu_bar_snapshot(state: State<'_, AppState>) -> AppResult<MenuBarS
     }
     let index_status = current_index_status(&state);
     tauri::async_runtime::spawn_blocking(move || {
-        let (today_usage, today_cost_usd, heatmap) = database.today_and_heatmap(15)?;
+        let (usage, cost_usd, heatmap) = database.range_usage_and_heatmap(&range)?;
         Ok(MenuBarSnapshot {
             generated_at: Utc::now().to_rfc3339(),
-            today_usage,
-            today_cost_usd,
+            range,
+            usage,
+            cost_usd,
             heatmap,
             providers,
             index_status,

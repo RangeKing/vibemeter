@@ -72,7 +72,7 @@ export const api = {
     invoke<void>("set_source_selected", { agent, selected }),
   indexStatus: () => invoke<IndexStatus>("get_index_status"),
   refreshIndex: (force = false) => invoke<boolean>("refresh_index", { force }),
-  menuSnapshot: () => invoke<MenuBarSnapshot>("get_menu_bar_snapshot"),
+  menuSnapshot: (range: string) => invoke<MenuBarSnapshot>("get_menu_bar_snapshot", { range }),
   providers: () => invoke<ProviderUsage[]>("get_provider_usage"),
   refreshProviders: (credentialsAllowed: boolean, cursorDashboardUsageEnabled = false) =>
     invoke<ProviderUsage[]>("refresh_provider_data", { credentialsAllowed, cursorDashboardUsageEnabled }),

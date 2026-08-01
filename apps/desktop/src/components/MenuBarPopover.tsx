@@ -6,8 +6,10 @@ import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, tokenTotal } from "../lib/format";
 import { buildMenuActivity } from "../lib/menuActivity";
+import { useUiStore } from "../store";
 import type { Locale, RateWindow } from "../types";
 import { focusHeatmapIndex, HeatmapCell } from "./HeatmapCell";
+import { RangePicker } from "./RangePicker";
 import { ErrorState, LoadingState } from "./ui";
 
 function resetTime(window: RateWindow, locale: Locale): string | undefined {
@@ -40,8 +42,14 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   const refreshedOnOpen = useRef(false);
   const heatmapRef = useRef<HTMLDivElement>(null);
   const [heatmapIndex, setHeatmapIndex] = useState(0);
-  const snapshot = useQuery({ queryKey: ["menu-snapshot"], queryFn: api.menuSnapshot, refetchInterval: 30_000 });
+  const range = useUiStore((state) => state.range);
+  const snapshot = useQuery({
+    queryKey: ["menu-snapshot", range],
+    queryFn: () => api.menuSnapshot(range),
+    refetchInterval: 30_000,
+  });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  useEffect(() => setHeatmapIndex(0), [range]);
   useEffect(() => {
     if (refreshedOnOpen.current || !settings.data) return;
     refreshedOnOpen.current = true;
@@ -74,13 +82,14 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   const activityDays = buildMenuActivity(
     data.heatmap,
     Number.isNaN(generatedAt.getTime()) ? new Date() : generatedAt,
+    data.range,
   );
   const maxDay = Math.max(...activityDays.map((item) => item.value), 1);
   const activateHeatmap = (index: number) => {
     setHeatmapIndex(index);
     requestAnimationFrame(() => focusHeatmapIndex(heatmapRef.current, index));
   };
-  const cache = data.todayUsage.cacheReadTokens + data.todayUsage.cacheWriteTokens + data.todayUsage.cacheWrite1hTokens;
+  const cache = data.usage.cacheReadTokens + data.usage.cacheWriteTokens + data.usage.cacheWrite1hTokens;
   const provider = (name: string) => data.providers.find((item) => item.provider === name);
   const providerState = (name: string) => provider(name)?.health.state ?? "unknown";
   const providerLabel = (state: string) => state === "operational" ? "operational" : state === "minor" ? "degraded" : state === "major" || state === "critical" ? "outage" : "unknown";
@@ -88,24 +97,29 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   return (
     <div className="menubar-root">
       <header className="menubar-header" data-tauri-drag-region><div><span className="menu-logo"><img src={appIconUrl} alt="" /></span><strong>{t("app.name")}</strong></div><button onClick={() => void api.hideMenu()} aria-label={t("actions.close")}><X size={15} /></button></header>
+      <div className="menu-range-strip"><RangePicker compact /></div>
       <section className="menu-token-hero">
-        <span>{t("menubar.todayUsage")}</span>
-        <strong>{formatCompact(tokenTotal(data.todayUsage), locale)}</strong>
+        <span>{t("menubar.tokenUsage")}</span>
+        <strong>{formatCompact(tokenTotal(data.usage), locale)}</strong>
         <div className="menu-token-legend">
-          <span className="input"><i />{t("metrics.input")} <b>{formatCompact(data.todayUsage.inputTokens, locale)}</b></span>
-          <span className="output"><i />{t("metrics.output")} <b>{formatCompact(data.todayUsage.outputTokens, locale)}</b></span>
+          <span className="input"><i />{t("metrics.input")} <b>{formatCompact(data.usage.inputTokens, locale)}</b></span>
+          <span className="output"><i />{t("metrics.output")} <b>{formatCompact(data.usage.outputTokens, locale)}</b></span>
           <span className="cache"><i />{t("metrics.cache")} <b>{formatCompact(cache, locale)}</b></span>
         </div>
       </section>
       <section className="menu-activity">
-        <header><span><Activity size={14} />{t("menubar.recentActivity")}</span>{data.todayCostUsd !== undefined ? <span><Coins size={12} />{formatCurrency(data.todayCostUsd, locale)}</span> : null}</header>
-        <div ref={heatmapRef} className="menu-activity-bars">
+        <header><span><Activity size={14} />{t("menubar.rangeActivity", { range: t(`ranges.${data.range}`) })}</span>{data.costUsd !== undefined ? <span><Coins size={12} />{formatCurrency(data.costUsd, locale)}</span> : null}</header>
+        <div ref={heatmapRef} className="menu-activity-bars" style={{ gridTemplateColumns: `repeat(${activityDays.length}, minmax(0, 1fr))` }}>
           {activityDays.map((item, index) => {
-            const detail = `${new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(new Date(`${item.date}T12:00:00`))} · ${formatCompact(item.value, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`;
+            const dateFormat = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" });
+            const startLabel = dateFormat.format(new Date(`${item.startDate}T12:00:00`));
+            const endLabel = dateFormat.format(new Date(`${item.endDate}T12:00:00`));
+            const dateLabel = item.startDate === item.endDate ? startLabel : `${startLabel}–${endLabel}`;
+            const detail = `${dateLabel} · ${formatCompact(item.value, locale)} Token · ${item.sessions} ${t("metrics.sessions")}`;
             const height = item.value > 0 ? `${Math.max(12, Math.sqrt(item.value / maxDay) * 100)}%` : "4px";
             return (
               <HeatmapCell
-                key={item.date}
+                key={item.key}
                 className="activity-bar"
                 index={index}
                 total={activityDays.length}

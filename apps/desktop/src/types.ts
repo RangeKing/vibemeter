@@ -590,8 +590,9 @@ export interface ProviderUsage {
 
 export interface MenuBarSnapshot {
   generatedAt: string;
-  todayUsage: TokenUsage;
-  todayCostUsd?: number;
+  range: RangeKey;
+  usage: TokenUsage;
+  costUsd?: number;
   heatmap: DailyUsagePoint[];
   providers: ProviderUsage[];
   indexStatus: IndexStatus;

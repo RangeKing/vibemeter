@@ -2358,37 +2358,19 @@ impl Database {
         Ok(items)
     }
 
-    pub fn today_and_heatmap(
+    pub fn range_usage_and_heatmap(
         &self,
-        days: i64,
+        range: &str,
     ) -> AppResult<(TokenUsage, Option<f64>, Vec<DailyUsagePoint>)> {
         let connection = self.connect()?;
-        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
-        let start = (Local::now().date_naive() - Duration::days(days.max(1) - 1))
-            .format("%Y-%m-%d")
-            .to_string();
-        let usage = connection.query_row(
-            "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-                    COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),
-                    COALESCE(SUM(cache_write_1h_tokens),0), COALESCE(SUM(reasoning_tokens),0),
-                    SUM(estimated_cost_usd)
-             FROM daily_usage WHERE date=?1",
-            params![today],
-            |row| {
-                Ok((
-                    TokenUsage {
-                        input_tokens: read_u64(row, 0)?,
-                        output_tokens: read_u64(row, 1)?,
-                        cache_read_tokens: read_u64(row, 2)?,
-                        cache_write_tokens: read_u64(row, 3)?,
-                        cache_write_1h_tokens: read_u64(row, 4)?,
-                        reasoning_tokens: read_u64(row, 5)?,
-                    },
-                    row.get(6)?,
-                ))
-            },
-        )?;
-        Ok((usage.0, usage.1, query_daily(&connection, &start)?))
+        let start_date = range_start(range);
+        let start_timestamp = format!("{start_date}T00:00:00Z");
+        let totals = query_overview_totals(&connection, &start_timestamp, &start_date)?;
+        Ok((
+            totals.usage,
+            totals.estimated_cost_usd,
+            query_daily(&connection, &start_date)?,
+        ))
     }
 
     pub fn record_export(

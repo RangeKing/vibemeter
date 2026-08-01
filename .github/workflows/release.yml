@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing or new release tag, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build Apple Silicon app and publish release
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches the application version
+        run: |
+          APP_VERSION="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          ROOT_VERSION="$(node -p "require('./package.json').version")"
+          DESKTOP_VERSION="$(node -p "require('./apps/desktop/package.json').version")"
+          CARGO_VERSION="$(awk -F ' *= *' '$1 == "version" { gsub(/\"/, "", $2); print $2; exit }' apps/desktop/src-tauri/Cargo.toml)"
+          if [ "$RELEASE_TAG" != "v$APP_VERSION" ]; then
+            echo "Release tag $RELEASE_TAG must match tauri.conf.json version v$APP_VERSION."
+            exit 1
+          fi
+          if [ "$ROOT_VERSION" != "$APP_VERSION" ] || [ "$DESKTOP_VERSION" != "$APP_VERSION" ] || [ "$CARGO_VERSION" != "$APP_VERSION" ]; then
+            echo "package.json, desktop package.json, Cargo.toml, and tauri.conf.json versions must all match $APP_VERSION."
+            exit 1
+          fi
+
+      - name: Run validation suite
+        run: npm run ci
+
+      - name: Build and publish GitHub Release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          args: --target aarch64-apple-darwin --bundles app
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: VibeMeter ${{ env.RELEASE_TAG }}
+          releaseBody: See the assets below to download the Apple Silicon build.
+          releaseDraft: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generateReleaseNotes: true

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   CheckCircle2,
   ChevronDown,
@@ -8,6 +9,7 @@ import {
   Download,
   EyeOff,
   History,
+  Github,
   Image,
   Languages,
   LayoutTemplate,
@@ -331,6 +333,10 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
               ) : null}
             </section>
           ) : null}
+          <button className="share-repository-link" type="button" onClick={() => void openUrl("https://github.com/RangeKing/vibemeter")}>
+            <Github size={14} />
+            <span>RangeKing/vibemeter</span>
+          </button>
         </aside>
       </div>
     </div>
