@@ -102,6 +102,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build app for ZIP
+        run: npm run tauri --workspace @vibemeter/desktop -- build --target ${{ matrix.target }} --bundles app
+
+      - name: Package app as ZIP
+        env:
+          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/VibeMeter.app
+          ZIP_PATH: VibeMeter_${{ env.RELEASE_TAG }}_macOS_${{ matrix.archive }}.zip
+        run: ditto -c -k --keepParent --sequesterRsrc "$APP_PATH" "$ZIP_PATH"
+
       - name: Build DMG and create GitHub Release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -117,12 +126,6 @@ jobs:
           generateReleaseNotes: true
           releaseAssetNamePattern: VibeMeter_[version]_macOS_[arch].[ext]
           retryAttempts: 2
-
-      - name: Package app as ZIP
-        env:
-          APP_PATH: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/VibeMeter.app
-          ZIP_PATH: VibeMeter_${{ env.RELEASE_TAG }}_macOS_${{ matrix.archive }}.zip
-        run: ditto -c -k --keepParent --sequesterRsrc "$APP_PATH" "$ZIP_PATH"
 
       - name: Upload ZIP to GitHub Release
         env:
