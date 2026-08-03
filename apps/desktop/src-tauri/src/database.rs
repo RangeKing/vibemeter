@@ -4143,6 +4143,21 @@ fn query_tasks(
             SELECT 1 FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id
             WHERE ts.task_id=t.id AND s.started_at>=?1
          )
+         AND (
+            trim(COALESCE(t.title, '')) != ''
+            OR trim(COALESCE(t.project_label, '')) != ''
+            OR EXISTS(
+                SELECT 1 FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id
+                WHERE ts.task_id=t.id AND (
+                    s.input_tokens > 0 OR s.output_tokens > 0
+                    OR s.cache_read_tokens > 0 OR s.cache_write_tokens > 0
+                    OR s.cache_write_1h_tokens > 0 OR s.reasoning_tokens > 0
+                    OR s.files_touched > 0 OR s.lines_added > 0 OR s.lines_deleted > 0
+                    OR s.errors > 0 OR s.retries > 0 OR s.verification_events > 0
+                    OR EXISTS(SELECT 1 FROM git_commits gc WHERE gc.session_id=s.id)
+                )
+            )
+         )
          ORDER BY 11 DESC LIMIT ?2",
     )?;
     let rows = statement
@@ -4740,6 +4755,38 @@ mod concurrency_tests {
         assert_eq!(derive_verification_state(0, 12, 0, 0), "unverified");
         assert_eq!(derive_verification_state(1, 0, 0, 0), "unverified");
         assert_eq!(derive_verification_state(0, 0, 0, 0), "not-applicable");
+    }
+
+    #[test]
+    fn work_events_hide_untitled_sessions_without_work_evidence() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("task-feed.sqlite"))
+            .expect("database should open");
+        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+
+        let mut empty = ParseState::new(AgentKind::Cursor, "empty-session".into());
+        empty.started_at = Some(format!("{date}T10:00:00Z"));
+        empty.ended_at = Some(format!("{date}T10:00:30Z"));
+        empty.active_seconds = 30;
+        empty.tool_calls = 3;
+        database
+            .persist_parse_state("empty-source", 1, 1, 1, &empty)
+            .expect("empty session should persist");
+
+        let mut observed = ParseState::new(AgentKind::Cursor, "observed-session".into());
+        observed.started_at = Some(format!("{date}T11:00:00Z"));
+        observed.ended_at = Some(format!("{date}T11:02:00Z"));
+        observed.title = Some("Observed work".into());
+        observed.project_label = Some("visible-project".into());
+        observed.usage.input_tokens = 12;
+        database
+            .persist_parse_state("observed-source", 1, 1, 1, &observed)
+            .expect("observed session should persist");
+
+        let tasks = database.tasks("today").expect("tasks should load");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Observed work");
+        assert_eq!(tasks[0].project_label, "visible-project");
     }
 
     #[test]

@@ -326,6 +326,7 @@ export const enUS = {
     changed: "Changed",
     blocked: "Blocked",
     unverified: "Unverified",
+    "not-applicable": "No edit evidence",
     sessions: "{{count}} session threads",
     autoGrouped: "Auto-group confidence {{value}}",
     commitObserved: "Commit observed",
@@ -670,7 +671,7 @@ export const enUS = {
     startup: "Startup",
     launchAtLogin: "Launch at login",
     launchBody: "Keep VibeMeter available from the menu bar.",
-    version: "VibeMeter 0.1.0 · local beta",
+    version: "VibeMeter {{version}}",
   },
   onboarding: {
     eyebrow: "Before VibeMeter starts",
@@ -1070,6 +1071,7 @@ export const zhCN = {
     changed: "有修改",
     blocked: "受阻",
     unverified: "未验证",
+    "not-applicable": "无编辑证据",
     sessions: "{{count}} 段会话",
     autoGrouped: "自动归并置信度 {{value}}",
     commitObserved: "已有提交",
@@ -1414,7 +1416,7 @@ export const zhCN = {
     startup: "启动",
     launchAtLogin: "登录时启动",
     launchBody: "让 VibeMeter 常驻菜单栏。",
-    version: "VibeMeter 0.1.0 · 本机测试版",
+    version: "VibeMeter {{version}}",
   },
   onboarding: {
     eyebrow: "开始使用 VibeMeter 前",

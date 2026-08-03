@@ -3,6 +3,7 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import desktopPackage from "../../package.json";
 import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
@@ -11,6 +12,7 @@ import type { AppSettings, Locale, Theme } from "../types";
 
 export function SettingsPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
+  const appVersion = desktopPackage.version;
   const client = useQueryClient();
   const setPage = useUiStore((state) => state.setPage);
   const range = useUiStore((state) => state.range);
@@ -136,7 +138,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
         <section className="settings-section danger-zone">
           <header><ShieldAlert size={17} /><div><h2>{t("settings.localData")}</h2><p>{t("settings.clearDataBody")}</p></div></header>
           <button className="button danger-button" disabled={clearData.isPending} onClick={() => { if (window.confirm(t("settings.clearConfirm"))) clearData.mutate(); }}><Trash2 size={14} />{t("settings.clearData")}</button>
-          <small>{t("settings.version")}</small>
+          <small>{t("settings.version", { version: appVersion })}</small>
         </section>
       </div>
     </div>

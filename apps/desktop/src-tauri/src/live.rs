@@ -790,7 +790,7 @@ fn probe_codex_hooks() -> AppResult<CodexHookHealth> {
                 "id": 1,
                 "method": "initialize",
                 "params": {
-                    "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
+                    "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":env!("CARGO_PKG_VERSION")},
                     "capabilities": {"experimentalApi":true}
                 }
             }),

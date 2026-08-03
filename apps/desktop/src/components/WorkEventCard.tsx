@@ -12,7 +12,13 @@ export function WorkEventCard({ task, locale, selected = false, onSelect, onOpen
   onAcceptSuggestion?: () => void;
 }) {
   const { t } = useTranslation();
-  const state = task.hasCommit || task.verificationState === "verified" ? "verified" : task.status;
+  const state = task.hasCommit || task.verificationState === "verified"
+    ? "verified"
+    : task.status === "changed" || task.status === "blocked"
+      ? task.status
+      : task.verificationState === "not-applicable"
+        ? "not-applicable"
+        : "unverified";
   const StateIcon = state === "verified" ? CheckCircle2 : task.worthReviewing ? AlertTriangle : CircleDashed;
   const grouping = task.groupingState === "suggested"
     ? t("task.suggestedGrouping", { value: formatPercent(task.confidence, locale) })
@@ -25,7 +31,7 @@ export function WorkEventCard({ task, locale, selected = false, onSelect, onOpen
       <header>
         <span className="task-header-left">
           {onSelect ? <input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} aria-label={t("task.selected", { count: selected ? 1 : 0 })} /> : null}
-          <span className={`task-state ${state}`}><StateIcon size={14} />{t(`task.${state in { verified: 1, changed: 1, blocked: 1 } ? state : "unverified"}`)}</span>
+          <span className={`task-state ${state}`}><StateIcon size={14} />{t(`task.${state in { verified: 1, changed: 1, blocked: 1, "not-applicable": 1 } ? state : "unverified"}`)}</span>
         </span>
         <span className="task-time">{formatDate(task.startedAt, locale, "short")}</span>
       </header>

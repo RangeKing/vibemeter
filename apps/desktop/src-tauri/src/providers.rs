@@ -564,7 +564,7 @@ fn build_http_client(
 ) -> Option<reqwest::blocking::Client> {
     let builder = reqwest::blocking::Client::builder()
         .timeout(timeout)
-        .user_agent("vibemeter/0.1.0");
+        .user_agent(concat!("vibemeter/", env!("CARGO_PKG_VERSION")));
     if let Some(proxy_url) = proxy_url {
         // Explicitly discovered proxy clients are only used for public status
         // endpoints. The primary quota client keeps reqwest's existing network
@@ -834,7 +834,7 @@ fn fetch_codex_usage() -> AppResult<ProviderUsage> {
                 "id": 1,
                 "method": "initialize",
                 "params": {
-                    "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":"0.1.0"},
+                    "clientInfo": {"name":"vibemeter","title":"VibeMeter","version":env!("CARGO_PKG_VERSION")},
                     "capabilities": {"experimentalApi":true}
                 }
             }),
