@@ -19,14 +19,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
-use std::time::{Duration as StdDuration, Instant};
+use std::time::{Duration as StdDuration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter};
 
 const RAW_RETENTION_DAYS: i64 = 90;
 const MAX_HOOK_BYTES: u64 = 768 * 1024;
 const MAX_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
 const MAX_TRANSCRIPT_READ_BYTES: u64 = MAX_TRANSCRIPT_TAIL_BYTES;
+const MAX_TRANSCRIPT_BOUNDARY_BYTES: u64 = 8 * MAX_TRANSCRIPT_TAIL_BYTES;
 const MAX_TRANSCRIPT_LINE_BYTES: usize = 256 * 1024;
+const MAX_SESSION_META_BYTES: u64 = 512 * 1024;
+const CODEX_DISCOVERY_INTERVAL: StdDuration = StdDuration::from_secs(2);
+const CODEX_DISCOVERY_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const MAX_DISCOVERED_TRANSCRIPTS: usize = 64;
 const MANAGED_MARKER: &str = "vibemeter_hook.py";
 const CODEX_PROBE_TTL: StdDuration = StdDuration::from_secs(20);
 const CLAUDE_HOOKS: &[(&str, Option<&str>, Option<u64>)] = &[
@@ -106,6 +111,12 @@ struct CodexTranscriptWatch {
     discard_partial_line: bool,
     initialized: bool,
     collaboration_mode: CodexCollaborationMode,
+}
+
+struct CodexTranscriptBootstrap {
+    session_id: String,
+    session: Option<LiveSession>,
+    watch: CodexTranscriptWatch,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -341,8 +352,31 @@ impl LiveMonitor {
         let transcript_watches = codex_transcripts.clone();
         let transcript_database = database.clone();
         std::thread::spawn(move || {
+            let mut discover_immediately = true;
+            let mut last_discovery = Instant::now();
             loop {
-                let updates = poll_codex_transcripts(&transcript_watches);
+                let should_discover =
+                    discover_immediately || last_discovery.elapsed() >= CODEX_DISCOVERY_INTERVAL;
+                let discovered = if should_discover {
+                    discover_immediately = false;
+                    last_discovery = Instant::now();
+                    discover_codex_transcripts(&transcript_watches, &transcript_sessions)
+                } else {
+                    false
+                };
+                if discovered {
+                    let completed_sessions = transcript_database
+                        .notch_completed_sessions()
+                        .unwrap_or_default();
+                    let snapshot = snapshot_from(
+                        &transcript_sessions,
+                        transcript_socket_ready.load(Ordering::SeqCst),
+                        completed_sessions,
+                        &transcript_database,
+                    );
+                    let _ = transcript_app.emit("live-update", &snapshot);
+                }
+                let updates = poll_codex_transcripts(&transcript_watches, &transcript_sessions);
                 for (session_id, signal, live_append) in updates {
                     let transition = merge_codex_metadata(
                         &transcript_sessions,
@@ -1479,13 +1513,16 @@ fn fold_codex_memory_activity(
     let parent = sessions.read().ok().and_then(|active| {
         aliased_parent
             .as_ref()
-            .and_then(|id| active.get(id).cloned())
+            .and_then(|id| active.get(id))
+            .filter(|session| session_accepts_auxiliary_activity(session))
+            .cloned()
             .or_else(|| {
                 active
                     .values()
                     .filter(|session| {
                         session.agent == "codex"
                             && session.project_label != "memories"
+                            && session_accepts_auxiliary_activity(session)
                             && same_process_context(session, &incoming)
                             && recent_before(session, &incoming)
                     })
@@ -1515,6 +1552,10 @@ fn fold_codex_memory_activity(
         occurred_at: incoming.updated_at.clone(),
     }];
     Some(incoming)
+}
+
+fn session_accepts_auxiliary_activity(session: &LiveSession) -> bool {
+    matches!(session.status.as_str(), "running" | "idle")
 }
 
 fn is_codex_memory_activity(envelope: &Value) -> bool {
@@ -1711,21 +1752,364 @@ fn register_codex_transcript(
     }
 }
 
+fn discover_codex_transcripts(
+    watches: &Arc<Mutex<HashMap<String, CodexTranscriptWatch>>>,
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
+) -> bool {
+    let watched_paths = watches
+        .lock()
+        .map(|guard| {
+            guard
+                .iter()
+                .map(|(session_id, watch)| (watch.path.clone(), (session_id.clone(), watch.offset)))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let active_ids = sessions
+        .read()
+        .map(|guard| guard.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    let mut changed = false;
+
+    for path in recent_codex_transcript_paths() {
+        if let Some((session_id, offset)) = watched_paths.get(&path)
+            && (active_ids.contains(session_id)
+                || fs::metadata(&path)
+                    .ok()
+                    .is_none_or(|metadata| metadata.len() <= *offset))
+        {
+            continue;
+        }
+        let Some(bootstrap) = bootstrap_codex_transcript(&path) else {
+            continue;
+        };
+        if let Ok(mut guard) = watches.lock() {
+            guard.insert(bootstrap.session_id.clone(), bootstrap.watch);
+        }
+        let Some(session) = bootstrap.session else {
+            continue;
+        };
+        if let Ok(mut guard) = sessions.write() {
+            let should_insert = guard.get(&session.id).is_none_or(|existing| {
+                !matches!(existing.status.as_str(), "waiting" | "error")
+                    && existing.updated_at < session.updated_at
+            });
+            if should_insert {
+                guard.insert(session.id.clone(), session);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn recent_codex_transcript_paths() -> Vec<PathBuf> {
+    let Some(codex_home) = codex_home_dir() else {
+        return Vec::new();
+    };
+    let root = codex_home.join("sessions");
+    let now = SystemTime::now();
+    let mut stack = vec![(root, 0_u8)];
+    let mut candidates = Vec::new();
+    while let Some((directory, depth)) = stack.pop() {
+        if depth > 6 {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                stack.push((path, depth + 1));
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("rollout-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if now.duration_since(modified).unwrap_or_default() > CODEX_DISCOVERY_WINDOW {
+                continue;
+            }
+            candidates.push((modified, path));
+        }
+    }
+    candidates.sort_by_key(|item| std::cmp::Reverse(item.0));
+    candidates
+        .into_iter()
+        .take(MAX_DISCOVERED_TRANSCRIPTS)
+        .filter_map(|(_, path)| path.canonicalize().ok())
+        .collect()
+}
+
+fn bootstrap_codex_transcript(path: &Path) -> Option<CodexTranscriptBootstrap> {
+    let codex_home = codex_home_dir()?;
+    bootstrap_codex_transcript_from(path, &codex_home)
+}
+
+fn bootstrap_codex_transcript_from(
+    path: &Path,
+    codex_home: &Path,
+) -> Option<CodexTranscriptBootstrap> {
+    let sessions_root = codex_home.join("sessions").canonicalize().ok()?;
+    let path = path.canonicalize().ok()?;
+    if !path.starts_with(&sessions_root) || !path.is_file() {
+        return None;
+    }
+    let metadata = fs::metadata(&path).ok()?;
+    let mut first_line = Vec::new();
+    BufReader::new(fs::File::open(&path).ok()?)
+        .take(MAX_SESSION_META_BYTES + 1)
+        .read_until(b'\n', &mut first_line)
+        .ok()?;
+    if first_line.is_empty()
+        || first_line.len() as u64 > MAX_SESSION_META_BYTES
+        || !first_line.ends_with(b"\n")
+    {
+        return None;
+    }
+    let meta = serde_json::from_slice::<Value>(&first_line).ok()?;
+    if meta.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return None;
+    }
+    let payload = meta.get("payload").and_then(Value::as_object)?;
+    let source_session_id = payload.get("id").and_then(Value::as_str)?.trim();
+    if !valid_target_id(source_session_id) || codex_metadata_is_auxiliary(payload, codex_home) {
+        return None;
+    }
+    let source_session_id = source_session_id.to_string();
+    let session_id = crate::privacy::stable_hash(&format!("codex:{source_session_id}"));
+    let cwd = string_field(payload, &["cwd"]).unwrap_or_default();
+    let origin = payload
+        .get("originator")
+        .and_then(Value::as_str)
+        .filter(|value| value.to_ascii_lowercase().contains("desktop"))
+        .map(|_| "desktop".to_string());
+
+    let offset = metadata.len().saturating_sub(MAX_TRANSCRIPT_TAIL_BYTES);
+    let mut file = fs::File::open(&path).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TRANSCRIPT_TAIL_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let mut lines = bytes.split(|byte| *byte == b'\n');
+    if offset > 0 {
+        let _ = lines.next();
+    }
+    let mut collaboration_mode = CodexCollaborationMode::Default;
+    let mut turn_open = false;
+    let mut saw_turn_boundary = false;
+    let mut turn_started_at = None;
+    let mut latest_signal = None;
+    for line in lines {
+        if line.is_empty() || line.len() > MAX_TRANSCRIPT_LINE_BYTES {
+            continue;
+        }
+        if let Ok(record) = serde_json::from_slice::<Value>(line) {
+            let payload_type = record
+                .get("payload")
+                .and_then(Value::as_object)
+                .and_then(|payload| payload.get("type"))
+                .and_then(Value::as_str);
+            match payload_type {
+                Some("task_started") => {
+                    saw_turn_boundary = true;
+                    turn_open = true;
+                    turn_started_at = record
+                        .get("timestamp")
+                        .and_then(Value::as_str)
+                        .filter(|value| DateTime::parse_from_rfc3339(value).is_ok())
+                        .map(str::to_string);
+                    latest_signal = None;
+                }
+                Some("task_complete") => {
+                    saw_turn_boundary = true;
+                    turn_open = false;
+                }
+                _ => {}
+            }
+        }
+        if let Some(signal) = codex_metadata_signal(line, &mut collaboration_mode) {
+            latest_signal = Some(signal);
+        }
+    }
+    if !saw_turn_boundary
+        && latest_signal
+            .as_ref()
+            .is_some_and(|signal| signal.status == "running")
+    {
+        if let Some((open, started_at)) = latest_codex_turn_boundary(&path, metadata.len()) {
+            turn_open = open;
+            turn_started_at = started_at;
+        } else {
+            // Long turns can push task_started beyond the bounded tail. A whitelisted
+            // running signal cannot occur after task_complete, so restoring it is safe.
+            turn_open = true;
+        }
+    }
+    let watch = CodexTranscriptWatch {
+        path,
+        offset: metadata.len(),
+        discard_partial_line: false,
+        initialized: true,
+        collaboration_mode,
+    };
+    if !turn_open {
+        return Some(CodexTranscriptBootstrap {
+            session_id,
+            session: None,
+            watch,
+        });
+    }
+    let signal = latest_signal.unwrap_or_else(|| {
+        let occurred_at = turn_started_at.clone().unwrap_or_else(|| {
+            DateTime::<Utc>::from(metadata.modified().unwrap_or_else(|_| SystemTime::now()))
+                .to_rfc3339()
+        });
+        metadata_signal(
+            collaboration_phase(collaboration_mode),
+            "running",
+            if collaboration_mode == CodexCollaborationMode::Plan {
+                "plan"
+            } else {
+                "think"
+            },
+            collaboration_phase(collaboration_mode),
+            occurred_at,
+        )
+    });
+    let started_at = turn_started_at.unwrap_or_else(|| signal.occurred_at.clone());
+    let session = LiveSession {
+        id: session_id.clone(),
+        source_session_id,
+        agent: "codex".into(),
+        project_label: project_label_from_cwd(&cwd),
+        conversation_title: None,
+        status: "running".into(),
+        phase: signal.phase,
+        started_at,
+        updated_at: signal.occurred_at.clone(),
+        waiting_reason: None,
+        actions: vec![LiveAction {
+            kind: signal.action_kind,
+            label: signal.action_label,
+            occurred_at: signal.occurred_at,
+        }],
+        process_id: None,
+        origin,
+        jump_context: None,
+    };
+    Some(CodexTranscriptBootstrap {
+        session_id,
+        session: Some(session),
+        watch,
+    })
+}
+
+fn latest_codex_turn_boundary(path: &Path, length: u64) -> Option<(bool, Option<String>)> {
+    let offset = length.saturating_sub(MAX_TRANSCRIPT_BOUNDARY_BYTES);
+    let mut file = fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_TRANSCRIPT_BOUNDARY_BYTES)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let mut lines = bytes.split(|byte| *byte == b'\n');
+    if offset > 0 {
+        let _ = lines.next();
+    }
+    let mut boundary = None;
+    for line in lines {
+        if line.is_empty() || line.len() > MAX_TRANSCRIPT_LINE_BYTES {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let payload_type = record
+            .get("payload")
+            .and_then(Value::as_object)
+            .and_then(|payload| payload.get("type"))
+            .and_then(Value::as_str);
+        match payload_type {
+            Some("task_started") => {
+                let started_at = record
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .filter(|value| DateTime::parse_from_rfc3339(value).is_ok())
+                    .map(str::to_string);
+                boundary = Some((true, started_at));
+            }
+            Some("task_complete") => boundary = Some((false, None)),
+            _ => {}
+        }
+    }
+    boundary
+}
+
+fn codex_metadata_is_auxiliary(payload: &Map<String, Value>, codex_home: &Path) -> bool {
+    if payload
+        .get("thread_source")
+        .and_then(Value::as_str)
+        .is_some_and(|value| matches!(value, "subagent" | "memory"))
+        || payload
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|value| matches!(value, "subagent" | "memory"))
+        || payload
+            .get("source")
+            .and_then(Value::as_object)
+            .is_some_and(|source| source.contains_key("subagent") || source.contains_key("memory"))
+    {
+        return true;
+    }
+    string_field(payload, &["cwd"])
+        .is_some_and(|cwd| Path::new(&cwd).starts_with(codex_home.join("memories")))
+}
+
+fn codex_home_dir() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
 fn validated_codex_transcript_path(path: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let root = home.join(".codex/sessions").canonicalize().ok()?;
+    let root = codex_home_dir()?.join("sessions").canonicalize().ok()?;
     let path = Path::new(path).canonicalize().ok()?;
     (path.starts_with(&root) && path.is_file()).then_some(path)
 }
 
 fn poll_codex_transcripts(
     watches: &Arc<Mutex<HashMap<String, CodexTranscriptWatch>>>,
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
 ) -> Vec<(String, CodexMetadataSignal, bool)> {
+    let active_ids = sessions
+        .read()
+        .map(|guard| guard.keys().cloned().collect::<HashSet<_>>())
+        .unwrap_or_default();
     let Ok(mut guard) = watches.lock() else {
         return Vec::new();
     };
     let mut updates = Vec::new();
     for (session_id, watch) in guard.iter_mut() {
+        if !active_ids.contains(session_id) {
+            continue;
+        }
         let Ok(metadata) = fs::metadata(&watch.path) else {
             continue;
         };
@@ -1797,7 +2181,18 @@ fn prune_transcript_watches(
         .map(|sessions| sessions.keys().cloned().collect::<HashSet<_>>())
         .unwrap_or_default();
     if let Ok(mut guard) = watches.lock() {
-        guard.retain(|session_id, _| active.contains(session_id));
+        guard.retain(|session_id, watch| {
+            active.contains(session_id)
+                || fs::metadata(&watch.path)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .is_some_and(|modified| {
+                        SystemTime::now()
+                            .duration_since(modified)
+                            .unwrap_or_default()
+                            <= CODEX_DISCOVERY_WINDOW
+                    })
+        });
     }
 }
 
@@ -1947,6 +2342,10 @@ fn merge_codex_metadata(
         return None;
     }
     let previous_status = session.status.clone();
+    if previous_status == "completed" && signal.status == "running" {
+        session.started_at = signal.occurred_at.clone();
+        session.actions.clear();
+    }
     session.status = signal.status;
     session.phase = signal.phase;
     session.updated_at = signal.occurred_at.clone();
@@ -1973,6 +2372,15 @@ fn merge_session(
     let mut guard = sessions.write().ok()?;
     let previous_status = guard.get(&incoming.id).map(|item| item.status.clone());
     if let Some(existing) = guard.get_mut(&incoming.id) {
+        let auxiliary_refresh = incoming.status == "running"
+            && !incoming.actions.is_empty()
+            && incoming
+                .actions
+                .iter()
+                .all(|action| action.kind == "memory");
+        if auxiliary_refresh && !session_accepts_auxiliary_activity(existing) {
+            return None;
+        }
         existing.updated_at = incoming.updated_at;
         existing.status = incoming.status.clone();
         existing.phase = incoming.phase;
@@ -2900,6 +3308,28 @@ mod tests {
         assert_eq!(folded.id, parent.id);
         assert_eq!(folded.status, "running");
         assert_eq!(folded.phase, "reading");
+
+        sessions
+            .write()
+            .expect("sessions")
+            .get_mut(&parent.id)
+            .expect("parent")
+            .status = "completed".into();
+        let (late_child, _, _) = session_from_envelope(&ended).expect("late memory child");
+        assert!(
+            fold_codex_memory_activity(&sessions, &aliases, &ended, late_child).is_none(),
+            "a remembered memory alias must not revive a completed parent"
+        );
+        assert!(merge_session(&sessions, folded).is_none());
+        assert_eq!(
+            sessions
+                .read()
+                .expect("sessions")
+                .get(&parent.id)
+                .expect("parent")
+                .status,
+            "completed"
+        );
     }
 
     #[test]
@@ -3071,6 +3501,139 @@ mod tests {
             phase_for("PreToolUse", "update_plan", "running").0,
             "planning"
         );
+    }
+
+    #[test]
+    fn active_codex_transcript_bootstraps_live_session_without_prompt_text() {
+        let directory = tempdir().expect("tempdir");
+        let codex_home = directory.path().join(".codex");
+        let sessions = codex_home.join("sessions/2026/08/02");
+        fs::create_dir_all(&sessions).expect("sessions");
+        let project = directory.path().join("sample-project");
+        fs::create_dir_all(&project).expect("project");
+        let path = sessions.join("rollout-active.jsonl");
+        let started_at = "2026-08-02T03:51:34.430Z";
+        let records = [
+            json!({
+                "timestamp":"2026-08-02T03:50:00Z",
+                "type":"session_meta",
+                "payload":{
+                    "id":"019fb7b1-0bb1-7e61-8a76-e82529d1b96e",
+                    "cwd":project,
+                    "source":"vscode",
+                    "originator":"Codex Desktop",
+                    "thread_source":"user"
+                }
+            }),
+            json!({
+                "timestamp":started_at,
+                "type":"event_msg",
+                "payload":{"type":"task_started"}
+            }),
+            json!({
+                "timestamp":"2026-08-02T03:51:35Z",
+                "type":"event_msg",
+                "payload":{"type":"user_message","message":"private-prompt-must-not-propagate"}
+            }),
+            json!({
+                "timestamp":"2026-08-02T03:51:36Z",
+                "type":"response_item",
+                "payload":{
+                    "type":"function_call",
+                    "name":"apply_patch",
+                    "arguments":"private-tool-arguments-must-not-propagate"
+                }
+            }),
+        ];
+        let fixture = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, fixture).expect("fixture");
+
+        let bootstrap = bootstrap_codex_transcript_from(&path, &codex_home).expect("bootstrap");
+        let session = bootstrap.session.expect("active session");
+        assert_eq!(
+            session.source_session_id,
+            "019fb7b1-0bb1-7e61-8a76-e82529d1b96e"
+        );
+        assert_eq!(session.project_label, "sample-project");
+        assert_eq!(session.status, "running");
+        assert_eq!(session.phase, "editing");
+        assert_eq!(session.started_at, started_at);
+        assert_eq!(session.origin.as_deref(), Some("desktop"));
+        assert_eq!(session.actions[0].label, "apply_patch");
+        let visible = format!("{session:?}");
+        assert!(!visible.contains("private-prompt"));
+        assert!(!visible.contains("private-tool-arguments"));
+
+        let long_path = sessions.join("rollout-long-active.jsonl");
+        let mut long_records = vec![records[0].to_string(), records[1].to_string()];
+        for index in 0..6 {
+            long_records.push(
+                json!({
+                    "timestamp":format!("2026-08-02T03:51:4{index}Z"),
+                    "type":"event_msg",
+                    "payload":{"type":"user_message","message":"x".repeat(220_000)}
+                })
+                .to_string(),
+            );
+        }
+        long_records.push(records[3].to_string());
+        fs::write(&long_path, long_records.join("\n") + "\n").expect("long fixture");
+        let long_bootstrap = bootstrap_codex_transcript_from(&long_path, &codex_home)
+            .expect("long bootstrap")
+            .session
+            .expect("long active session");
+        assert_eq!(long_bootstrap.started_at, started_at);
+        assert_eq!(long_bootstrap.actions[0].label, "apply_patch");
+    }
+
+    #[test]
+    fn completed_and_subagent_codex_transcripts_do_not_bootstrap_live_sessions() {
+        let directory = tempdir().expect("tempdir");
+        let codex_home = directory.path().join(".codex");
+        let sessions = codex_home.join("sessions/2026/08/02");
+        fs::create_dir_all(&sessions).expect("sessions");
+        let completed_path = sessions.join("rollout-completed.jsonl");
+        let completed = [
+            json!({
+                "type":"session_meta",
+                "payload":{
+                    "id":"completed-thread",
+                    "cwd":"/tmp/project",
+                    "thread_source":"user"
+                }
+            }),
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            json!({"type":"event_msg","payload":{"type":"task_complete"}}),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&completed_path, completed).expect("completed fixture");
+        let completed = bootstrap_codex_transcript_from(&completed_path, &codex_home)
+            .expect("completed bootstrap");
+        assert!(completed.session.is_none());
+
+        let subagent_path = sessions.join("rollout-subagent.jsonl");
+        let subagent = json!({
+            "type":"session_meta",
+            "payload":{
+                "id":"subagent-thread",
+                "cwd":"/tmp/project",
+                "thread_source":"subagent",
+                "source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}
+            }
+        })
+        .to_string()
+            + "\n";
+        fs::write(&subagent_path, subagent).expect("subagent fixture");
+        assert!(bootstrap_codex_transcript_from(&subagent_path, &codex_home).is_none());
     }
 
     #[test]

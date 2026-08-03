@@ -132,3 +132,54 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZIP_PATH: VibeMeter_${{ env.RELEASE_TAG }}_macOS_${{ matrix.archive }}.zip
         run: gh release upload "$RELEASE_TAG" "$ZIP_PATH" --clobber
+
+  notify-website:
+    name: Notify product website
+    needs: build-and-release
+    if: ${{ needs.build-and-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Confirm all website download assets are ready
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for attempt in {1..12}; do
+            ASSET_NAMES="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            missing=0
+            for pattern in \
+              '_macOS_aarch64\.dmg$' \
+              '_macOS_arm64\.zip$' \
+              '_macOS_x64\.dmg$' \
+              '_macOS_x64\.zip$'; do
+              if ! grep -Eq "$pattern" <<< "$ASSET_NAMES"; then
+                missing=1
+              fi
+            done
+            if [ "$missing" -eq 0 ]; then
+              echo "All four website download assets are ready for $RELEASE_TAG."
+              exit 0
+            fi
+            echo "Waiting for release assets ($attempt/12)..."
+            sleep 10
+          done
+          echo "The release is missing one or more required macOS assets."
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
+          exit 1
+
+      - name: Dispatch release to website repository
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "WEBSITE_DISPATCH_TOKEN is not configured."
+            exit 1
+          fi
+          gh api \
+            --method POST \
+            repos/RangeKing/vibemeter-website/dispatches \
+            -f event_type='vibemeter-release-published' \
+            -F "client_payload[tag]=$RELEASE_TAG"
