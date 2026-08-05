@@ -488,7 +488,8 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .sessions-embedded-header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 18px; align-items: end; margin-bottom: 22px; }
 .sessions-embedded-header h1 { margin: 8px 0 6px; font-family: var(--serif); font-size: clamp(30px, 3.4vw, 44px); letter-spacing: -1.2px; }
 .sessions-embedded-header p { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; max-width: 560px; }
-.settings-cursor-usage { margin-top: 14px; }
+.setting-toggle-with-status { display: inline-flex; align-items: center; gap: 8px; }
+.setting-progress { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--font-caption); white-space: nowrap; }
 .data-header h1 { max-width: 760px; margin: 14px 0 9px; font-family: var(--serif); font-size: clamp(38px, 4vw, 58px); line-height: 1.03; font-weight: 590; letter-spacing: -2px; }
 .data-header p { max-width: 720px; margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
 .range-picker { flex: 0 0 auto; padding: 4px; border-color: var(--line-strong); background: color-mix(in srgb, var(--surface-soft) 82%, transparent); box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%); }
@@ -1234,7 +1235,8 @@ html[data-surface="menubar"], html[data-surface="menubar"] body, html[data-surfa
 .menu-quota-track i { display: block; height: 100%; border-radius: inherit; background: var(--quota-color); transition: width 220ms ease, background-color 160ms ease; }
 .menu-quota-row.warning { --quota-color: var(--amber); }
 .menu-quota-row.critical { --quota-color: var(--red); }
-.menu-quota-row > small { grid-column: 1 / -1; min-width: 0; margin-top: 2px; overflow: hidden; color: var(--faint); font-size: 7.5px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.menu-quota-row > small { grid-column: 1 / -1; min-width: 0; margin-top: 2px; overflow: hidden; color: var(--faint); font-size: 7.5px; font-weight: 560; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.menu-quota-countdown { color: var(--accent-dark); font-weight: 680; }
 .menu-enable-quota { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 67px; margin-top: 9px; padding: 0 12px; border: 0; border-radius: 10px; color: var(--ink); background: var(--surface-soft); text-align: left; }
 .menu-enable-quota strong, .menu-enable-quota small { display: block; }
 .menu-enable-quota strong { font-size: 11px; }

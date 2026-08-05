@@ -91,4 +91,14 @@ describe("CursorAccountUsagePanel", () => {
     expect(screen.getByText("Cursor 实际扣费")).toBeTruthy();
     expect(screen.getByText("composer-1")).toBeTruthy();
   });
+
+  it("shows an explicit loading state while account history is being read", async () => {
+    settings.mockResolvedValue({ cursorDashboardUsage: "true", credentialsAllowed: "true" });
+    providers.mockReturnValue(new Promise(() => undefined));
+
+    renderPanel();
+
+    expect(await screen.findByText("正在读取 Cursor Dashboard 用量…")).toBeTruthy();
+    expect(document.querySelector(".cursor-account-panel.loading .spin")).not.toBeNull();
+  });
 });

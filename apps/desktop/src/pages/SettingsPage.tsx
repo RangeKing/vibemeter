@@ -1,10 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import desktopPackage from "../../package.json";
-import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
 import { useUiStore } from "../store";
@@ -15,36 +14,49 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const appVersion = desktopPackage.version;
   const client = useQueryClient();
   const setPage = useUiStore((state) => state.setPage);
-  const range = useUiStore((state) => state.range);
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 3_000 });
   const [loginEnabled, setLoginEnabled] = useState(false);
+  const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
+  const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
   const setSetting = async (key: keyof AppSettings, value: string) => {
-    await api.setSetting(key, value);
-    if (key === "credentialsAllowed" && value === "false") {
-      await api.setSetting("cursorDashboardUsage", "false");
+    const refreshesProviders = key === "credentialsAllowed" || key === "cursorDashboardUsage";
+    if (refreshesProviders) setCursorRefreshPending(true);
+    try {
+      await api.setSetting(key, value);
+      if (key === "credentialsAllowed" && value === "false") {
+        await api.setSetting("cursorDashboardUsage", "false");
+      }
+      if (refreshesProviders) {
+        const credentialsAllowed = key === "credentialsAllowed"
+          ? value === "true"
+          : settings.data?.credentialsAllowed === "true";
+        const cursorDashboardUsageEnabled = key === "cursorDashboardUsage"
+          ? value === "true"
+          : credentialsAllowed && settings.data?.cursorDashboardUsage === "true";
+        await api.refreshProviders(credentialsAllowed, cursorDashboardUsageEnabled);
+      }
+      if (key === "gitReadAllowed" || key === "vctiPromptStructure") await api.refreshIndex(true);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["settings"] }),
+        client.invalidateQueries({ queryKey: ["providers"] }),
+        client.invalidateQueries({ queryKey: ["menu-snapshot"] }),
+        client.invalidateQueries({ queryKey: ["vcti"] }),
+        client.invalidateQueries({ queryKey: ["overview"] }),
+        client.invalidateQueries({ queryKey: ["insights"] }),
+      ]);
+    } finally {
+      if (refreshesProviders) setCursorRefreshPending(false);
     }
-    if (key === "credentialsAllowed" || key === "cursorDashboardUsage") {
-      const credentialsAllowed = key === "credentialsAllowed"
-        ? value === "true"
-        : settings.data?.credentialsAllowed === "true";
-      const cursorDashboardUsageEnabled = key === "cursorDashboardUsage"
-        ? value === "true"
-        : credentialsAllowed && settings.data?.cursorDashboardUsage === "true";
-      await api.refreshProviders(credentialsAllowed, cursorDashboardUsageEnabled);
-    }
-    if (key === "gitReadAllowed" || key === "vctiPromptStructure") await api.refreshIndex(true);
-    await Promise.all([
-      client.invalidateQueries({ queryKey: ["settings"] }),
-      client.invalidateQueries({ queryKey: ["providers"] }),
-      client.invalidateQueries({ queryKey: ["menu-snapshot"] }),
-      client.invalidateQueries({ queryKey: ["vcti"] }),
-      client.invalidateQueries({ queryKey: ["overview"] }),
-      client.invalidateQueries({ queryKey: ["insights"] }),
-    ]);
+  };
+  const setCursorDashboard = (value: boolean) => {
+    setCursorDashboardDraft(value);
+    void setSetting("cursorDashboardUsage", String(value))
+      .catch(() => undefined)
+      .finally(() => setCursorDashboardDraft(null));
   };
   const setLogin = async (value: boolean) => {
     if (value) await enable(); else await disable();
@@ -111,13 +123,14 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <header><LockKeyhole size={17} /><div><h2>{t("settings.access")}</h2></div></header>
           <div className="setting-row multiline"><div><strong>{t("settings.vctiStructure")}</strong><p><ScanSearch size={12} />{t("settings.vctiStructureBody")}</p></div><Toggle checked={data.vctiPromptStructure === "true"} onCheckedChange={(value) => void setSetting("vctiPromptStructure", String(value))} label={t("settings.vctiStructure")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.gitRead")}</strong><p>{t("settings.gitReadBody")}</p></div><Toggle checked={data.gitReadAllowed === "true"} onCheckedChange={(value) => void setSetting("gitReadAllowed", String(value))} label={t("settings.gitRead")} /></div>
-          <div className="setting-row multiline"><div><strong>{t("settings.credentials")}</strong><p>{t("settings.credentialsBody")}</p></div><Toggle checked={data.credentialsAllowed === "true"} onCheckedChange={(value) => void setSetting("credentialsAllowed", String(value))} label={t("settings.credentials")} /></div>
-          <div className={`setting-row multiline nested-setting ${data.credentialsAllowed !== "true" ? "disabled-setting" : ""}`}><div><strong>{t("settings.cursorDashboardUsage")}</strong><p>{t(data.credentialsAllowed === "true" ? "settings.cursorDashboardUsageBody" : "settings.cursorDashboardUsageRequiresCredentials")}</p></div><Toggle checked={data.cursorDashboardUsage === "true"} disabled={data.credentialsAllowed !== "true"} onCheckedChange={(value) => void setSetting("cursorDashboardUsage", String(value))} label={t("settings.cursorDashboardUsage")} /></div>
-          {data.cursorDashboardUsage === "true" && data.credentialsAllowed === "true" ? (
-            <div className="settings-cursor-usage">
-              <CursorAccountUsagePanel locale={locale} range={range} />
+          <div className="setting-row multiline"><div><strong>{t("settings.credentials")}</strong><p>{t("settings.credentialsBody")}</p></div><Toggle checked={data.credentialsAllowed === "true"} disabled={cursorRefreshPending} onCheckedChange={(value) => void setSetting("credentialsAllowed", String(value))} label={t("settings.credentials")} /></div>
+          <div className={`setting-row multiline nested-setting ${data.credentialsAllowed !== "true" ? "disabled-setting" : ""}`}>
+            <div><strong>{t("settings.cursorDashboardUsage")}</strong><p>{t(data.credentialsAllowed === "true" ? "settings.cursorDashboardUsageBody" : "settings.cursorDashboardUsageRequiresCredentials")}</p></div>
+            <div className="setting-toggle-with-status">
+              {cursorRefreshPending ? <span className="setting-progress" role="status" aria-live="polite"><LoaderCircle className="spin" size={13} />{t("cursorUsage.loadingShort")}</span> : null}
+              <Toggle checked={cursorDashboardDraft ?? data.cursorDashboardUsage === "true"} disabled={data.credentialsAllowed !== "true" || cursorRefreshPending} onCheckedChange={setCursorDashboard} label={t("settings.cursorDashboardUsage")} />
             </div>
-          ) : null}
+          </div>
         </section>
 
         <section className="settings-section">

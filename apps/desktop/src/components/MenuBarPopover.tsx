@@ -7,26 +7,11 @@ import { api } from "../lib/api";
 import { formatCompact, formatCurrency, tokenTotal } from "../lib/format";
 import { buildMenuActivity } from "../lib/menuActivity";
 import { useUiStore } from "../store";
-import type { Locale, RateWindow } from "../types";
+import type { Locale } from "../types";
 import { focusHeatmapIndex, HeatmapCell } from "./HeatmapCell";
 import { RangePicker } from "./RangePicker";
 import { ErrorState, LoadingState } from "./ui";
-
-function resetTime(window: RateWindow, locale: Locale): string | undefined {
-  if (window.resetAt) {
-    const date = new Date(window.resetAt);
-    if (!Number.isNaN(date.getTime())) {
-      return new Intl.DateTimeFormat(locale, {
-        month: "short",
-        day: "numeric",
-        weekday: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      }).format(date);
-    }
-  }
-  return window.resetDescription;
-}
+import { formatResetRemaining, resetRemainingSeconds, resetTime } from "../lib/quota";
 
 function providerName(provider: string): string {
   if (provider === "claude") return "Claude";
@@ -39,6 +24,7 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const client = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
+  const [now, setNow] = useState(() => new Date());
   const refreshedOnOpen = useRef(false);
   const heatmapRef = useRef<HTMLDivElement>(null);
   const [heatmapIndex, setHeatmapIndex] = useState(0);
@@ -50,6 +36,10 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
   });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   useEffect(() => setHeatmapIndex(0), [range]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     if (refreshedOnOpen.current || !settings.data) return;
     refreshedOnOpen.current = true;
@@ -143,11 +133,14 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
         {settings.data?.credentialsAllowed === "true" ? <div className="menu-quota-list">{quotaWindows.map(({ provider, window }) => {
           const remaining = window.usedPercent === undefined ? undefined : Math.max(0, Math.min(100, 100 - window.usedPercent));
           const reset = resetTime(window, locale);
+          const resetSeconds = resetRemainingSeconds(window, now);
           const resetLabel = reset ? t("menubar.resetsAt", { time: reset }) : t("menubar.resetUnknown");
+          const countdownLabel = resetSeconds === undefined ? undefined : t("menubar.resetIn", { time: formatResetRemaining(resetSeconds, locale) });
+          const resetTitle = countdownLabel ? `${resetLabel} · ${countdownLabel}` : resetLabel;
           return <div className={`menu-quota-row ${remaining !== undefined && remaining < 20 ? "critical" : remaining !== undefined && remaining < 50 ? "warning" : ""}`} key={`${provider.provider}-${window.id}`}>
             <div className="menu-quota-copy"><span>{providerName(provider.provider)} · {t(window.label, { defaultValue: window.label })}</span><strong>{remaining === undefined ? t("metrics.unavailable") : t("menubar.remaining", { value: Math.round(remaining) })}</strong></div>
             <div className="menu-quota-track" aria-hidden="true"><i style={{ width: `${remaining ?? 0}%` }} /></div>
-            <small title={resetLabel}>{resetLabel}</small>
+            <small title={resetTitle}><span>{resetLabel}</span>{countdownLabel ? <strong className="menu-quota-countdown"> · {countdownLabel}</strong> : null}</small>
           </div>;
         })}</div> : <button className="menu-enable-quota" onClick={() => void open(true)}><span><strong>{t("menubar.noQuota")}</strong><small>{t("menubar.enableInSettings")}</small></span><ArrowUpRight size={15} /></button>}
       </section>

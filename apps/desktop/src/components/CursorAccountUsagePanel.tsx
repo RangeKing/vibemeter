@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { CloudCog, Settings2 } from "lucide-react";
+import { CloudCog, LoaderCircle, Settings2 } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
@@ -19,7 +19,7 @@ export function CursorAccountUsagePanel({
 }) {
   const { t } = useTranslation();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const enabled = settings.data?.cursorDashboardUsage === "true";
+  const enabled = settings.data?.credentialsAllowed === "true" && settings.data?.cursorDashboardUsage === "true";
   const providers = useQuery({
     queryKey: ["providers"],
     queryFn: api.providers,
@@ -42,10 +42,10 @@ export function CursorAccountUsagePanel({
   if (settings.isLoading) return null;
   if (!enabled) return null;
 
-  if (providers.isLoading) {
+  if (providers.isLoading || (providers.isFetching && !accountUsage)) {
     return (
       <section className={`cursor-account-panel loading ${compact ? "compact" : ""}`} aria-label={t("cursorUsage.title")}>
-        <CloudCog size={19} />
+        <LoaderCircle className="spin" size={19} />
         <span>{t("cursorUsage.loading")}</span>
       </section>
     );

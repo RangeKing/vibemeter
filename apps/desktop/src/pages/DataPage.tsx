@@ -4,6 +4,7 @@ import { ArrowRight, BarChart3, Blocks, CalendarDays, Merge, Scale, Sparkles, Wo
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
+import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { EChart } from "../components/EChart";
 import { focusHeatmapIndex, HeatmapCell } from "../components/HeatmapCell";
 import { RangePicker } from "../components/RangePicker";
@@ -14,7 +15,7 @@ import { api } from "../lib/api";
 import { buildHourlyActivity, findPeakActivity } from "../lib/activity";
 import { chartTooltip, useChartColors } from "../lib/chartTheme";
 import { agentName, cacheTokenTotal, formatCompact, formatCurrency, formatDate, sumTokenUsage, tokenTotal } from "../lib/format";
-import { savitzkyGolaySmooth } from "../lib/smoothing";
+import { summarizeProviderAccountUsage } from "../lib/providerUsage";
 import { defaultDataAgents } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
@@ -105,7 +106,7 @@ function agentColor(agent: string, colors: ReturnType<typeof useChartColors>, fa
   return colors.agent[(fallbackIndex + 3) % colors.agent.length];
 }
 
-function trendOption(series: AgentTrendSeries[], colors: ReturnType<typeof useChartColors>, locale: Locale, hourly: boolean): EChartsCoreOption {
+export function trendOption(series: AgentTrendSeries[], colors: ReturnType<typeof useChartColors>, locale: Locale, hourly: boolean): EChartsCoreOption {
   return {
     grid: { left: 10, right: 18, top: 12, bottom: 26, containLabel: true },
     tooltip: { ...chartTooltip(colors), trigger: "axis", valueFormatter: (value: unknown) => formatCompact(Number(value), locale) },
@@ -114,11 +115,13 @@ function trendOption(series: AgentTrendSeries[], colors: ReturnType<typeof useCh
     series: series.map((item, index) => ({
       name: agentName(item.agent),
       type: "line",
-      data: savitzkyGolaySmooth(item.values),
+      // Keep plotted points tied to observed usage. ECharts still smooths the
+      // curve visually, but preprocessing the values would make the line,
+      // y-axis, and tooltip disagree on the actual Token total.
+      data: item.values,
       showSymbol: false,
       smooth: .12,
       smoothMonotone: "x",
-      tooltip: { valueFormatter: (_value: unknown, dataIndex: number) => formatCompact(item.values[dataIndex] ?? 0, locale) },
       lineStyle: { width: 2.6, color: agentColor(item.agent, colors, index) },
       itemStyle: { color: agentColor(item.agent, colors, index) },
       areaStyle: { color: agentColor(item.agent, colors, index), opacity: .07 },
@@ -169,6 +172,14 @@ export function DataPage({ locale }: { locale: Locale }) {
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
   const comparison = useQuery({ queryKey: ["comparison", range], queryFn: () => api.comparison(range) });
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const cursorDashboardEnabled = settings.data?.credentialsAllowed === "true" && settings.data.cursorDashboardUsage === "true";
+  const providers = useQuery({
+    queryKey: ["providers"],
+    queryFn: api.providers,
+    enabled: cursorDashboardEnabled,
+    refetchInterval: cursorDashboardEnabled ? 30_000 : false,
+  });
   const merge = useMutation({
     mutationFn: (taskIds: string[]) => api.mergeTasks(taskIds),
     onSuccess: async () => {
@@ -260,8 +271,19 @@ export function DataPage({ locale }: { locale: Locale }) {
     });
   };
   const rangeText = t(`ranges.${range}`);
+  const cursorAccountUsage = providers.data?.find((provider) => provider.provider === "cursor")?.accountUsage ?? undefined;
+  const cursorAccountSummary = useMemo(
+    () => cursorAccountUsage ? summarizeProviderAccountUsage(cursorAccountUsage, range, referenceTime) : undefined,
+    [cursorAccountUsage, range, referenceTime],
+  );
   const agentTokenText = (agent: string, value: number) => agent === "cursor"
-    ? t("metrics.notRecorded")
+    ? cursorDashboardEnabled
+      ? cursorAccountSummary
+        ? t("cursorUsage.accountValue", { value: formatCompact(cursorAccountSummary.totalTokens, locale) })
+        : providers.isLoading || (providers.isFetching && !cursorAccountUsage)
+          ? t("cursorUsage.loadingShort")
+          : t("cursorUsage.unavailableShort")
+      : t("metrics.notRecorded")
     : formatCompact(value, locale);
   const activeHours = hourlyActivity.filter((item) => item.total > 0);
   const hourWindow = activeHours.length ? `${activeHours[0].startAt.slice(11, 16)} — ${activeHours[activeHours.length - 1].startAt.slice(11, 16)}` : t("data.noHourlyActivity");
@@ -319,6 +341,8 @@ export function DataPage({ locale }: { locale: Locale }) {
         <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
         <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(ledgerDays || data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
       </section>
+
+      <CursorAccountUsagePanel locale={locale} range={range} compact />
 
       <section className="data-panel trend-panel">
         <header className="panel-heading"><div><h2>{t("data.trend")}</h2></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>
