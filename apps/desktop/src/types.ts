@@ -234,7 +234,7 @@ export interface LiveSession {
   agent: "claude-code" | "codex";
   projectLabel: string;
   conversationTitle?: string;
-  status: "waiting" | "error" | "running" | "idle" | "completed";
+  status: "waiting" | "error" | "running" | "paused" | "idle" | "completed";
   phase: string;
   startedAt: string;
   updatedAt: string;

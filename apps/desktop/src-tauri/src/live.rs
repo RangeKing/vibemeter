@@ -133,6 +133,7 @@ struct CodexMetadataSignal {
     action_kind: String,
     action_label: String,
     occurred_at: String,
+    waiting_reason: Option<String>,
 }
 const PYTHON_HOOK: &str = r#"#!/usr/bin/python3
 import json
@@ -1505,6 +1506,9 @@ fn fold_codex_memory_activity(
     if incoming.agent != "codex" || !is_codex_memory_activity(envelope) {
         return Some(incoming);
     }
+    if incoming.status == "completed" {
+        return None;
+    }
     let auxiliary_source_id = incoming.source_session_id.clone();
     let aliased_parent = auxiliary_sessions
         .read()
@@ -1941,6 +1945,10 @@ fn bootstrap_codex_transcript_from(
                     saw_turn_boundary = true;
                     turn_open = false;
                 }
+                Some("turn_aborted") => {
+                    saw_turn_boundary = true;
+                    turn_open = false;
+                }
                 _ => {}
             }
         }
@@ -1969,7 +1977,10 @@ fn bootstrap_codex_transcript_from(
         initialized: true,
         collaboration_mode,
     };
-    if !turn_open {
+    let terminal_non_running = latest_signal
+        .as_ref()
+        .is_some_and(|signal| matches!(signal.status.as_str(), "paused" | "waiting" | "error"));
+    if !turn_open && !terminal_non_running {
         return Some(CodexTranscriptBootstrap {
             session_id,
             session: None,
@@ -2000,11 +2011,11 @@ fn bootstrap_codex_transcript_from(
         agent: "codex".into(),
         project_label: project_label_from_cwd(&cwd),
         conversation_title: None,
-        status: "running".into(),
-        phase: signal.phase,
+        status: signal.status.clone(),
+        phase: signal.phase.clone(),
         started_at,
         updated_at: signal.occurred_at.clone(),
-        waiting_reason: None,
+        waiting_reason: signal.waiting_reason.clone(),
         actions: vec![LiveAction {
             kind: signal.action_kind,
             label: signal.action_label,
@@ -2056,6 +2067,7 @@ fn latest_codex_turn_boundary(path: &Path, length: u64) -> Option<(bool, Option<
                 boundary = Some((true, started_at));
             }
             Some("task_complete") => boundary = Some((false, None)),
+            Some("turn_aborted") => boundary = Some((false, None)),
             _ => {}
         }
     }
@@ -2242,6 +2254,11 @@ fn codex_metadata_signal(
             occurred_at,
         ));
     }
+    if payload_type == "turn_aborted" {
+        let mut signal = metadata_signal("paused", "paused", "paused", "Turn paused", occurred_at);
+        signal.waiting_reason = Some("turn-paused".into());
+        return Some(signal);
+    }
     if payload_type.contains("compact") {
         return Some(metadata_signal(
             "compacting",
@@ -2324,6 +2341,7 @@ fn metadata_signal(
         action_kind: action_kind.into(),
         action_label: action_label.into(),
         occurred_at,
+        waiting_reason: None,
     }
 }
 
@@ -2338,7 +2356,10 @@ fn merge_codex_metadata(
     if signal.status == "completed" && !live_append && session.status != "completed" {
         return None;
     }
-    if matches!(session.status.as_str(), "waiting" | "error") && signal.status == "running" {
+    if matches!(session.status.as_str(), "waiting" | "error")
+        && signal.status == "running"
+        && session.waiting_reason.as_deref() != Some("turn-paused")
+    {
         return None;
     }
     let previous_status = session.status.clone();
@@ -2349,7 +2370,7 @@ fn merge_codex_metadata(
     session.status = signal.status;
     session.phase = signal.phase;
     session.updated_at = signal.occurred_at.clone();
-    session.waiting_reason = None;
+    session.waiting_reason = signal.waiting_reason;
     session.actions.push(LiveAction {
         kind: signal.action_kind,
         label: signal.action_label,
@@ -2588,6 +2609,7 @@ fn priority(status: &str) -> u8 {
         "waiting" => 4,
         "error" => 3,
         "running" => 2,
+        "paused" => 1,
         "idle" => 1,
         "completed" => 0,
         _ => 0,
@@ -3303,11 +3325,10 @@ mod tests {
             }
         });
         let (child, _, _) = session_from_envelope(&ended).expect("memory child end");
-        let folded = fold_codex_memory_activity(&sessions, &aliases, &ended, child)
-            .expect("remembered parent alias");
-        assert_eq!(folded.id, parent.id);
-        assert_eq!(folded.status, "running");
-        assert_eq!(folded.phase, "reading");
+        assert!(
+            fold_codex_memory_activity(&sessions, &aliases, &ended, child).is_none(),
+            "terminal memory activity must not refresh the parent as running"
+        );
 
         sessions
             .write()
@@ -3488,6 +3509,19 @@ mod tests {
         assert_eq!(signal.status, "completed");
         assert_eq!(signal.phase, "completed");
         assert!(!format!("{signal:?}").contains("private"));
+
+        let aborted = serde_json::to_vec(&json!({
+            "type": "event_msg",
+            "timestamp": "2026-08-04T14:06:34.278Z",
+            "payload": {"type": "turn_aborted"}
+        }))
+        .expect("aborted turn");
+        let signal = codex_metadata_signal(&aborted, &mut mode).expect("paused signal");
+        assert_eq!(signal.status, "paused");
+        assert_eq!(signal.phase, "paused");
+        assert_eq!(signal.action_kind, "paused");
+        assert_eq!(signal.waiting_reason.as_deref(), Some("turn-paused"));
+
         assert_eq!(
             safe_tool_name("apply_patch").as_deref(),
             Some("apply_patch")
@@ -3620,6 +3654,33 @@ mod tests {
             .expect("completed bootstrap");
         assert!(completed.session.is_none());
 
+        let paused_path = sessions.join("rollout-paused.jsonl");
+        let paused = [
+            json!({
+                "type":"session_meta",
+                "payload":{
+                    "id":"paused-thread",
+                    "cwd":"/tmp/project",
+                    "thread_source":"user"
+                }
+            }),
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            json!({"type":"event_msg","payload":{"type":"turn_aborted"}}),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&paused_path, paused).expect("paused fixture");
+        let paused = bootstrap_codex_transcript_from(&paused_path, &codex_home)
+            .expect("paused bootstrap")
+            .session
+            .expect("paused session");
+        assert_eq!(paused.status, "paused");
+        assert_eq!(paused.phase, "paused");
+        assert_eq!(paused.waiting_reason.as_deref(), Some("turn-paused"));
+
         let subagent_path = sessions.join("rollout-subagent.jsonl");
         let subagent = json!({
             "type":"session_meta",
@@ -3637,10 +3698,35 @@ mod tests {
     }
 
     #[test]
+    fn paused_codex_session_can_resume_on_a_new_turn() {
+        let mut paused = jump_test_session("codex", "desktop", None);
+        paused.id = "paused-session".into();
+        paused.status = "paused".into();
+        paused.phase = "paused".into();
+        paused.waiting_reason = Some("turn-paused".into());
+        let session_id = paused.id.clone();
+        let sessions = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), paused)])));
+        let signal = metadata_signal(
+            "thinking",
+            "running",
+            "think",
+            "Thinking",
+            "2026-08-04T14:07:00Z".into(),
+        );
+
+        assert!(merge_codex_metadata(&sessions, &session_id, signal, true).is_none());
+        let session_guard = sessions.read().expect("sessions");
+        let resumed = session_guard.get(&session_id).expect("resumed session");
+        assert_eq!(resumed.status, "running");
+        assert_eq!(resumed.waiting_reason, None);
+    }
+
+    #[test]
     fn priority_matches_product_contract() {
         assert!(priority("waiting") > priority("error"));
         assert!(priority("error") > priority("running"));
         assert!(priority("running") > priority("completed"));
+        assert!(priority("running") > priority("paused"));
     }
 
     #[test]

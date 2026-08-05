@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   Check,
   CircleAlert,
+  CirclePause,
   Clock3,
   RadioTower,
   Settings2,
@@ -21,6 +22,7 @@ import type { LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "..
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
   if (session.status === "error") return t("live.reason.error");
+  if (session.status === "paused") return t("live.reason.paused");
   if (session.status !== "waiting") return undefined;
   const tool = session.actions[session.actions.length - 1]?.label;
   return tool && tool !== "PermissionRequest"
@@ -30,6 +32,7 @@ function liveReason(session: LiveSession, t: TFunction): string | undefined {
 
 function statusIcon(status: LiveSession["status"] | string) {
   if (status === "waiting" || status === "error") return <CircleAlert size={15} />;
+  if (status === "paused") return <CirclePause size={15} />;
   if (status === "completed") return <Check size={15} />;
   return <Waves size={15} />;
 }

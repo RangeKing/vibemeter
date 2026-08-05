@@ -20,6 +20,11 @@ export interface ActivityHour extends ActivityValue {
   granularity: "hour" | "four-hours";
 }
 
+export interface PeakActivityPoint {
+  period: string;
+  total: number;
+}
+
 export interface TrendBucket extends ActivityValue {
   startDate: string;
   endDate: string;
@@ -106,6 +111,13 @@ export function aggregateHourly(points: HourlyUsagePoint[]): Map<string, Activit
     values.set(point.hour, current);
   }
   return values;
+}
+
+export function findPeakActivity(points: PeakActivityPoint[]): PeakActivityPoint | null {
+  return points.reduce<PeakActivityPoint | null>((peak, point) => {
+    if (point.total <= 0 || (peak && point.total <= peak.total)) return peak;
+    return point;
+  }, null);
 }
 
 export function buildHourlyActivity(points: HourlyUsagePoint[], range: "today" | "7d", referenceTime = new Date()): ActivityHour[] {

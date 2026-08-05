@@ -59,6 +59,12 @@ describe("Notch session selection", () => {
     expect(pickRightWingSession([running, completed], now + 6_000)?.id).toBe("running");
   });
 
+  it("does not keep a paused session in the active Notch wing", () => {
+    const paused = session("paused", "paused");
+    expect(pickRightWingSession([paused], Date.now())).toBeUndefined();
+    expect(activeProviderCounts([paused]).active).toHaveLength(0);
+  });
+
   it("counts only running, waiting, and error sessions by provider", () => {
     const counts = activeProviderCounts([
       session("codex-running", "running"),

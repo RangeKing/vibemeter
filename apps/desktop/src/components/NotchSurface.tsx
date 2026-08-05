@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  CirclePause,
   CircleDot,
   FilePenLine,
   Gauge,
@@ -67,6 +68,7 @@ export function formatLiveElapsed(startedAt: string, endedAt: number): string {
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
   if (session.status === "error") return t("live.reason.error");
+  if (session.status === "paused") return t("live.reason.paused");
   if (session.status !== "waiting") return undefined;
   const tool = session.actions[session.actions.length - 1]?.label;
   return tool && tool !== "PermissionRequest"
@@ -205,6 +207,7 @@ export function AgentActivityGlyph({
   const phase = session?.phase ?? "ready";
   let Icon = Gauge;
   if (status === "waiting" || status === "error") Icon = CircleAlert;
+  else if (status === "paused") Icon = CirclePause;
   else if (status === "completed") Icon = Check;
   else if (phase === "planning") Icon = ListTree;
   else if (phase === "thinking") Icon = BrainCircuit;

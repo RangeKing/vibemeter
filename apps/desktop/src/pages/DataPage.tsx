@@ -11,10 +11,11 @@ import { SessionsWorkspace } from "../components/SessionsWorkspace";
 import { WorkEventCard } from "../components/WorkEventCard";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
-import { buildHourlyActivity } from "../lib/activity";
+import { buildHourlyActivity, findPeakActivity } from "../lib/activity";
 import { chartTooltip, useChartColors } from "../lib/chartTheme";
 import { agentName, cacheTokenTotal, formatCompact, formatCurrency, formatDate, sumTokenUsage, tokenTotal } from "../lib/format";
 import { savitzkyGolaySmooth } from "../lib/smoothing";
+import { defaultDataAgents } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
 
@@ -163,7 +164,7 @@ export function DataPage({ locale }: { locale: Locale }) {
   const closeSessions = useUiStore((state) => state.closeSessions);
   const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
   const [showAllEvents, setShowAllEvents] = useState(false);
-  const [agentFilter, setAgentFilter] = useState<string[]>([]);
+  const [agentFilter, setAgentFilter] = useState<string[] | null>(null);
   const overview = useQuery({ queryKey: ["overview", range], queryFn: () => api.overview(range), refetchInterval: 30_000 });
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
@@ -180,25 +181,24 @@ export function DataPage({ locale }: { locale: Locale }) {
     [sources.data],
   );
   const defaultAgents = useMemo(
-    () => (sources.data ?? []).filter((source) => source.available && source.selected).map((source) => source.agent),
-    [sources.data],
+    () => defaultDataAgents(sources.data ?? [], overview.data?.agents ?? []),
+    [overview.data?.agents, sources.data],
   );
   useEffect(() => {
-    if (!sources.data) return;
+    if (!sources.data || !overview.data) return;
     setAgentFilter((current) => {
-      const nextDefault = defaultAgents.length ? defaultAgents : availableAgents;
-      if (!current.length) return nextDefault;
+      if (current === null) return current;
       const stillValid = current.filter((agent) => availableAgents.includes(agent));
-      return stillValid.length ? stillValid : nextDefault;
+      return stillValid.length ? stillValid : defaultAgents;
     });
-  }, [availableAgents, defaultAgents, sources.data]);
+  }, [availableAgents, defaultAgents, overview.data, sources.data]);
 
   const isToday = range === "today";
   const referenceTime = useMemo(() => {
     const value = new Date(overview.data?.generatedAt ?? Date.now());
     return Number.isNaN(value.getTime()) ? new Date() : value;
   }, [overview.data?.generatedAt]);
-  const activeAgents = agentFilter.length ? agentFilter : availableAgents;
+  const activeAgents = agentFilter ?? defaultAgents;
   const filteredDaily = useMemo(
     () => (overview.data?.daily ?? []).filter((point) => activeAgents.includes(point.agent)),
     [overview.data?.daily, activeAgents],
@@ -213,6 +213,9 @@ export function DataPage({ locale }: { locale: Locale }) {
   );
   const daily = useMemo(() => groupDaily(filteredDaily, range, referenceTime), [filteredDaily, range, referenceTime]);
   const hourlyActivity = useMemo(() => isToday ? buildHourlyActivity(filteredHourly, "today", referenceTime) : [], [isToday, filteredHourly, referenceTime]);
+  const peakActivity = useMemo(() => findPeakActivity(isToday
+    ? hourlyActivity.map((item) => ({ period: item.startAt, total: item.total }))
+    : daily.map((item) => ({ period: item.date, total: item.tokens }))), [daily, hourlyActivity, isToday]);
   const maxActivity = Math.max(...(isToday ? hourlyActivity.map((item) => item.total) : daily.map((item) => item.tokens)), 1);
   const heatmapRef = useRef<HTMLDivElement>(null);
   const [heatmapIndex, setHeatmapIndex] = useState(0);
@@ -248,7 +251,7 @@ export function DataPage({ locale }: { locale: Locale }) {
   const toggleTask = (id: string, selected: boolean) => setSelectedTasks((current) => selected ? [...new Set([...current, id])] : current.filter((item) => item !== id));
   const toggleAgent = (agent: string) => {
     setAgentFilter((current) => {
-      const base = current.length ? current : availableAgents;
+      const base = current ?? defaultAgents;
       if (base.includes(agent)) {
         const next = base.filter((item) => item !== agent);
         return next.length ? next : base;
@@ -262,6 +265,11 @@ export function DataPage({ locale }: { locale: Locale }) {
     : formatCompact(value, locale);
   const activeHours = hourlyActivity.filter((item) => item.total > 0);
   const hourWindow = activeHours.length ? `${activeHours[0].startAt.slice(11, 16)} — ${activeHours[activeHours.length - 1].startAt.slice(11, 16)}` : t("data.noHourlyActivity");
+  const peakActivityPeriod = peakActivity
+    ? isToday
+      ? `${formatDate(peakActivity.period.slice(0, 10), locale, "short")} · ${peakActivity.period.slice(11, 16)}`
+      : formatDate(peakActivity.period, locale, "short")
+    : t("data.noPeakActivity");
 
   return (
     <div className="page data-page">
@@ -313,7 +321,7 @@ export function DataPage({ locale }: { locale: Locale }) {
       </section>
 
       <section className="data-panel trend-panel">
-        <header className="panel-heading"><div><h2>{t("data.trend")}</h2><p>{t(isToday ? "data.trendHourlyBody" : "data.trendBody", { range: rangeText })}</p></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>
+        <header className="panel-heading"><div><h2>{t("data.trend")}</h2></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>
         <div className="combined-trend">
           {series.length ? <>
             <div className="trend-series-legend">{series.map((item, index) => <div key={item.agent}><i style={{ background: agentColor(item.agent, colors, index) }} /><strong>{agentName(item.agent)}</strong><small>{agentTokenText(item.agent, item.total)}</small></div>)}</div>
@@ -324,8 +332,19 @@ export function DataPage({ locale }: { locale: Locale }) {
 
       <div className="data-analysis-grid">
         <section className="data-panel activity-panel">
-          <header className="panel-heading"><div><h2>{t("data.activity")}</h2><p>{t(isToday ? "data.activityHourlyBody" : "data.activityBody")}</p></div><CalendarDays size={17} /></header>
-          <div className="activity-summary"><strong>{isToday ? activeHours.length : (ledgerDays || data.totals.activeDays)}</strong><span>{isToday ? t("data.activeHours") : t("metrics.activeDays")}</span><small>{isToday ? hourWindow : daily.length ? `${formatDate(daily[0].date, locale, "short")} — ${formatDate(daily[daily.length - 1].date, locale, "short")}` : rangeText}</small></div>
+          <header className="panel-heading"><div><h2>{t("data.activity")}</h2></div><CalendarDays size={17} /></header>
+          <div className="activity-summary">
+            <div className="activity-summary-main">
+              <strong>{isToday ? activeHours.length : (ledgerDays || data.totals.activeDays)}</strong>
+              <span>{isToday ? t("data.activeHours") : t("metrics.activeDays")}</span>
+              <small>{isToday ? hourWindow : daily.length ? `${formatDate(daily[0].date, locale, "short")} — ${formatDate(daily[daily.length - 1].date, locale, "short")}` : rangeText}</small>
+            </div>
+            <div className="activity-peak" aria-label={t("data.peakActivity")}>
+              <span>{t("data.peakActivity")}</span>
+              <strong>{peakActivity ? `${formatCompact(peakActivity.total, locale)} ${t("metrics.tokens")}` : t("metrics.unavailable")}</strong>
+              <small>{peakActivityPeriod}</small>
+            </div>
+          </div>
           {isToday ? <>
             <div ref={heatmapRef} className="activity-heatmap hourly" style={{ gridTemplateColumns: `repeat(${Math.max(1, hourlyActivity.length)}, minmax(7px, 1fr))` }}>
               {hourlyActivity.map((item, index) => (
@@ -358,7 +377,7 @@ export function DataPage({ locale }: { locale: Locale }) {
           </div>}
         </section>
         <section className="data-panel distribution-panel">
-          <header className="panel-heading"><div><h2>{t("data.distribution")}</h2><p>{t("data.distributionBody")}</p></div></header>
+          <header className="panel-heading"><div><h2>{t("data.distribution")}</h2></div></header>
           <div className="distribution-layout">
             <EChart option={distributionOption(displayedAgents, data.models, colors, locale, { agent: t("data.agentLegend"), model: t("data.modelLegend") })} ariaLabel={t("data.distribution")} style={{ height: 250 }} />
             <aside className="distribution-legend">
@@ -368,14 +387,14 @@ export function DataPage({ locale }: { locale: Locale }) {
           </div>
         </section>
         <section className="data-panel tools-panel">
-          <header className="panel-heading"><div><h2>{t("data.tools")}</h2><p>{t("data.toolsBody")}</p></div><Workflow size={17} /></header>
+          <header className="panel-heading"><div><h2>{t("data.tools")}</h2></div><Workflow size={17} /></header>
           <EChart option={toolOption(data.tools, colors, locale)} ariaLabel={t("data.tools")} style={{ height: 240 }} />
         </section>
       </div>
 
       <section className="data-panel skill-usage-panel">
         <header className="panel-heading">
-          <div><h2>{t("data.skillUsage")}</h2><p>{t("data.skillUsageBody")}</p></div>
+          <div><h2>{t("data.skillUsage")}</h2></div>
           <span className="skill-evidence-badge"><Blocks size={14} />{t("data.skillExplicitOnly")}</span>
         </header>
         <div className="skill-usage-grid">
@@ -403,7 +422,7 @@ export function DataPage({ locale }: { locale: Locale }) {
       </section>
 
       <section className="data-panel comparison-panel">
-        <header className="panel-heading"><div><h2>{t("insights.comparison")}</h2><p>{t("data.comparisonBody")}</p></div><Scale size={17} /></header>
+        <header className="panel-heading"><div><h2>{t("insights.comparison")}</h2></div><Scale size={17} /></header>
         {comparison.isLoading ? <LoadingState /> : comparison.isError || !comparison.data ? (
           <ErrorState retry={() => void comparison.refetch()} />
         ) : (() => {
@@ -426,7 +445,7 @@ export function DataPage({ locale }: { locale: Locale }) {
       </section>
 
       <section className="events-section">
-        <header className="section-heading events-heading"><div><h2>{t("data.events")}</h2><p>{t("data.eventsBody", { range: rangeText })}</p></div><div className="event-summary"><span><strong>{filteredTasks.length}</strong>{t("metrics.tasks")}</span></div></header>
+        <header className="section-heading events-heading"><div><h2>{t("data.events")}</h2></div><div className="event-summary"><span><strong>{filteredTasks.length}</strong>{t("metrics.tasks")}</span></div></header>
         {selectedTasks.length ? <div className="task-merge-bar"><span>{t("task.selected", { count: selectedTasks.length })}</span><button className="button secondary" onClick={() => merge.mutate(selectedTasks)} disabled={selectedTasks.length < 2 || merge.isPending}><Merge size={13} />{t("task.merge")}</button></div> : null}
         {visibleTasks.length ? <div className="event-grid">{visibleTasks.map((task) => <WorkEventCard key={task.id} task={task} locale={locale} selected={selectedTasks.includes(task.id)} onSelect={(value) => toggleTask(task.id, value)} onOpen={() => openTask(task)} onAcceptSuggestion={task.suggestedTaskId ? () => merge.mutate([task.suggestedTaskId!, task.id]) : undefined} />)}</div> : <EmptyState title={t("data.noEvents")} body={t("data.noEventsBody")} />}
         <footer className="events-footer">

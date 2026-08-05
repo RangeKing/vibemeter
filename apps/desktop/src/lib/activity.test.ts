@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DailyUsagePoint, HourlyUsagePoint } from "../types";
-import { buildActivityDays, buildHourlyActivity, buildTrendBuckets, heatmapLayout } from "./activity";
+import { buildActivityDays, buildHourlyActivity, buildTrendBuckets, findPeakActivity, heatmapLayout } from "./activity";
 
 function point(date: string, agent: "codex" | "claude-code", tokens: number): DailyUsagePoint {
   return {
@@ -76,5 +76,14 @@ describe("range-aware activity series", () => {
     ], "7d", reference);
     expect(week).toHaveLength(40);
     expect(week.at(-1)).toMatchObject({ startAt: "2026-07-20T12:00", total: 100, granularity: "four-hours" });
+  });
+
+  it("returns the largest positive activity cell and keeps empty ranges honest", () => {
+    expect(findPeakActivity([
+      { period: "2026-07-18", total: 12 },
+      { period: "2026-07-19", total: 38 },
+      { period: "2026-07-20", total: 24 },
+    ])).toEqual({ period: "2026-07-19", total: 38 });
+    expect(findPeakActivity([{ period: "2026-07-20", total: 0 }])).toBeNull();
   });
 });
