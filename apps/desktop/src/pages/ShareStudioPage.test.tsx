@@ -114,12 +114,15 @@ describe("ShareStudioPage range controls", () => {
   it("exports with the currently selected shared range", async () => {
     renderShare();
 
+    fireEvent.click(screen.getByRole("button", { name: "今天" }));
+    await waitFor(() => expect(previewShare).toHaveBeenCalledWith(expect.objectContaining({ range: "today" })));
+
     const exportButton = await screen.findByRole("button", { name: "导出 PNG" });
     await waitFor(() => expect((exportButton as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(exportButton);
 
     await waitFor(() => expect(exportShare).toHaveBeenCalledWith(
-      expect.objectContaining({ range: "year" }),
+      expect.objectContaining({ range: "today" }),
       "png",
       "/tmp/vibemeter-share.png",
     ));

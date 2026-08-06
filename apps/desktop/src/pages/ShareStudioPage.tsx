@@ -83,6 +83,11 @@ function defaultRequest(locale: Locale, range: ShareRenderRequest["range"], temp
   };
 }
 
+function requestForSelectedRange(request: ShareRenderRequest, range: ShareRenderRequest["range"]): ShareRenderRequest {
+  if (request.range === range) return request;
+  return { ...request, range, privacyReviewed: false };
+}
+
 function clampZoom(value: number): number {
   return Math.max(50, Math.min(160, value));
 }
@@ -98,18 +103,18 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
   const previewStageRef = useRef<HTMLDivElement>(null);
   const [working, setWorking] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const selectedRequest = requestForSelectedRange(request, range);
   const sessions = useQuery({
     queryKey: ["share-sessions", range],
     queryFn: () => api.sessions({ range, page: 0, pageSize: 80 }),
     enabled: sessionTemplate,
   });
   const deferredRequest = useDeferredValue(request);
-  const preview = useQuery({ queryKey: ["share-preview", deferredRequest], queryFn: () => api.previewShare(deferredRequest), retry: false });
+  const previewRequest = requestForSelectedRange(deferredRequest, range);
+  const preview = useQuery({ queryKey: ["share-preview", previewRequest], queryFn: () => api.previewShare(previewRequest), retry: false });
   useEffect(() => {
     setNotice(undefined);
-    setRequest((current) => current.range === range
-      ? current
-      : { ...current, range, privacyReviewed: false });
+    setRequest((current) => requestForSelectedRange(current, range));
   }, [range]);
   useEffect(() => {
     if (!sessionTemplate || !request.sessionId || !sessions.data) return;
@@ -147,7 +152,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
       const ratio = request.aspectRatio.replace(":", "x");
       const path = await save({ defaultPath: `vibemeter_${ratio}_${request.templateId}_${date}.${format}`, filters: [{ name: format.toUpperCase(), extensions: [format] }] });
       if (!path) return;
-      await api.exportShare(request, format, path);
+      await api.exportShare(selectedRequest, format, path);
       setNotice(t("share.exported", { format: format.toUpperCase() }));
     } catch { setNotice(t("share.exportFailed")); } finally { setWorking(undefined); }
   };
@@ -155,7 +160,7 @@ export function ShareStudioPage({ locale }: { locale: Locale }) {
     setWorking("copy");
     setNotice(undefined);
     try {
-      const bytes = await api.renderSharePng(request);
+      const bytes = await api.renderSharePng(selectedRequest);
       await writeImage(new Uint8Array(bytes));
       setNotice(t("actions.copied"));
     } catch { setNotice(t("share.copyFailed")); } finally { setWorking(undefined); }

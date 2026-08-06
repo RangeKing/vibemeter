@@ -226,18 +226,18 @@ pub fn format_duration(locale: &str, seconds: u64) -> String {
 pub fn format_range(locale: &str, range: &str) -> String {
     match (normalize_locale(locale), range) {
         ("zh-CN", "today") => "今天".into(),
-        ("zh-CN", "7d") => "最近 7 天".into(),
-        ("zh-CN", "30d") => "最近 30 天".into(),
-        ("zh-CN", "90d") => "最近 90 天".into(),
-        ("zh-CN", "180d") => "最近半年".into(),
-        ("zh-CN", "year") => "最近一年".into(),
+        ("zh-CN", "7d") => "周".into(),
+        ("zh-CN", "30d") => "月".into(),
+        ("zh-CN", "90d") => "90 天".into(),
+        ("zh-CN", "180d") => "半年".into(),
+        ("zh-CN", "year") => "一年".into(),
         ("zh-CN", "all") => "全部时间".into(),
         (_, "today") => "Today".into(),
-        (_, "7d") => "Last 7 days".into(),
-        (_, "30d") => "Last 30 days".into(),
-        (_, "90d") => "Last 90 days".into(),
-        (_, "180d") => "Last 6 months".into(),
-        (_, "year") => "Last year".into(),
+        (_, "7d") => "Week".into(),
+        (_, "30d") => "Month".into(),
+        (_, "90d") => "90 days".into(),
+        (_, "180d") => "Half-year".into(),
+        (_, "year") => "Year".into(),
         (_, "all") => "All time".into(),
         _ => range.into(),
     }
@@ -348,5 +348,17 @@ mod tests {
     fn locale_normalization_is_stable() {
         assert_eq!(normalize_locale("zh-Hans"), "zh-CN");
         assert_eq!(normalize_locale("fr-FR"), "en-US");
+    }
+
+    #[test]
+    fn range_labels_match_the_app_picker() {
+        let ranges = ["today", "7d", "30d", "90d", "180d", "year"];
+        let zh_labels = ["今天", "周", "月", "90 天", "半年", "一年"];
+        let en_labels = ["Today", "Week", "Month", "90 days", "Half-year", "Year"];
+
+        for ((range, zh_label), en_label) in ranges.iter().zip(zh_labels).zip(en_labels) {
+            assert_eq!(format_range("zh-CN", range), zh_label);
+            assert_eq!(format_range("en-US", range), en_label);
+        }
     }
 }
