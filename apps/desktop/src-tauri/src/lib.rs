@@ -14,6 +14,7 @@ mod pricing;
 mod privacy;
 mod providers;
 mod skill_usage;
+mod source_capabilities;
 mod tray;
 mod vcti;
 

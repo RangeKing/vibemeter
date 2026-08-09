@@ -6,11 +6,13 @@ import { useTranslation } from "react-i18next";
 import desktopPackage from "../../package.json";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
+import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { AppSettings, Locale, Theme } from "../types";
 
 export function SettingsPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
+  const capabilityNames = sourceCapabilityNameGroups(locale === "zh-CN" ? "、" : ", ");
   const appVersion = desktopPackage.version;
   const client = useQueryClient();
   const setPage = useUiStore((state) => state.setPage);
@@ -107,7 +109,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
 
         <section className="settings-section">
           <header><RadioTower size={17} /><div><h2>{t("settings.live")}</h2><p>{t("settings.liveBody")}</p></div></header>
-          <div className="setting-row multiline"><div><strong>{t("settings.liveHooks")}</strong><p>{t("settings.liveHooksBody")}</p></div><Toggle checked={data.liveHooksEnabled === "true"} onCheckedChange={(value) => void setSetting("liveHooksEnabled", String(value))} label={t("settings.liveHooks")} /></div>
+          <div className="setting-row multiline"><div><strong>{t("settings.liveHooks")}</strong><p>{t("settings.liveHooksBody", capabilityNames)}</p></div><Toggle checked={data.liveHooksEnabled === "true"} onCheckedChange={(value) => void setSetting("liveHooksEnabled", String(value))} label={t("settings.liveHooks")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.notch")}</strong><p>{t("settings.notchBody")}</p></div><Toggle checked={data.notchEnabled === "true"} onCheckedChange={(value) => void setSetting("notchEnabled", String(value))} label={t("settings.notch")} /></div>
           <div className="setting-row multiline"><div><strong>{t("settings.menuBar")}</strong><p>{t("settings.menuBarBody")}</p></div><Toggle checked={data.menuBarEnabled === "true"} onCheckedChange={(value) => void setSetting("menuBarEnabled", String(value))} label={t("settings.menuBar")} /></div>
           <div className="setting-row multiline">

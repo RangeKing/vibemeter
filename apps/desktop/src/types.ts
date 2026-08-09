@@ -553,12 +553,16 @@ export interface SourceStatus {
   available: boolean;
   selected: boolean;
   capabilityLevel: string;
+  liveCapability: SourceLiveCapability;
+  parserVersion: string;
   sessionCount: number;
   lastIndexedAt?: string;
   status: string;
   warningCount: number;
   pathLabel: string;
 }
+
+export type SourceLiveCapability = "exact" | "experimental" | "none";
 
 export interface RateWindow {
   id: string;

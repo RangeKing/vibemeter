@@ -72,4 +72,15 @@ describe("localization resources", () => {
     expect(JSON.stringify(zhCN.sources)).not.toContain("full 覆盖");
     expect(JSON.stringify(enUS.sources)).not.toContain("parser warnings");
   });
+
+  it("distinguishes exact live, experimental activity, and historical-only sources", () => {
+    expect(zhCN.live.description).toContain("精确实时生命周期");
+    expect(zhCN.live.description).toContain("实验性近期活动");
+    expect(zhCN.sources.liveCapabilities.historyOnly).toBe("仅提供历史证据");
+    expect(enUS.live.description).toContain("exact live lifecycle status");
+    expect(enUS.live.description).toContain("experimental recent activity");
+    expect(enUS.sources.liveCapabilities.historyOnly).toBe("Historical evidence only");
+    expect(zhCN.sources.parserVersion).toContain("{{version}}");
+    expect(enUS.sources.parserVersion).toContain("{{version}}");
+  });
 });

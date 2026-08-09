@@ -9,6 +9,7 @@ import { EChart } from "../components/EChart";
 import { focusHeatmapIndex, HeatmapCell } from "../components/HeatmapCell";
 import { RangePicker } from "../components/RangePicker";
 import { SessionsWorkspace } from "../components/SessionsWorkspace";
+import { SourceCapabilityLegend } from "../components/SourceCapabilityLegend";
 import { WorkEventCard } from "../components/WorkEventCard";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
@@ -319,6 +320,8 @@ export function DataPage({ locale }: { locale: Locale }) {
           <RangePicker />
         </div>
       </header>
+
+      <SourceCapabilityLegend locale={locale} />
 
       <section className="data-ledger" aria-label={t("data.summary")}>
         <div><span>{t("metrics.sessions")}</span><strong>{formatCompact(ledgerSessions || data.totals.sessionCount, locale)}</strong><small>{rangeText}</small></div>

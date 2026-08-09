@@ -16,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { agentName, formatDateTime, formatTime } from "../lib/format";
+import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
 import type { LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "../types";
@@ -130,6 +131,7 @@ export function HistoryList({
 
 export function LivePage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
+  const capabilityNames = sourceCapabilityNameGroups(locale === "zh-CN" ? "、" : ", ");
   const setPage = useUiStore((state) => state.setPage);
   const openSessions = useUiStore((state) => state.openSessions);
   const snapshot = useLiveSnapshot();
@@ -149,7 +151,7 @@ export function LivePage({ locale }: { locale: Locale }) {
         <div>
           <span className="eyebrow"><RadioTower size={13} />{t("live.eyebrow")}</span>
           <h1>{t("live.title")}</h1>
-          <p>{t("live.description")}</p>
+          <p>{t("live.description", capabilityNames)}</p>
         </div>
         <div className={`live-signal-summary state-${data.hookStatus.state}`}>
           <span className="live-orbit"><i /><i /><i /></span>
@@ -181,7 +183,7 @@ export function LivePage({ locale }: { locale: Locale }) {
         ) : (
           <div className="live-empty">
             <span className="live-empty-meter"><i /></span>
-            <div><h3>{t("live.emptyTitle")}</h3><p>{t("live.emptyBody")}</p></div>
+            <div><h3>{t("live.emptyTitle")}</h3><p>{t("live.emptyBody", capabilityNames)}</p></div>
           </div>
         )}
       </section>

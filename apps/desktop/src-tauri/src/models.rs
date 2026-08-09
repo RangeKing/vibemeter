@@ -1004,6 +1004,8 @@ pub struct SourceStatus {
     pub available: bool,
     pub selected: bool,
     pub capability_level: String,
+    pub live_capability: String,
+    pub parser_version: String,
     pub session_count: u64,
     pub last_indexed_at: Option<String>,
     pub status: String,

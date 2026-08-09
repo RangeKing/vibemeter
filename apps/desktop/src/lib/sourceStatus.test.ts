@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SourceStatus } from "../types";
-import { capabilityTranslationKey, defaultDataAgents } from "./sourceStatus";
+import {
+  capabilityTranslationKey,
+  defaultDataAgents,
+  parseSourceCapabilities,
+  sourceCapabilityNameGroups,
+  sourceNamesForLiveCapability,
+  sourceLiveTranslationKey,
+} from "./sourceStatus";
 
 describe("source status language", () => {
   it("maps internal capability enums to user-facing translation keys", () => {
@@ -10,12 +17,46 @@ describe("source status language", () => {
     expect(capabilityTranslationKey("full", false)).toBe("sources.capabilities.unavailable");
   });
 
+  it("groups sources by the shared live capability contract", () => {
+    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex"]);
+    expect(sourceNamesForLiveCapability("experimental")).toEqual(["Kimi Code", "ZCode"]);
+    expect(sourceNamesForLiveCapability("none")).toEqual(["Cursor", "OpenClaw", "Hermes"]);
+    expect(sourceLiveTranslationKey("exact", true)).toBe("sources.liveCapabilities.exactReady");
+    expect(sourceLiveTranslationKey("experimental", true)).toBe("sources.liveCapabilities.experimentalReady");
+    expect(sourceLiveTranslationKey("none", true)).toBe("sources.liveCapabilities.historyOnly");
+    expect(sourceLiveTranslationKey("exact", undefined)).toBe("sources.liveCapabilities.unknown");
+    expect(sourceLiveTranslationKey("none", undefined)).toBe("sources.liveCapabilities.historyOnly");
+  });
+
+  it("builds the product-copy source groups from the same registry", () => {
+    expect(sourceCapabilityNameGroups()).toEqual({
+      exact: "Claude Code、Codex",
+      experimental: "Kimi Code、ZCode",
+      historyOnly: "Cursor、OpenClaw、Hermes",
+    });
+  });
+
+  it("rejects an unknown capability value instead of silently downgrading it", () => {
+    expect(() => parseSourceCapabilities({
+      version: 1,
+      sources: [{
+        agent: "codex",
+        displayName: "Codex",
+        historyCapability: "full",
+        liveCapability: "typo",
+        jumpSupported: true,
+      }],
+    })).toThrow("Unknown live capability");
+  });
+
   it("only shows detected, selected Agents with positive usage by default", () => {
     const source = (overrides: Partial<SourceStatus>): SourceStatus => ({
       agent: "codex",
       available: true,
       selected: true,
       capabilityLevel: "full",
+      liveCapability: "exact",
+      parserVersion: "test-parser",
       sessionCount: 1,
       status: "ready",
       warningCount: 0,

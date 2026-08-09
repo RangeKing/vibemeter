@@ -16,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { agentName, formatCompact } from "../lib/format";
+import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import type { IndexStatus, Locale, VctiProfile } from "../types";
 import { AgentBadge, Toggle } from "./ui";
 import { VctiAvatar } from "./VctiAvatar";
@@ -130,6 +131,7 @@ function RevealCard({ profile }: { profile?: VctiProfile; locale: Locale }) {
 export function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) {
   const { t, i18n } = useTranslation();
   const locale: Locale = i18n.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
+  const capabilityNames = sourceCapabilityNameGroups(locale === "zh-CN" ? "、" : ", ");
   const [step, setStep] = useState<Step>("consent");
   const [credentialsAllowed, setCredentialsAllowed] = useState(false);
   const [gitReadAllowed, setGitReadAllowed] = useState(false);
@@ -224,7 +226,7 @@ export function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) 
 
   const features = [
     [HardDrive, t("onboarding.localTitle"), t("onboarding.localBody")],
-    [RadioTower, t("onboarding.liveTitle"), t("onboarding.liveBody")],
+    [RadioTower, t("onboarding.liveTitle"), t("onboarding.liveBody", capabilityNames)],
     [ScanFace, t("onboarding.vctiTitle"), t("onboarding.vctiBody")],
     [ShieldCheck, t("onboarding.shareTitle"), t("onboarding.shareBody")],
   ] as const;

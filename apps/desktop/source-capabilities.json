@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "agent": "claude-code",
+      "displayName": "Claude Code",
+      "historyCapability": "full",
+      "liveCapability": "exact",
+      "jumpSupported": true
+    },
+    {
+      "agent": "codex",
+      "displayName": "Codex",
+      "historyCapability": "full",
+      "liveCapability": "exact",
+      "jumpSupported": true
+    },
+    {
+      "agent": "kimi-code",
+      "displayName": "Kimi Code",
+      "historyCapability": "partial",
+      "liveCapability": "experimental",
+      "jumpSupported": true
+    },
+    {
+      "agent": "zcode",
+      "displayName": "ZCode",
+      "historyCapability": "partial",
+      "liveCapability": "experimental",
+      "jumpSupported": true
+    },
+    {
+      "agent": "cursor",
+      "displayName": "Cursor",
+      "historyCapability": "partial",
+      "liveCapability": "none",
+      "jumpSupported": false
+    },
+    {
+      "agent": "openclaw",
+      "displayName": "OpenClaw",
+      "historyCapability": "partial",
+      "liveCapability": "none",
+      "jumpSupported": false
+    },
+    {
+      "agent": "hermes",
+      "displayName": "Hermes",
+      "historyCapability": "partial",
+      "liveCapability": "none",
+      "jumpSupported": false
+    }
+  ]
+}

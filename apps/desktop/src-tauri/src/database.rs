@@ -5,11 +5,13 @@ use crate::models::{
     GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat,
     InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem, LiveSession,
     LiveTimelinePoint, NotchClearResult, NotchCompletedSession, OverviewResponse, OverviewTotals,
-    ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem, PhraseCloudResponse,
-    PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase, ProjectControl, Provenance,
-    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionSummary, SessionsResponse,
-    SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem,
+    PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase,
+    ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
+    SessionSummary, SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary,
+    TokenUsage, VctiProfile,
 };
+use crate::source_capabilities::{source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -785,12 +787,7 @@ impl Database {
     ) -> AppResult<()> {
         let connection = self.connect()?;
         let now = Utc::now().to_rfc3339();
-        let capability_level = match agent {
-            AgentKind::KimiCode => "partial",
-            AgentKind::Cursor | AgentKind::OpenClaw | AgentKind::Hermes => "partial",
-            AgentKind::ZCode => "partial",
-            AgentKind::ClaudeCode | AgentKind::Codex => "full",
-        };
+        let capability_level = source_capability(agent).history_capability.as_str();
         connection.execute(
             "INSERT INTO sources (
                 id, agent, path_hash, capability_level, available,
@@ -801,6 +798,7 @@ impl Database {
                 ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                 path_hash=excluded.path_hash,
+                capability_level=excluded.capability_level,
                 available=excluded.available,
                 session_count=(SELECT COUNT(*) FROM sessions WHERE agent=?2),
                 warning_count=(SELECT COALESCE(SUM(count), 0) FROM parser_warnings WHERE agent=?2),
@@ -841,10 +839,10 @@ impl Database {
     }
 
     pub fn set_source_selected(&self, agent: &str, selected: bool) -> AppResult<()> {
-        if !matches!(
-            agent,
-            "claude-code" | "codex" | "kimi-code" | "cursor" | "openclaw" | "hermes"
-        ) {
+        if !source_capabilities()
+            .iter()
+            .any(|capability| capability.agent == agent)
+        {
             return Err(AppError::InvalidRequest("unknown data source".into()));
         }
         let connection = self.connect()?;
@@ -2349,6 +2347,8 @@ impl Database {
                     agent: row.get(0)?,
                     available: row.get::<_, i64>(1)? != 0,
                     capability_level: row.get(2)?,
+                    live_capability: "none".into(),
+                    parser_version: PARSER_VERSION.into(),
                     session_count: read_u64(row, 3)?,
                     last_indexed_at: row.get(4)?,
                     status: row.get(5)?,
@@ -2358,29 +2358,38 @@ impl Database {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        for (agent, capability_level, status) in [
-            ("claude-code", "full", "not-found"),
-            ("codex", "full", "not-found"),
-            ("kimi-code", "partial", "not-found"),
-            ("cursor", "partial", "not-found"),
-            ("openclaw", "partial", "not-found"),
-            ("hermes", "partial", "not-found"),
-        ] {
-            if !items.iter().any(|item| item.agent == agent) {
-                items.push(SourceStatus {
-                    agent: agent.into(),
-                    available: false,
-                    capability_level: capability_level.into(),
-                    session_count: 0,
-                    last_indexed_at: None,
-                    status: status.into(),
-                    warning_count: 0,
-                    selected: false,
-                    path_label: String::new(),
-                });
-            }
-        }
-        Ok(items)
+        let mut observed = items
+            .drain(..)
+            .map(|item| (item.agent.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let mut ordered = source_capabilities()
+            .iter()
+            .map(|capability| {
+                let mut item = observed
+                    .remove(&capability.agent)
+                    .unwrap_or_else(|| SourceStatus {
+                        agent: capability.agent.clone(),
+                        available: false,
+                        selected: false,
+                        capability_level: capability.history_capability.as_str().into(),
+                        live_capability: capability.live_capability.as_str().into(),
+                        parser_version: PARSER_VERSION.into(),
+                        session_count: 0,
+                        last_indexed_at: None,
+                        status: "not-found".into(),
+                        warning_count: 0,
+                        path_label: String::new(),
+                    });
+                item.capability_level = capability.history_capability.as_str().into();
+                item.live_capability = capability.live_capability.as_str().into();
+                item.parser_version = PARSER_VERSION.into();
+                item
+            })
+            .collect::<Vec<_>>();
+        let mut unknown = observed.into_values().collect::<Vec<_>>();
+        unknown.sort_by(|left, right| left.agent.cmp(&right.agent));
+        ordered.extend(unknown);
+        Ok(ordered)
     }
 
     pub fn range_usage_and_activity(&self, range: &str) -> AppResult<RangeUsageActivity> {
@@ -4765,6 +4774,93 @@ mod concurrency_tests {
         assert_eq!(derive_verification_state(0, 12, 0, 0), "unverified");
         assert_eq!(derive_verification_state(1, 0, 0, 0), "unverified");
         assert_eq!(derive_verification_state(0, 0, 0, 0), "not-applicable");
+    }
+
+    #[test]
+    fn sources_report_the_canonical_capability_contract() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("source-capabilities.sqlite"))
+            .expect("database should open");
+
+        let sources = database.sources().expect("sources should load");
+        let capabilities = sources
+            .iter()
+            .map(|source| {
+                (
+                    source.agent.as_str(),
+                    source.capability_level.as_str(),
+                    source.live_capability.as_str(),
+                    source.parser_version.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            capabilities,
+            vec![
+                ("claude-code", "full", "exact", PARSER_VERSION),
+                ("codex", "full", "exact", PARSER_VERSION),
+                ("kimi-code", "partial", "experimental", PARSER_VERSION),
+                ("zcode", "partial", "experimental", PARSER_VERSION),
+                ("cursor", "partial", "none", PARSER_VERSION),
+                ("openclaw", "partial", "none", PARSER_VERSION),
+                ("hermes", "partial", "none", PARSER_VERSION),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_upsert_repairs_a_stale_stored_capability() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("stale-source-capability.sqlite"))
+            .expect("database should open");
+        database
+            .upsert_source(AgentKind::Codex, "path", true, "ready")
+            .expect("source should persist");
+        let connection = database.connect().expect("database should connect");
+        connection
+            .execute(
+                "UPDATE sources SET capability_level='partial' WHERE agent='codex'",
+                [],
+            )
+            .expect("test should create stale capability");
+        drop(connection);
+
+        database
+            .upsert_source(AgentKind::Codex, "path", true, "ready")
+            .expect("source should update");
+        let connection = database.connect().expect("database should reconnect");
+        let stored: String = connection
+            .query_row(
+                "SELECT capability_level FROM sources WHERE agent='codex'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stored capability should load");
+
+        assert_eq!(stored, "full");
+    }
+
+    #[test]
+    fn zcode_source_selection_uses_the_canonical_registry() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("zcode-selection.sqlite"))
+            .expect("database should open");
+        database
+            .upsert_source(AgentKind::ZCode, "path", true, "ready")
+            .expect("source should persist");
+
+        database
+            .set_source_selected("zcode", false)
+            .expect("registered source should be selectable");
+
+        let source = database
+            .sources()
+            .expect("sources should load")
+            .into_iter()
+            .find(|source| source.agent == "zcode")
+            .expect("zcode should be present");
+        assert!(!source.selected);
     }
 
     #[test]

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { AgentBadge, ErrorState, LoadingState, PageHeader } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDateTime } from "../lib/format";
-import { capabilityTranslationKey } from "../lib/sourceStatus";
+import { capabilityTranslationKey, sourceLiveTranslationKey } from "../lib/sourceStatus";
 import type { Locale, SourceStatus } from "../types";
 
 export function SourcesPage({ locale }: { locale: Locale }) {
@@ -45,7 +45,7 @@ export function SourcesPage({ locale }: { locale: Locale }) {
       {index.data ? <section className="index-banner"><span className={index.data.running ? "pulse-dot" : "ready-dot"} /><div><strong>{t(index.data.messageKey)}</strong><span>{index.data.running ? t("sources.indexProgress", { processed: index.data.processedFiles, total: index.data.discoveredFiles }) : t("settings.projectSessions", { count: index.data.indexedSessions })}</span></div>{index.data.discoveredFiles > 0 ? <div className="index-progress"><span style={{ width: `${(index.data.processedFiles / index.data.discoveredFiles) * 100}%` }} /></div> : null}</section> : null}
       {sources.isLoading ? <LoadingState /> : sources.isError || !sources.data ? <ErrorState retry={() => void sources.refetch()} /> : <div className="source-grid">{sources.data.map((source, index) => {
         const liveProvider = live.data?.hookStatus.providers.find((provider) => provider.provider === source.agent);
-        const supportsLive = ["claude-code", "codex", "kimi-code", "zcode"].includes(source.agent);
+        const liveIntegrationReady = live.data ? Boolean(liveProvider?.installed) : undefined;
         const selected = source.available && source.selected;
         const cursorAccountDisabled = source.agent === "cursor" && settings.data?.cursorDashboardUsage === "false";
         return <section className={`source-card capability-${source.capabilityLevel} ${selected ? "is-selected" : "is-unselected"} ${source.available ? "" : "is-missing"}`} key={source.agent}>
@@ -69,14 +69,14 @@ export function SourcesPage({ locale }: { locale: Locale }) {
           <div className={`source-live ${liveProvider?.installed ? "ready" : ""}`}>
             <RadioTower size={13} />
             <span>{t("sources.live")}</span>
-            <strong>{supportsLive ? t(liveProvider?.installed ? "sources.liveReady" : "sources.liveNeedsSetup") : t("sources.liveUnavailable")}</strong>
+            <strong>{t(sourceLiveTranslationKey(source.liveCapability, liveIntegrationReady))}</strong>
           </div>
           {cursorAccountDisabled ? <div className="source-account-warning">
             <LockKeyhole size={14} />
             <div><strong>{t("cursorUsage.disabledTitle")}</strong><span>{t("sources.cursorAccountBody")}</span></div>
             <button onClick={() => void api.showSettings()} aria-label={t("cursorUsage.openSettings")}><Settings2 size={12} />{t("sources.enableCursorAccount")}</button>
           </div> : null}
-          <footer><Database size={13} /><span>{source.lastIndexedAt ? t("sources.lastIndexed", { time: formatDateTime(source.lastIndexedAt, locale) }) : t("sources.notIndexed")}</span></footer>
+          <footer><Database size={13} /><span>{source.lastIndexedAt ? t("sources.lastIndexed", { time: formatDateTime(source.lastIndexedAt, locale) }) : t("sources.notIndexed")} · {t("sources.parserVersion", { version: source.parserVersion })}</span></footer>
         </section>;
       })}</div>}
       <section className="source-glossary" aria-labelledby="source-glossary-title">
