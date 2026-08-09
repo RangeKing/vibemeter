@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="540" viewBox="0 0 860 540">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#171a18"/>
+      <stop offset="0.58" stop-color="#20231f"/>
+      <stop offset="1" stop-color="#2a211f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="16%" r="68%">
+      <stop offset="0" stop-color="#d97858" stop-opacity="0.22"/>
+      <stop offset="0.42" stop-color="#8f5c9b" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#171a18" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e18a6e" stop-opacity="0.15"/>
+      <stop offset="0.5" stop-color="#f2b66d" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#9b8df0" stop-opacity="0.18"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="860" height="540" fill="url(#background)"/>
+  <rect width="860" height="540" fill="url(#glow)"/>
+  <rect width="860" height="540" fill="url(#grid)" opacity="0.55"/>
+
+  <circle cx="736" cy="110" r="110" fill="#e18a6e" opacity="0.12" filter="url(#soft)"/>
+  <circle cx="170" cy="470" r="130" fill="#9b8df0" opacity="0.06" filter="url(#soft)"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif">
+    <text x="48" y="54" fill="#f0ede4" font-size="18" font-weight="700" letter-spacing="0.2">VibeMeter</text>
+    <text x="48" y="76" fill="#aaa79e" font-size="10" font-weight="600" letter-spacing="2.2">LOCAL VIBE CODING RECORD</text>
+
+    <text x="48" y="132" fill="#f0ede4" font-size="29" font-weight="700" letter-spacing="-0.8">Record your Vibe Coding.</text>
+    <text x="48" y="157" fill="#aaa79e" font-size="13" font-weight="500">Drag VibeMeter to Applications to install.</text>
+    <text x="48" y="178" fill="#8e8b83" font-size="11" font-weight="500">将 VibeMeter 拖到 Applications，即可完成安装。</text>
+  </g>
+
+  <g transform="translate(350 270)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M -88 0 C -48 -31, -21 -31, 0 0 S 49 31, 88 0" stroke="url(#line)" stroke-width="3" opacity="0.8"/>
+    <path d="M 66 -19 L 91 0 L 66 19" stroke="#f2b66d" stroke-width="4" opacity="0.9"/>
+    <circle cx="-88" cy="0" r="5" fill="#e18a6e" stroke="none"/>
+    <circle cx="0" cy="0" r="5" fill="#f2b66d" stroke="none"/>
+    <circle cx="88" cy="0" r="5" fill="#9b8df0" stroke="none"/>
+  </g>
+
+  <g transform="translate(44 390)" font-family="-apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif">
+    <path d="M 0 0 H 772" stroke="#ffffff" stroke-opacity="0.1"/>
+    <g transform="translate(0 28)">
+      <text x="0" y="0" fill="#8e8b83" font-size="9" font-weight="700" letter-spacing="1.6">LOCAL-FIRST</text>
+      <text x="0" y="20" fill="#aaa79e" font-size="11">Your activity stays on this Mac.</text>
+    </g>
+    <g transform="translate(260 28)">
+      <text x="0" y="0" fill="#8e8b83" font-size="9" font-weight="700" letter-spacing="1.6">LIVE SIGNAL</text>
+      <text x="0" y="20" fill="#aaa79e" font-size="11">See the work as it happens.</text>
+    </g>
+    <g transform="translate(520 28)">
+      <text x="0" y="0" fill="#8e8b83" font-size="9" font-weight="700" letter-spacing="1.6">DATA TRAIL</text>
+      <text x="0" y="20" fill="#aaa79e" font-size="11">Turn sessions into insight.</text>
+    </g>
+  </g>
+</svg>

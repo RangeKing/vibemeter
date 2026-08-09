@@ -1,5 +1,6 @@
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
+use crate::live_sources;
 use crate::models::{
     HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession, LiveSnapshot,
     NotchCompletedSession,
@@ -30,6 +31,7 @@ const MAX_TRANSCRIPT_BOUNDARY_BYTES: u64 = 8 * MAX_TRANSCRIPT_TAIL_BYTES;
 const MAX_TRANSCRIPT_LINE_BYTES: usize = 256 * 1024;
 const MAX_SESSION_META_BYTES: u64 = 512 * 1024;
 const CODEX_DISCOVERY_INTERVAL: StdDuration = StdDuration::from_secs(2);
+const EXTERNAL_DISCOVERY_INTERVAL: StdDuration = StdDuration::from_millis(750);
 const CODEX_DISCOVERY_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
 const MAX_DISCOVERED_TRANSCRIPTS: usize = 64;
 const MANAGED_MARKER: &str = "vibemeter_hook.py";
@@ -414,6 +416,106 @@ impl LiveMonitor {
                 std::thread::sleep(StdDuration::from_millis(250));
             }
         });
+        let external_sessions = sessions.clone();
+        let external_app = app.clone();
+        let external_database = database.clone();
+        let external_socket_ready = socket_ready.clone();
+        std::thread::spawn(move || {
+            let mut known_ids = HashSet::new();
+            let mut recorded = HashMap::<String, String>::new();
+            loop {
+                let discovered = live_sources::discover();
+                let discovered_ids = discovered
+                    .iter()
+                    .map(|session| session.id.clone())
+                    .collect::<HashSet<_>>();
+                let mut transitions = Vec::new();
+                let mut changed = false;
+                for session in discovered {
+                    let id = session.id.clone();
+                    let fingerprint = format!(
+                        "{}|{}|{}|{}",
+                        session.status,
+                        session.updated_at,
+                        session.phase,
+                        session
+                            .actions
+                            .last()
+                            .map(|action| action.label.as_str())
+                            .unwrap_or_default()
+                    );
+                    let should_record = recorded.get(&id) != Some(&fingerprint);
+                    known_ids.insert(id.clone());
+                    let transition = merge_session(&external_sessions, session.clone());
+                    if let Some(status) = transition {
+                        transitions.push((id.clone(), status));
+                        changed = true;
+                    }
+                    if should_record {
+                        recorded.insert(id, fingerprint);
+                        let received = session.updated_at.clone();
+                        let expires =
+                            (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339();
+                        let raw = json!({
+                            "source": "local-runtime-observer",
+                            "provider": session.agent,
+                            "session_id": session.source_session_id,
+                            "received_at": received,
+                            "status": session.status,
+                            "phase": session.phase,
+                        })
+                        .to_string();
+                        let _ = external_database.record_live_event(
+                            &session.updated_at,
+                            &expires,
+                            &session.agent,
+                            &session.source_session_id,
+                            "runtime.activity",
+                            &session.project_label,
+                            &raw,
+                            &session.status,
+                        );
+                        changed = true;
+                    }
+                }
+                let stale_ids = known_ids
+                    .difference(&discovered_ids)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !stale_ids.is_empty()
+                    && let Ok(mut sessions) = external_sessions.write()
+                {
+                    for id in &stale_ids {
+                        if sessions.get(id).is_some_and(|session| {
+                            matches!(session.agent.as_str(), "kimi-code" | "zcode")
+                        }) {
+                            sessions.remove(id);
+                            recorded.remove(id);
+                            changed = true;
+                        }
+                    }
+                }
+                known_ids.retain(|id| discovered_ids.contains(id));
+                if changed {
+                    let completed_sessions = external_database
+                        .notch_completed_sessions()
+                        .unwrap_or_default();
+                    let snapshot = snapshot_from(
+                        &external_sessions,
+                        external_socket_ready.load(Ordering::SeqCst),
+                        completed_sessions,
+                        &external_database,
+                    );
+                    let _ = external_app.emit("live-update", &snapshot);
+                    for (id, status) in transitions {
+                        if let Some(active) = snapshot.sessions.iter().find(|item| item.id == id) {
+                            notify_if_background(active, &status);
+                        }
+                    }
+                }
+                std::thread::sleep(EXTERNAL_DISCOVERY_INTERVAL);
+            }
+        });
         let listener_watches = codex_transcripts;
         let listener_auxiliary_sessions = auxiliary_sessions;
         std::thread::spawn(move || {
@@ -614,6 +716,8 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
     } else {
         codex_hook_runtime_status()
     };
+    let kimi_available = live_sources::provider_available("kimi-code");
+    let zcode_available = live_sources::provider_available("zcode");
     let providers = vec![
         HookProviderStatus {
             provider: "claude-code".into(),
@@ -626,6 +730,23 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
             available: codex_available,
             installed: codex_health.working,
             detail: codex_health.detail.into(),
+        },
+        HookProviderStatus {
+            provider: "kimi-code".into(),
+            available: kimi_available,
+            installed: kimi_available,
+            detail: if kimi_available { "ready" } else { "not-found" }.into(),
+        },
+        HookProviderStatus {
+            provider: "zcode".into(),
+            available: zcode_available,
+            installed: zcode_available,
+            detail: if zcode_available {
+                "ready"
+            } else {
+                "not-found"
+            }
+            .into(),
         },
     ];
     let installed_count = providers.iter().filter(|item| item.installed).count();
@@ -941,6 +1062,7 @@ fn codex_hook_health_from_list(result: &Value) -> CodexHookHealth {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JumpRoute {
     CodexDesktop,
+    ZCodeDesktop,
     Cmux,
     Tmux,
     DirectTerminal,
@@ -955,6 +1077,9 @@ struct ProcessRecord {
 fn jump_route(session: &LiveSession) -> JumpRoute {
     if session.agent == "codex" && session.origin.as_deref() == Some("desktop") {
         return JumpRoute::CodexDesktop;
+    }
+    if session.agent == "zcode" && session.origin.as_deref() == Some("desktop") {
+        return JumpRoute::ZCodeDesktop;
     }
     if session.jump_context.as_ref().is_some_and(|context| {
         context.cmux_workspace_id.is_some() || context.cmux_surface_id.is_some()
@@ -974,10 +1099,18 @@ fn jump_route(session: &LiveSession) -> JumpRoute {
 pub fn jump_to_session(session: &LiveSession) -> AppResult<()> {
     match jump_route(session) {
         JumpRoute::CodexDesktop => jump_to_codex_desktop(session),
+        JumpRoute::ZCodeDesktop => jump_to_zcode_desktop(),
         JumpRoute::Cmux => jump_to_cmux(session),
         JumpRoute::Tmux => jump_to_tmux(session),
         JumpRoute::DirectTerminal => jump_to_direct_terminal(session),
     }
+}
+
+fn jump_to_zcode_desktop() -> AppResult<()> {
+    run_checked(
+        Command::new("/usr/bin/open").args(["-a", "ZCode"]),
+        "ZCode could not be opened",
+    )
 }
 
 fn jump_to_codex_desktop(session: &LiveSession) -> AppResult<()> {
@@ -1269,6 +1402,7 @@ fn trusted_host_application(name: &str) -> bool {
             | "Visual Studio Code"
             | "Cursor"
             | "Codex"
+            | "ZCode"
     )
 }
 
@@ -1310,6 +1444,7 @@ fn host_application_name(
         Some("vscode") if observed == Some("Cursor") => Some("Cursor"),
         Some("vscode") => Some("Visual Studio Code"),
         Some("codex") => Some("Codex"),
+        Some("zcode") => Some("ZCode"),
         _ => observed
             .filter(|name| trusted_host_application(name))
             .and_then(|name| match name {
@@ -1327,6 +1462,7 @@ fn host_application_name(
                 "Visual Studio Code" => Some("Visual Studio Code"),
                 "Cursor" => Some("Cursor"),
                 "Codex" => Some("Codex"),
+                "ZCode" => Some("ZCode"),
                 _ => None,
             }),
     }
@@ -1622,7 +1758,7 @@ fn hook_event_belongs_to_provider(
     }
 }
 
-fn project_label_from_cwd(cwd: &str) -> String {
+pub(crate) fn project_label_from_cwd(cwd: &str) -> String {
     let cwd = cwd.trim();
     if cwd.is_empty() {
         return "Unknown project".into();
@@ -2698,7 +2834,11 @@ fn source_is_foreground(session: &LiveSession) -> bool {
 fn source_matches_frontmost(session: &LiveSession, name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     if session.origin.as_deref() == Some("desktop") {
-        return name.contains("codex");
+        return match session.agent.as_str() {
+            "codex" => name.contains("codex"),
+            "zcode" => name.contains("zcode"),
+            _ => false,
+        };
     }
     if let Some(context) = session.jump_context.as_ref()
         && let Some(expected) = host_application_name(
@@ -2740,10 +2880,12 @@ fn frontmost_application_name() -> Option<String> {
 }
 
 fn provider_label(agent: &str) -> &'static str {
-    if agent == "claude-code" {
-        "Claude Code"
-    } else {
-        "Codex"
+    match agent {
+        "claude-code" => "Claude Code",
+        "codex" => "Codex",
+        "kimi-code" => "Kimi Code",
+        "zcode" => "ZCode",
+        _ => "Agent",
     }
 }
 

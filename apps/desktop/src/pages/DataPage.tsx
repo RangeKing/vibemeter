@@ -27,6 +27,7 @@ const COMPARISON_COLORS = [
   "var(--agent-cursor)",
   "var(--warning)",
   "var(--agent-hermes)",
+  "var(--agent-zcode)",
   "var(--red)",
   "var(--chart-4)",
 ];
@@ -103,6 +104,7 @@ function agentColor(agent: string, colors: ReturnType<typeof useChartColors>, fa
   if (agent === "cursor") return colors.agent[3];
   if (agent === "openclaw") return colors.agent[4];
   if (agent === "hermes") return colors.agent[5];
+  if (agent === "zcode") return colors.agent[6];
   return colors.agent[(fallbackIndex + 3) % colors.agent.length];
 }
 

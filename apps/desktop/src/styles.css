@@ -49,6 +49,7 @@
   --agent-cursor: #3e8ea4;
   --agent-openclaw: #b6792e;
   --agent-hermes: #a85c91;
+  --agent-zcode: #b86b2d;
   --text: var(--ink);
   --text-secondary: var(--muted);
   --text-tertiary: var(--faint);
@@ -94,6 +95,7 @@
   --agent-cursor: #69b7ca;
   --agent-openclaw: #e0ae62;
   --agent-hermes: #e39ac7;
+  --agent-zcode: #f2b66d;
   --shadow: 0 20px 60px rgb(0 0 0 / 28%);
   --shadow-small: 0 10px 28px rgb(0 0 0 / 22%);
 }
@@ -132,6 +134,7 @@
     --agent-cursor: #69b7ca;
     --agent-openclaw: #e0ae62;
     --agent-hermes: #e39ac7;
+    --agent-zcode: #f2b66d;
     --shadow: 0 20px 60px rgb(0 0 0 / 28%);
     --shadow-small: 0 10px 28px rgb(0 0 0 / 22%);
   }
@@ -364,8 +367,11 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .notch-provider-mark { display: inline-block; flex: 0 0 auto; background: currentColor; -webkit-mask: var(--notch-provider-icon) center / var(--notch-provider-scale, 92%) auto no-repeat; mask: var(--notch-provider-icon) center / var(--notch-provider-scale, 92%) auto no-repeat; }
 .notch-provider-mark.provider-mark-codex { --notch-provider-scale: 80%; }
 .notch-provider-mark.provider-mark-claude-code { --notch-provider-scale: 92%; }
+.notch-provider-mark.is-letter { display: grid; place-items: center; border: 1px solid currentColor; border-radius: 4px; background: transparent; font-size: 8px; font-weight: 800; line-height: 1; }
 .provider-claude-code { color: rgb(255 217 184 / 72%); }
 .provider-codex { color: rgb(255 255 255 / 70%); }
+.provider-kimi-code { color: rgb(154 197 255 / 82%); }
+.provider-zcode { color: rgb(242 182 109 / 88%); }
 .notch-activity-glyph { position: relative; isolation: isolate; display: grid; flex: 0 0 auto; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #ff9b63; background: rgb(255 139 87 / 11%); }
 .notch-activity-glyph::before { position: absolute; z-index: -1; inset: 1px; border: 2.35px solid rgb(255 155 99 / 20%); border-top-color: currentColor; border-radius: inherit; content: ""; }
 .notch-activity-glyph.status-running::before { animation: notch-activity-spin .86s linear infinite; }
@@ -662,6 +668,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .agent-glyph.cursor { color: #0b6071; background: #d8eff1; }
 .agent-glyph.openclaw { color: #9a621b; background: #f8e5c8; }
 .agent-glyph.hermes { color: #8b396f; background: #f4dfed; }
+.agent-glyph.zcode { color: #9c5a20; background: #f8e7d0; }
 .agent-glyph.vibemeter { color: var(--accent-dark); background: var(--accent-soft); }
 .verification { display: inline-flex; align-items: center; gap: 5px; width: max-content; padding: 4px 7px; border-radius: 99px; color: var(--muted); background: var(--surface-soft); font-size: var(--font-caption); font-weight: 650; white-space: nowrap; }
 .verification.verified { color: var(--green); background: var(--green-soft); }

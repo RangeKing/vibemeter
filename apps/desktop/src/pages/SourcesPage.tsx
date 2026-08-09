@@ -45,7 +45,7 @@ export function SourcesPage({ locale }: { locale: Locale }) {
       {index.data ? <section className="index-banner"><span className={index.data.running ? "pulse-dot" : "ready-dot"} /><div><strong>{t(index.data.messageKey)}</strong><span>{index.data.running ? t("sources.indexProgress", { processed: index.data.processedFiles, total: index.data.discoveredFiles }) : t("settings.projectSessions", { count: index.data.indexedSessions })}</span></div>{index.data.discoveredFiles > 0 ? <div className="index-progress"><span style={{ width: `${(index.data.processedFiles / index.data.discoveredFiles) * 100}%` }} /></div> : null}</section> : null}
       {sources.isLoading ? <LoadingState /> : sources.isError || !sources.data ? <ErrorState retry={() => void sources.refetch()} /> : <div className="source-grid">{sources.data.map((source, index) => {
         const liveProvider = live.data?.hookStatus.providers.find((provider) => provider.provider === source.agent);
-        const supportsLive = source.agent === "claude-code" || source.agent === "codex";
+        const supportsLive = ["claude-code", "codex", "kimi-code", "zcode"].includes(source.agent);
         const selected = source.available && source.selected;
         const cursorAccountDisabled = source.agent === "cursor" && settings.data?.cursorDashboardUsage === "false";
         return <section className={`source-card capability-${source.capabilityLevel} ${selected ? "is-selected" : "is-unselected"} ${source.available ? "" : "is-missing"}`} key={source.agent}>

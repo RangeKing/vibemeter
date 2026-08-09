@@ -788,6 +788,7 @@ impl Database {
         let capability_level = match agent {
             AgentKind::KimiCode => "partial",
             AgentKind::Cursor | AgentKind::OpenClaw | AgentKind::Hermes => "partial",
+            AgentKind::ZCode => "partial",
             AgentKind::ClaudeCode | AgentKind::Codex => "full",
         };
         connection.execute(
@@ -3680,6 +3681,7 @@ fn stored_agent_kind(agent: &str) -> Option<AgentKind> {
         "cursor" => Some(AgentKind::Cursor),
         "openclaw" => Some(AgentKind::OpenClaw),
         "hermes" => Some(AgentKind::Hermes),
+        "zcode" => Some(AgentKind::ZCode),
         _ => None,
     }
 }
@@ -3962,6 +3964,14 @@ fn capabilities_for_agent(agent: &str) -> Vec<String> {
             "subagent_lifecycle",
         ][..],
         "kimi-code" => &["session_timestamps", "model_name", "token_usage"][..],
+        "zcode" => &[
+            "session_timestamps",
+            "model_name",
+            "token_usage",
+            "tool_calls",
+            "errors",
+            "user_interventions",
+        ][..],
         _ => &[][..],
     };
     capabilities.iter().map(|value| (*value).into()).collect()

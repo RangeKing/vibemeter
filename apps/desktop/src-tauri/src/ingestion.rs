@@ -1,4 +1,4 @@
-use crate::adapters::{claude, codex, common, cursor, kimi, openclaw};
+use crate::adapters::{claude, codex, common, cursor, kimi, openclaw, zcode};
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
@@ -8,8 +8,9 @@ use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
 use rusqlite::Connection;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tauri::{AppHandle, Emitter};
@@ -33,6 +34,7 @@ enum SourceAdapter {
     Cursor,
     Kimi,
     OpenClaw,
+    ZCode,
 }
 
 #[derive(Debug)]
@@ -104,6 +106,31 @@ fn run_index(
             collect_jsonl_files(&root.path, root.agent, root.adapter, &mut files);
         }
     }
+    let zcode_model_io_ids = files
+        .iter()
+        .filter(|file| file.adapter == SourceAdapter::ZCode)
+        .filter_map(|file| {
+            if file.path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+                return None;
+            }
+            file.path
+                .file_stem()?
+                .to_str()?
+                .strip_prefix("model-io-")
+                .map(ToString::to_string)
+        })
+        .collect::<HashSet<_>>();
+    files.retain(|file| {
+        if file.adapter != SourceAdapter::ZCode
+            || file.path.extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            return true;
+        }
+        file.path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .is_none_or(|stem| !zcode_model_io_ids.contains(stem))
+    });
     index_cursor_database(database, force)?;
     index_hermes_database(database, force)?;
     files.sort_by_key(|item| std::cmp::Reverse(item.modified));
@@ -146,6 +173,7 @@ fn run_index(
         AgentKind::Cursor,
         AgentKind::OpenClaw,
         AgentKind::Hermes,
+        AgentKind::ZCode,
     ] {
         let agent_roots = roots
             .iter()
@@ -199,7 +227,8 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
             .map(ToString::to_string)
             .unwrap_or_else(|| file_hash.clone())
     };
-    let can_resume = !force
+    let can_resume = source.adapter != SourceAdapter::ZCode
+        && !force
         && cursor.as_ref().is_some_and(|cursor| {
             cursor.source_size <= source.size
                 && cursor.byte_offset <= source.size
@@ -225,6 +254,60 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         .setting("vctiPromptStructure")?
         .is_none_or(|value| value == "true");
     common::set_prompt_structure_enabled(&mut state, prompt_structure_enabled);
+
+    if source.adapter == SourceAdapter::ZCode {
+        let mut content = Vec::new();
+        File::open(&source.path)?.read_to_end(&mut content)?;
+        if content.len() > MAX_RECORD_BYTES {
+            state.malformed_records = state.malformed_records.saturating_add(1);
+        } else if let Ok(record) = serde_json::from_slice::<Value>(&content) {
+            zcode::parse_record(&mut state, &record);
+        } else {
+            for line in content.split(|byte| *byte == b'\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                match serde_json::from_slice::<Value>(line) {
+                    Ok(record) => zcode::parse_record(&mut state, &record),
+                    Err(_) => state.malformed_records = state.malformed_records.saturating_add(1),
+                }
+            }
+        }
+        common::finalize_run(&mut state);
+        let git_allowed = database
+            .setting("gitReadAllowed")?
+            .is_some_and(|value| value == "true");
+        state.git_evidence = Some(if git_allowed {
+            state.project_root.as_deref().map_or_else(
+                || crate::models::GitEvidence {
+                    available: false,
+                    state: "project-unavailable".into(),
+                    ..crate::models::GitEvidence::default()
+                },
+                |root| {
+                    git_evidence::inspect(
+                        root,
+                        state.started_at.as_deref(),
+                        state.ended_at.as_deref(),
+                    )
+                },
+            )
+        } else {
+            crate::models::GitEvidence {
+                available: false,
+                state: "not-authorized".into(),
+                ..crate::models::GitEvidence::default()
+            }
+        });
+        database.persist_parse_state(
+            &file_hash,
+            source.size,
+            source.modified,
+            source.size,
+            &state,
+        )?;
+        return Ok(true);
+    }
     let start_offset = if can_resume {
         cursor.as_ref().map_or(0, |cursor| cursor.byte_offset)
     } else {
@@ -259,6 +342,7 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
                 SourceAdapter::Cursor => cursor::parse_record(&mut state, &record),
                 SourceAdapter::Kimi => kimi::parse_record(&mut state, &record),
                 SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, &record),
+                SourceAdapter::ZCode => zcode::parse_record(&mut state, &record),
             },
             Err(_) => {
                 state.malformed_records = state.malformed_records.saturating_add(1);
@@ -308,8 +392,19 @@ fn collect_jsonl_files(
         .into_iter()
         .filter_map(Result::ok)
     {
-        if !entry.file_type().is_file()
-            || entry.path().extension().and_then(|value| value.to_str()) != Some("jsonl")
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let extension = entry.path().extension().and_then(|value| value.to_str());
+        let is_zcode_json = adapter == SourceAdapter::ZCode && extension == Some("json");
+        let is_jsonl = extension == Some("jsonl");
+        if !is_jsonl && !is_zcode_json {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy();
+        if adapter == SourceAdapter::ZCode
+            && ((is_zcode_json && file_name.ends_with(".deleted.json"))
+                || (is_jsonl && !file_name.starts_with("model-io-")))
         {
             continue;
         }
@@ -394,6 +489,23 @@ fn source_roots() -> Vec<SourceRoot> {
         path: home.join(".cursor/projects"),
         adapter: SourceAdapter::Cursor,
     });
+    let zcode_base = std::env::var_os("ZCODE_DATA_BASE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.clone());
+    let zcode_root = zcode_base.join(".zcode");
+    roots.push(SourceRoot {
+        agent: AgentKind::ZCode,
+        path: zcode_root.join("v2/sessions"),
+        adapter: SourceAdapter::ZCode,
+    });
+    for path in [zcode_root.join("cli/debug"), zcode_root.join("cli/rollout")] {
+        roots.push(SourceRoot {
+            agent: AgentKind::ZCode,
+            path,
+            adapter: SourceAdapter::ZCode,
+        });
+    }
 
     let claude_support = home.join("Library/Application Support/Claude");
     for parent in [

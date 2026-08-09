@@ -38,7 +38,26 @@
     "longDescription": "Live agent monitoring, local AI coding analytics, and an evolving VCTI profile.",
     "macOS": {
       "minimumSystemVersion": "14.0",
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "dmg": {
+        "background": "dmg/VibeMeter-dmg-background.png",
+        "windowSize": {
+          "width": 860,
+          "height": 540
+        },
+        "windowPosition": {
+          "x": 240,
+          "y": 180
+        },
+        "appPosition": {
+          "x": 220,
+          "y": 270
+        },
+        "applicationFolderPosition": {
+          "x": 640,
+          "y": 270
+        }
+      }
     },
     "icon": [
       "icons/32x32.png",

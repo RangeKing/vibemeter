@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.3.0";
+pub const PARSER_VERSION: &str = "6.4.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -13,6 +13,7 @@ pub enum AgentKind {
     Cursor,
     OpenClaw,
     Hermes,
+    ZCode,
 }
 
 impl AgentKind {
@@ -24,6 +25,7 @@ impl AgentKind {
             Self::Cursor => "cursor",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
+            Self::ZCode => "zcode",
         }
     }
 }

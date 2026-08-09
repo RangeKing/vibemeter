@@ -6,6 +6,7 @@ mod export_localization;
 mod git_evidence;
 mod ingestion;
 mod live;
+mod live_sources;
 mod migration;
 pub mod models;
 mod phrases;

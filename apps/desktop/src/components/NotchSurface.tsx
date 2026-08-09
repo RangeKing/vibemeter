@@ -95,17 +95,21 @@ function ProviderMark({
   agent: LiveSession["agent"];
   size?: number;
 }) {
-  const iconUrl = agent === "claude-code" ? claudeCodeIconUrl : codexIconUrl;
+  const iconUrl = agent === "claude-code"
+    ? claudeCodeIconUrl
+    : agent === "codex"
+      ? codexIconUrl
+      : undefined;
   return (
     <span
-      className={`notch-provider-mark provider-mark-${agent}`}
-      style={{
+      className={`notch-provider-mark provider-mark-${agent}${iconUrl ? "" : " is-letter"}`}
+      style={iconUrl ? {
         width: size,
         height: size,
         "--notch-provider-icon": `url("${iconUrl}")`,
-      } as CSSProperties}
+      } as CSSProperties : { width: size, height: size }}
       aria-hidden="true"
-    />
+    >{iconUrl ? null : <span>{agent === "kimi-code" ? "K" : "Z"}</span>}</span>
   );
 }
 
@@ -247,6 +251,8 @@ export function activeProviderCounts(sessions: LiveSession[]) {
     active,
     codex: active.filter((session) => session.agent === "codex").length,
     claudeCode: active.filter((session) => session.agent === "claude-code").length,
+    kimiCode: active.filter((session) => session.agent === "kimi-code").length,
+    zcode: active.filter((session) => session.agent === "zcode").length,
   };
 }
 
@@ -371,6 +377,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const visibleSessions = activeSessions;
   const codexCount = providerCounts.codex;
   const claudeCount = providerCounts.claudeCode;
+  const kimiCodeCount = providerCounts.kimiCode;
+  const zcodeCount = providerCounts.zcode;
   const desiredLeftWingWidth = leftWingWidthForSession(singleWingSession);
   const desiredExpandedHeight = expandedHeightForSessions(
     visibleSessions,
@@ -614,6 +622,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
             <span className="notch-provider-cluster">
               <ProviderCount agent="codex" count={codexCount} />
               <ProviderCount agent="claude-code" count={claudeCount} />
+              <ProviderCount agent="kimi-code" count={kimiCodeCount} />
+              <ProviderCount agent="zcode" count={zcodeCount} />
             </span>
           )}
         </span>
@@ -633,6 +643,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         <span className="notch-expanded-left">
           <ProviderCount agent="codex" count={codexCount} />
           <ProviderCount agent="claude-code" count={claudeCount} />
+          <ProviderCount agent="kimi-code" count={kimiCodeCount} />
+          <ProviderCount agent="zcode" count={zcodeCount} />
         </span>
         <span className="notch-hardware" aria-hidden="true" />
         <span className="notch-expanded-controls">

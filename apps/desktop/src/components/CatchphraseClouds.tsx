@@ -13,6 +13,7 @@ const AGENT_COLORS: Record<string, string> = {
   cursor: "#8b82f6",
   openclaw: "#3fbf9b",
   hermes: "#ee6a9d",
+  zcode: "#f2b66d",
 };
 
 function agentColor(agent: string): string {

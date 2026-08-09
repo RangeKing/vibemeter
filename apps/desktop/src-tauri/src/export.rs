@@ -45,6 +45,7 @@ struct Palette {
     claude: &'static str,
     codex: &'static str,
     kimi: &'static str,
+    zcode: &'static str,
     positive: &'static str,
     tile: &'static str,
     dark: bool,
@@ -66,6 +67,7 @@ impl Palette {
                 claude: "#78A9FF",
                 codex: "#78A9FF",
                 kimi: "#78A9FF",
+                zcode: "#F2B66D",
                 positive: "#78A9FF",
                 tile: "#1C1C1F",
                 dark: true,
@@ -84,6 +86,7 @@ impl Palette {
                 claude: "#075FDB",
                 codex: "#075FDB",
                 kimi: "#075FDB",
+                zcode: "#B86B2D",
                 positive: "#075FDB",
                 tile: "#EEEEF0",
                 dark: false,
@@ -644,12 +647,14 @@ fn phrase_agent_style(agent: &str, dark: bool) -> (&'static str, &'static str) {
         ("cursor", false) => ("#E5E0FF", "#5B4EB3"),
         ("openclaw", false) => ("#D9F2EA", "#26785F"),
         ("hermes", false) => ("#F7DDEB", "#99486F"),
+        ("zcode", false) => ("#F8E7D0", "#9C5A20"),
         ("codex", true) => ("#5A2B22", "#FFB098"),
         ("claude-code", true) => ("#4B3429", "#E9B78E"),
         ("kimi-code", true) => ("#223D62", "#9AC5FF"),
         ("cursor", true) => ("#312A59", "#BDB4FF"),
         ("openclaw", true) => ("#203F37", "#82D8BC"),
         ("hermes", true) => ("#512B40", "#F4A2C9"),
+        ("zcode", true) => ("#4A3521", "#F2B66D"),
         (_, false) => ("#E7E2EF", "#5F526F"),
         (_, true) => ("#342D3D", "#BFAFCF"),
     }
@@ -3409,6 +3414,7 @@ fn agent_mark(svg: &mut String, x: f64, y: f64, agent: &str, size: f64, palette:
     let letter = match agent {
         "claude-code" => "C",
         "kimi-code" => "K",
+        "zcode" => "Z",
         _ => "O",
     };
     text(
@@ -3444,6 +3450,7 @@ fn agent_label(value: &str) -> String {
         "claude-code" => "Claude Code".into(),
         "codex" => "Codex".into(),
         "kimi-code" => "Kimi Code".into(),
+        "zcode" => "ZCode".into(),
         _ => value.into(),
     }
 }
@@ -3452,6 +3459,7 @@ fn agent_color(value: &str, palette: Palette) -> &'static str {
     match value {
         "claude-code" => palette.claude,
         "kimi-code" => palette.kimi,
+        "zcode" => palette.zcode,
         _ => palette.codex,
     }
 }

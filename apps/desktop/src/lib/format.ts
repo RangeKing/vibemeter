@@ -76,6 +76,7 @@ export function agentName(value: string): string {
   if (value === "cursor") return "Cursor";
   if (value === "openclaw") return "OpenClaw";
   if (value === "hermes") return "Hermes";
+  if (value === "zcode") return "ZCode";
   if (value === "vibemeter") return "VibeMeter";
   return value;
 }

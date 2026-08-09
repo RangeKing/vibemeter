@@ -231,7 +231,7 @@ export interface LiveAction {
 export interface LiveSession {
   id: string;
   sourceSessionId: string;
-  agent: "claude-code" | "codex";
+  agent: "claude-code" | "codex" | "kimi-code" | "zcode";
   projectLabel: string;
   conversationTitle?: string;
   status: "waiting" | "error" | "running" | "paused" | "idle" | "completed";
