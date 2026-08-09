@@ -238,6 +238,7 @@ export interface LiveSession {
   phase: string;
   startedAt: string;
   updatedAt: string;
+  activityEndedAt?: string;
   waitingReason?: string;
   actions: LiveAction[];
   processId?: number;

@@ -450,10 +450,10 @@ PRAGMA user_version = 13;
 "#;
 
 const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
-const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 14;
+const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 15;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 14;
-const WAITING_REPLAY_WINDOW_SECONDS: i64 = 30;
+const DATABASE_SCHEMA_VERSION: i64 = 15;
+const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
 BEGIN IMMEDIATE;
@@ -498,6 +498,31 @@ PRAGMA user_version = 14;
 COMMIT;
 "#;
 
+const MIGRATION_V15: &str = r#"
+BEGIN IMMEDIATE;
+ALTER TABLE canonical_events ADD COLUMN source_sequence INTEGER;
+CREATE TABLE activity_cycles (
+    id TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    last_progress_at TEXT NOT NULL,
+    ended_at TEXT,
+    end_reason TEXT,
+    active_duration_ms INTEGER NOT NULL DEFAULT 0,
+    evidence_level TEXT NOT NULL,
+    source_coverage TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    deleted_at TEXT
+);
+CREATE INDEX activity_cycles_session_idx
+    ON activity_cycles(agent, source_session_id, started_at DESC);
+CREATE INDEX activity_cycles_open_idx
+    ON activity_cycles(ended_at, started_at DESC);
+PRAGMA user_version = 15;
+COMMIT;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -512,25 +537,107 @@ pub struct CursorRecord {
 }
 
 #[derive(Debug)]
-struct CanonicalWaitingEvent {
+struct CanonicalLiveEvent {
     id: String,
     source_event_id: Option<String>,
+    source_sequence: Option<i64>,
     event_fingerprint: String,
     dedup_key: String,
     occurred_at: String,
     observed_at: String,
     agent: String,
     source_session_id: String,
+    lifecycle_status: String,
     live_phase: String,
+    event_type: String,
     source_event_name: String,
     project_label: String,
 }
 
-fn canonical_waiting_event(event: &ObservedLiveEvent) -> Option<CanonicalWaitingEvent> {
+fn canonical_event_kind(event: &ObservedLiveEvent) -> (&'static str, &'static str, &'static str) {
+    if event.status == "error" {
+        return if matches!(
+            event.event_name.as_str(),
+            "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        ) {
+            ("tool.error", "ToolError", "error")
+        } else {
+            ("lifecycle.error", "Error", "error")
+        };
+    }
+    if event.status == "waiting" {
+        return if event.event_name == "PermissionRequest" {
+            ("lifecycle.wait", "PermissionRequest", "waiting")
+        } else {
+            ("lifecycle.wait", "Waiting", "waiting")
+        };
+    }
+    match event.event_name.as_str() {
+        "SessionStart" => ("lifecycle.start", "SessionStart", "idle"),
+        "UserPromptSubmit" | "Resume" => ("lifecycle.resume", "Resume", "running"),
+        "PermissionRequest" => ("lifecycle.wait", "PermissionRequest", "waiting"),
+        "Stop" | "SessionEnd" => ("lifecycle.complete", "Completed", "completed"),
+        "TurnPaused" => ("lifecycle.pause", "Paused", "paused"),
+        "PreCompact" | "PostCompact" | "ContextCompact" => {
+            ("context.compact", "ContextCompact", "running")
+        }
+        "PreToolUse" => ("tool.start", "ToolStart", "running"),
+        "PostToolUse" => ("tool.finish", "ToolFinish", "running"),
+        "PostToolUseFailure" => ("tool.error", "ToolError", "error"),
+        "SubagentStart" => ("agent.start", "AgentStart", "running"),
+        "SubagentStop" => ("agent.stop", "AgentStop", "running"),
+        _ if event.status == "completed" => ("lifecycle.complete", "Completed", "completed"),
+        _ if event.status == "paused" => ("lifecycle.pause", "Paused", "paused"),
+        _ => ("activity.progress", "Activity", "running"),
+    }
+}
+
+fn canonical_live_phase(event: &ObservedLiveEvent, event_type: &str, status: &str) -> String {
+    match status {
+        "waiting" => return "needs-you".into(),
+        "error" => return "error".into(),
+        "completed" => return "completed".into(),
+        "paused" => return "paused".into(),
+        _ => {}
+    }
+    if event_type == "context.compact" {
+        return "compacting".into();
+    }
+    if event_type.starts_with("tool.") || event_type.starts_with("agent.") {
+        return event
+            .phase
+            .as_deref()
+            .filter(|phase| {
+                matches!(
+                    *phase,
+                    "planning" | "thinking" | "reading" | "editing" | "verifying" | "running-tool"
+                )
+            })
+            .unwrap_or("running-tool")
+            .into();
+    }
+    event
+        .phase
+        .as_deref()
+        .filter(|phase| {
+            matches!(
+                *phase,
+                "ready" | "planning" | "thinking" | "reading" | "editing" | "verifying"
+            )
+        })
+        .unwrap_or(if status == "idle" {
+            "ready"
+        } else {
+            "thinking"
+        })
+        .into()
+}
+
+fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent> {
     let exact_source = source_capabilities().iter().any(|capability| {
         capability.agent == event.agent && capability.live_capability == SourceLiveCapability::Exact
     });
-    if !exact_source || event.status != "waiting" {
+    if !exact_source {
         return None;
     }
     let occurred_at = DateTime::parse_from_rfc3339(&event.occurred_at)
@@ -542,14 +649,8 @@ fn canonical_waiting_event(event: &ObservedLiveEvent) -> Option<CanonicalWaiting
         .with_timezone(&Utc)
         .to_rfc3339_opts(SecondsFormat::AutoSi, true);
 
-    let source_event_name = match event.event_name.as_str() {
-        "PermissionRequest" => "PermissionRequest",
-        _ => "Waiting",
-    };
-    let live_phase = match event.phase.as_deref() {
-        Some("needs-you") => "needs-you",
-        _ => "needs-you",
-    };
+    let (event_type, source_event_name, lifecycle_status) = canonical_event_kind(event);
+    let live_phase = canonical_live_phase(event, event_type, lifecycle_status);
     let project_label = if event.project_label.contains(['/', '\\']) {
         format!(
             "private-{}",
@@ -565,48 +666,51 @@ fn canonical_waiting_event(event: &ObservedLiveEvent) -> Option<CanonicalWaiting
             event.source_session_id,
             source_event_name,
             occurred_at,
-            event.status,
+            lifecycle_status,
             live_phase,
         ))
     });
     let event_fingerprint = crate::privacy::stable_hash(&format!(
         "{}|{}|{}|{}",
-        event.agent, event.source_session_id, source_event_name, source_fingerprint,
+        event.agent, event.source_session_id, event_type, source_fingerprint,
     ));
     let dedup_identity = event
         .source_event_id
         .as_deref()
         .map(|source_event_id| {
             format!(
-                "source|{}|{}|{}",
-                event.agent, event.source_session_id, source_event_id
+                "source|{}|{}|{}|{}",
+                event.agent, event.source_session_id, event_type, source_event_id
             )
         })
         .unwrap_or_else(|| format!("episode|{event_fingerprint}|{observed_at}"));
     let dedup_key = crate::privacy::stable_hash(&dedup_identity);
 
-    Some(CanonicalWaitingEvent {
-        id: format!("waiting-{dedup_key}"),
+    Some(CanonicalLiveEvent {
+        id: format!("event-{dedup_key}"),
         source_event_id: event
             .source_event_id
             .as_deref()
             .map(crate::privacy::stable_hash),
+        source_sequence: event.source_sequence,
         event_fingerprint,
         dedup_key,
         occurred_at,
         observed_at,
         agent: event.agent.clone(),
         source_session_id: crate::privacy::safe_opaque_identifier(&event.source_session_id),
-        live_phase: live_phase.into(),
+        lifecycle_status: lifecycle_status.into(),
+        live_phase,
+        event_type: event_type.into(),
         source_event_name: source_event_name.into(),
         project_label,
     })
 }
 
-fn resolve_waiting_episode(
+fn resolve_live_episode(
     transaction: &Transaction<'_>,
     event: &ObservedLiveEvent,
-    canonical: &mut CanonicalWaitingEvent,
+    canonical: &mut CanonicalLiveEvent,
 ) -> AppResult<()> {
     if event.source_event_id.is_some() {
         return Ok(());
@@ -635,7 +739,7 @@ fn resolve_waiting_episode(
         .optional()?;
 
     if let Some((_, status, received_at, Some(id), Some(dedup_key), Some(fingerprint))) = &latest
-        && status == "waiting"
+        && status == &canonical.lifecycle_status
         && fingerprint == &canonical.event_fingerprint
         && DateTime::parse_from_rfc3339(&canonical.observed_at)
             .ok()
@@ -645,7 +749,7 @@ fn resolve_waiting_episode(
                     .signed_duration_since(previous)
                     .num_seconds()
                     .unsigned_abs()
-                    <= WAITING_REPLAY_WINDOW_SECONDS as u64
+                    <= LIVE_REPLAY_WINDOW_SECONDS as u64
             })
     {
         canonical.id = id.clone();
@@ -658,7 +762,251 @@ fn resolve_waiting_episode(
         "episode|{}|{}|{previous_raw_id}",
         canonical.event_fingerprint, canonical.observed_at,
     ));
-    canonical.id = format!("waiting-{}", canonical.dedup_key);
+    canonical.id = format!("event-{}", canonical.dedup_key);
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ActivityCycleAccumulator {
+    id: String,
+    started_at: String,
+    last_progress_at: String,
+}
+
+fn activity_duration_ms(started_at: &str, ended_at: &str) -> i64 {
+    DateTime::parse_from_rfc3339(ended_at)
+        .ok()
+        .zip(DateTime::parse_from_rfc3339(started_at).ok())
+        .map(|(ended, started)| {
+            ended
+                .signed_duration_since(started)
+                .num_milliseconds()
+                .max(0)
+        })
+        .unwrap_or_default()
+}
+
+fn insert_activity_cycle(
+    transaction: &Transaction<'_>,
+    agent: &str,
+    source_session_id: &str,
+    cycle: &ActivityCycleAccumulator,
+    ended_at: Option<&str>,
+    end_reason: Option<&str>,
+) -> AppResult<()> {
+    transaction.execute(
+        "INSERT INTO activity_cycles(
+            id, agent, source_session_id, started_at, last_progress_at,
+            ended_at, end_reason, active_duration_ms,
+            evidence_level, source_coverage, algorithm_version
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            cycle.id,
+            agent,
+            source_session_id,
+            cycle.started_at,
+            cycle.last_progress_at,
+            ended_at,
+            end_reason,
+            ended_at
+                .map(|ended_at| activity_duration_ms(&cycle.started_at, ended_at))
+                .unwrap_or_default(),
+            "observed",
+            "exact-lifecycle",
+            LIVE_NORMALIZER_VERSION,
+        ],
+    )?;
+    Ok(())
+}
+
+fn activity_end_reason(status: &str) -> Option<&'static str> {
+    match status {
+        "waiting" => Some("waiting"),
+        "paused" => Some("paused"),
+        "error" => Some("error"),
+        "completed" => Some("completed"),
+        _ => None,
+    }
+}
+
+fn append_activity_cycle_event(
+    transaction: &Transaction<'_>,
+    event: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    let open = transaction
+        .query_row(
+            "SELECT id, started_at, last_progress_at
+             FROM activity_cycles
+             WHERE agent=?1 AND source_session_id=?2
+               AND ended_at IS NULL AND deleted_at IS NULL
+             ORDER BY started_at DESC, id DESC
+             LIMIT 1",
+            params![event.agent, event.source_session_id],
+            |row| {
+                Ok(ActivityCycleAccumulator {
+                    id: row.get(0)?,
+                    started_at: row.get(1)?,
+                    last_progress_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()?;
+    let progresses = matches!(event.lifecycle_status.as_str(), "idle" | "running");
+
+    if progresses {
+        let cycle = if let Some(mut cycle) = open {
+            cycle.last_progress_at = event.occurred_at.clone();
+            transaction.execute(
+                "UPDATE activity_cycles SET last_progress_at=?1 WHERE id=?2",
+                params![cycle.last_progress_at, cycle.id],
+            )?;
+            cycle
+        } else {
+            let cycle = ActivityCycleAccumulator {
+                id: format!(
+                    "cycle-{}",
+                    crate::privacy::stable_hash(&format!(
+                        "{}|{}|{}",
+                        event.agent, event.source_session_id, event.id
+                    ))
+                ),
+                started_at: event.occurred_at.clone(),
+                last_progress_at: event.occurred_at.clone(),
+            };
+            insert_activity_cycle(
+                transaction,
+                &event.agent,
+                &event.source_session_id,
+                &cycle,
+                None,
+                None,
+            )?;
+            cycle
+        };
+        transaction.execute(
+            "UPDATE canonical_events SET activity_cycle_id=?1 WHERE id=?2",
+            params![cycle.id, event.id],
+        )?;
+    } else if let (Some(cycle), Some(reason)) = (open, activity_end_reason(&event.lifecycle_status))
+    {
+        transaction.execute(
+            "UPDATE canonical_events SET activity_cycle_id=?1 WHERE id=?2",
+            params![cycle.id, event.id],
+        )?;
+        transaction.execute(
+            "UPDATE activity_cycles
+             SET ended_at=?1, end_reason=?2, active_duration_ms=?3
+             WHERE id=?4",
+            params![
+                event.occurred_at,
+                reason,
+                activity_duration_ms(&cycle.started_at, &event.occurred_at),
+                cycle.id,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn update_activity_cycles(
+    transaction: &Transaction<'_>,
+    event: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    let latest_id = transaction.query_row(
+        "SELECT id
+         FROM canonical_events
+         WHERE agent=?1 AND source_session_id=?2 AND deleted_at IS NULL
+         ORDER BY occurred_at DESC,
+                  CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END DESC,
+                  source_sequence DESC, id DESC
+         LIMIT 1",
+        params![event.agent, event.source_session_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    if latest_id == event.id {
+        append_activity_cycle_event(transaction, event)
+    } else {
+        rebuild_activity_cycles(transaction, &event.agent, &event.source_session_id)
+    }
+}
+
+fn rebuild_activity_cycles(
+    transaction: &Transaction<'_>,
+    agent: &str,
+    source_session_id: &str,
+) -> AppResult<()> {
+    let events = {
+        let mut statement = transaction.prepare(
+            "SELECT id, occurred_at, lifecycle_status
+             FROM canonical_events
+             WHERE agent=?1 AND source_session_id=?2 AND deleted_at IS NULL
+             ORDER BY occurred_at,
+                      CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END,
+                      source_sequence, id",
+        )?;
+        statement
+            .query_map(params![agent, source_session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    transaction.execute(
+        "UPDATE canonical_events
+         SET activity_cycle_id=NULL
+         WHERE agent=?1 AND source_session_id=?2",
+        params![agent, source_session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM activity_cycles WHERE agent=?1 AND source_session_id=?2",
+        params![agent, source_session_id],
+    )?;
+
+    let mut active: Option<ActivityCycleAccumulator> = None;
+    for (event_id, occurred_at, status) in events {
+        let progresses = matches!(status.as_str(), "idle" | "running");
+        let end_reason = activity_end_reason(&status);
+
+        if progresses && active.is_none() {
+            active = Some(ActivityCycleAccumulator {
+                id: format!(
+                    "cycle-{}",
+                    crate::privacy::stable_hash(&format!("{agent}|{source_session_id}|{event_id}"))
+                ),
+                started_at: occurred_at.clone(),
+                last_progress_at: occurred_at.clone(),
+            });
+        }
+        let Some(cycle) = active.as_mut() else {
+            continue;
+        };
+        if progresses {
+            cycle.last_progress_at = occurred_at.clone();
+        }
+        transaction.execute(
+            "UPDATE canonical_events SET activity_cycle_id=?1 WHERE id=?2",
+            params![cycle.id, event_id],
+        )?;
+        if let Some(reason) = end_reason
+            && let Some(completed) = active.take()
+        {
+            insert_activity_cycle(
+                transaction,
+                agent,
+                source_session_id,
+                &completed,
+                Some(&occurred_at),
+                Some(reason),
+            )?;
+        }
+    }
+    if let Some(active) = active {
+        insert_activity_cycle(transaction, agent, source_session_id, &active, None, None)?;
+    }
     Ok(())
 }
 
@@ -678,6 +1026,7 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
         (12, MIGRATION_V12),
         (13, MIGRATION_V13),
         (14, MIGRATION_V14),
+        (15, MIGRATION_V15),
     ] {
         if version < target_version {
             connection.execute_batch(migration)?;
@@ -747,7 +1096,7 @@ fn database_header_version(path: &Path) -> AppResult<i64> {
     ) as i64)
 }
 
-fn validate_v14_connection(connection: &Connection) -> AppResult<()> {
+fn validate_current_connection(connection: &Connection) -> AppResult<()> {
     let quick_check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let canonical_columns: i64 = connection.query_row(
@@ -755,7 +1104,7 @@ fn validate_v14_connection(connection: &Connection) -> AppResult<()> {
          WHERE name IN (
             'id', 'dedup_key', 'protocol_version', 'schema_version',
             'occurred_at', 'observed_at', 'evidence_level',
-            'source_coverage', 'privacy_level'
+            'source_coverage', 'privacy_level', 'source_sequence'
          )",
         [],
         |row| row.get(0),
@@ -766,10 +1115,20 @@ fn validate_v14_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let activity_cycle_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('activity_cycles')
+         WHERE name IN (
+            'id', 'started_at', 'last_progress_at', 'ended_at',
+            'end_reason', 'active_duration_ms', 'evidence_level', 'source_coverage'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
-        || canonical_columns != 9
+        || canonical_columns != 10
         || live_link_columns != 1
+        || activity_cycle_columns != 8
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -778,12 +1137,12 @@ fn validate_v14_connection(connection: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_v14_database(path: &Path) -> AppResult<()> {
+fn validate_current_database(path: &Path) -> AppResult<()> {
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    validate_v14_connection(&connection)
+    validate_current_connection(&connection)
 }
 
 fn validate_legacy_database(path: &Path) -> AppResult<()> {
@@ -880,7 +1239,7 @@ fn recover_schema_migration_state(path: &Path) -> AppResult<()> {
                 remove_file_if_exists(&original)?;
             }
         }
-        if validate_v14_database(path).is_ok() {
+        if validate_current_database(path).is_ok() {
             return cleanup_migration_artifacts(&staging, &rollback, &marker);
         }
     }
@@ -927,7 +1286,7 @@ fn create_migration_marker(marker: &Path) -> AppResult<std::fs::File> {
     file.try_lock().map_err(|_| {
         AppError::InvalidRequest("database migration marker could not be locked".into())
     })?;
-    file.write_all(b"v14\n")?;
+    file.write_all(format!("v{DATABASE_SCHEMA_VERSION}\n").as_bytes())?;
     file.sync_all()?;
     Ok(file)
 }
@@ -962,7 +1321,7 @@ fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
         let version: i64 = staged.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         apply_schema_migrations(&staged, version)?;
         staged.pragma_update(None, "journal_mode", "DELETE")?;
-        validate_v14_connection(&staged)?;
+        validate_current_connection(&staged)?;
         drop(staged);
 
         create_rollback_artifact(path, &rollback)?;
@@ -970,7 +1329,7 @@ fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
         migration_lock.execute_batch("COMMIT")?;
         drop(migration_lock);
         archive_source_sidecars(path, &rollback)?;
-        validate_v14_database(path)?;
+        validate_current_database(path)?;
         installed_validated = true;
         cleanup_migration_artifacts(&staging, &rollback, &marker)
     })();
@@ -1536,6 +1895,7 @@ impl Database {
              DELETE FROM share_exports;
              DELETE FROM vcti_profile_snapshots;
              DELETE FROM live_events;
+             DELETE FROM activity_cycles;
              DELETE FROM canonical_events;
              DELETE FROM live_session_metrics;
              DELETE FROM excluded_projects;",
@@ -1657,6 +2017,7 @@ impl Database {
             agent: agent.into(),
             source_session_id: source_session_id.into(),
             source_event_id: None,
+            source_sequence: None,
             source_event_fingerprint: Some(crate::privacy::stable_hash(&format!(
                 "{agent}|{source_session_id}|{event_name}|{status}"
             ))),
@@ -1671,9 +2032,9 @@ impl Database {
     pub fn record_observed_live_event(&self, event: &ObservedLiveEvent) -> AppResult<()> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
-        let mut canonical = canonical_waiting_event(event);
+        let mut canonical = canonical_live_event(event);
         if let Some(canonical) = &mut canonical {
-            resolve_waiting_episode(&transaction, event, canonical)?;
+            resolve_live_episode(&transaction, event, canonical)?;
         }
         let canonical_inserted = if let Some(canonical) = &canonical {
             transaction.execute(
@@ -1681,11 +2042,12 @@ impl Database {
                     id, source_event_id, event_fingerprint, dedup_key,
                     protocol_version, schema_version, algorithm_version,
                     occurred_at, observed_at, source, agent, source_session_id,
+                    source_sequence,
                     lifecycle_status, live_phase, event_type, source_event_name,
-                    evidence_level, source_coverage, privacy_level, project_label
+                    process_phase, evidence_level, source_coverage, privacy_level, project_label
                  ) VALUES(
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                    ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                    ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
                  ) ON CONFLICT(dedup_key) DO NOTHING",
                 params![
                     canonical.id,
@@ -1700,10 +2062,12 @@ impl Database {
                     "live-hook",
                     canonical.agent,
                     canonical.source_session_id,
-                    "waiting",
+                    canonical.source_sequence,
+                    canonical.lifecycle_status,
                     canonical.live_phase,
-                    "attention.waiting",
+                    canonical.event_type,
                     canonical.source_event_name,
+                    canonical.live_phase,
                     "observed",
                     "exact-lifecycle",
                     "normalized-local",
@@ -1717,6 +2081,10 @@ impl Database {
             .as_ref()
             .map(|value| value.project_label.as_str())
             .unwrap_or(&event.project_label);
+        let lifecycle_status = canonical
+            .as_ref()
+            .map(|value| value.lifecycle_status.as_str())
+            .unwrap_or(&event.status);
         transaction.execute(
             "INSERT INTO live_events(
                 received_at, expires_at, agent, source_session_id,
@@ -1730,10 +2098,13 @@ impl Database {
                 event.event_name,
                 visible_project_label,
                 event.payload_json,
-                event.status,
+                lifecycle_status,
                 canonical.as_ref().map(|value| value.id.as_str()),
             ],
         )?;
+        if canonical_inserted && let Some(canonical) = &canonical {
+            update_activity_cycles(&transaction, canonical)?;
+        }
         if canonical.is_none() || canonical_inserted {
             transaction.execute(
                 "INSERT INTO live_session_metrics(
@@ -1750,9 +2121,9 @@ impl Database {
                     event.agent,
                     event.source_session_id,
                     event.observed_at,
-                    i64::from(event.status == "waiting"),
-                    i64::from(event.status == "error"),
-                    i64::from(event.status == "completed"),
+                    i64::from(lifecycle_status == "waiting"),
+                    i64::from(lifecycle_status == "error"),
+                    i64::from(lifecycle_status == "completed"),
                 ],
             )?;
         }
@@ -2017,6 +2388,14 @@ impl Database {
              )",
             params![cursor_marker],
         )?;
+        transaction.execute(
+            "DELETE FROM activity_cycles
+             WHERE id NOT IN (
+                SELECT activity_cycle_id FROM canonical_events
+                WHERE activity_cycle_id IS NOT NULL
+             )",
+            [],
+        )?;
         let removed = transaction.execute(
             "DELETE FROM live_events
              WHERE agent='claude-code'
@@ -2054,6 +2433,14 @@ impl Database {
                   AND canonical_event_id IS NOT NULL
              )",
             params![memory_marker],
+        )?;
+        transaction.execute(
+            "DELETE FROM activity_cycles
+             WHERE id NOT IN (
+                SELECT activity_cycle_id FROM canonical_events
+                WHERE activity_cycle_id IS NOT NULL
+             )",
+            [],
         )?;
         let removed = transaction.execute(
             "DELETE FROM live_events
@@ -2099,6 +2486,14 @@ impl Database {
                 session_ids[2],
                 session_ids[3]
             ],
+        )?;
+        transaction.execute(
+            "DELETE FROM activity_cycles
+             WHERE id NOT IN (
+                SELECT activity_cycle_id FROM canonical_events
+                WHERE activity_cycle_id IS NOT NULL
+             )",
+            [],
         )?;
         let removed = transaction.execute(
             "DELETE FROM live_events
@@ -5426,6 +5821,7 @@ mod concurrency_tests {
                     event_name, project_label, payload_json, status
                    FROM live_events_v14;
                  DROP TABLE live_events_v14;
+                 DROP TABLE activity_cycles;
                  DROP TABLE canonical_events;
                  CREATE INDEX live_events_expiry_idx ON live_events(expires_at);
                  CREATE INDEX live_events_session_idx
@@ -5439,6 +5835,33 @@ mod concurrency_tests {
                 .execute("CREATE VIEW canonical_events AS SELECT 1 AS id", [])
                 .expect("incompatible view should be created");
         }
+    }
+
+    fn create_v14_live_database(path: &Path) {
+        let database = Database::open(path.to_path_buf()).expect("fixture database should open");
+        database
+            .record_live_event(
+                "2026-08-10T00:00:00Z",
+                "2026-08-17T00:00:00Z",
+                "codex",
+                "v14-session",
+                "PermissionRequest",
+                "project",
+                "{}",
+                "waiting",
+            )
+            .expect("v14 waiting event should persist");
+        drop(database);
+
+        let connection = Connection::open(path).expect("v14 database should reopen");
+        connection
+            .execute_batch(
+                "UPDATE canonical_events SET schema_version=14;
+                 DROP TABLE activity_cycles;
+                 ALTER TABLE canonical_events DROP COLUMN source_sequence;
+                 PRAGMA user_version = 14;",
+            )
+            .expect("v14 fixture schema should be restored");
     }
 
     fn assert_no_schema_migration_artifacts(path: &Path) {
@@ -5466,6 +5889,8 @@ mod concurrency_tests {
             },
             started_at: started_at.into(),
             updated_at: updated_at.into(),
+            activity_ended_at: (!matches!(status, "idle" | "running")).then(|| updated_at.into()),
+            event_order_key: String::new(),
             waiting_reason: None,
             actions: Vec::new(),
             process_id: None,
@@ -5587,6 +6012,7 @@ mod concurrency_tests {
             agent: "codex".into(),
             source_session_id: "source-session".into(),
             source_event_id: Some("permission-1".into()),
+            source_sequence: None,
             source_event_fingerprint: None,
             event_name: "PermissionRequest".into(),
             project_label: "project".into(),
@@ -5654,14 +6080,14 @@ mod concurrency_tests {
         assert_eq!(canonical.1, occurred_at);
         assert_eq!(canonical.2, first_observed_at);
         assert_eq!(canonical.3, "1.0.0");
-        assert_eq!(canonical.4, 14);
+        assert_eq!(canonical.4, 15);
         assert_eq!(canonical.5, "live-normalizer-1.0.0");
         assert_eq!(canonical.6, "observed");
         assert_eq!(canonical.7, "exact-lifecycle");
         assert_eq!(canonical.8, "normalized-local");
         assert_eq!(canonical.9, "waiting");
         assert_eq!(canonical.10, "needs-you");
-        assert_eq!(canonical.11, "attention.waiting");
+        assert_eq!(canonical.11, "lifecycle.wait");
         assert_eq!(canonical.12, "PermissionRequest");
         assert_eq!(payload_columns, 0);
         assert_eq!(metrics, (1, 1));
@@ -5695,6 +6121,7 @@ mod concurrency_tests {
             agent: "claude-code".into(),
             source_session_id: "fingerprint-session".into(),
             source_event_id: None,
+            source_sequence: None,
             source_event_fingerprint: Some("stable-private-payload-hash".into()),
             event_name: "Notification".into(),
             project_label: "project".into(),
@@ -5734,6 +6161,7 @@ mod concurrency_tests {
             agent: "claude-code".into(),
             source_session_id: "resumed-session".into(),
             source_event_id: None,
+            source_sequence: None,
             source_event_fingerprint: Some(if status == "waiting" {
                 "stable-waiting-fingerprint".into()
             } else {
@@ -5766,11 +6194,386 @@ mod concurrency_tests {
 
         let connection = database.connect().expect("database should connect");
         let canonical_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM canonical_events WHERE lifecycle_status='waiting'",
+                [],
+                |row| row.get(0),
+            )
             .expect("canonical count should load");
         assert_eq!(canonical_count, 2);
+    }
+
+    #[test]
+    fn exact_lifecycle_events_form_resumable_activity_cycles() {
+        for agent in ["claude-code", "codex"] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let path = temporary.path().join(format!("{agent}-lifecycle.sqlite"));
+            let database = Database::open(path).expect("database should open");
+            let events = [
+                ("00", "SessionStart", "idle", Some("ready")),
+                ("01", "UserPromptSubmit", "running", Some("thinking")),
+                ("02", "PreToolUse", "running", Some("running-tool")),
+                ("03", "PostToolUse", "running", Some("running-tool")),
+                ("04", "Notification", "waiting", Some("needs-you")),
+                ("05", "UserPromptSubmit", "running", Some("thinking")),
+                ("06", "PreCompact", "running", Some("compacting")),
+                ("07", "SubagentStart", "running", Some("running-tool")),
+                ("08", "SubagentStop", "running", Some("running-tool")),
+                ("09", "PostToolUseFailure", "error", Some("error")),
+                ("10", "UserPromptSubmit", "running", Some("thinking")),
+                ("11", "Stop", "completed", Some("completed")),
+            ];
+
+            let insertion_order = if agent == "codex" {
+                vec![4, 2, 0, 3, 1, 9, 7, 5, 8, 6, 11, 10]
+            } else {
+                (0..events.len()).collect::<Vec<_>>()
+            };
+            for index in insertion_order {
+                let (second, event_name, status, phase) = events[index];
+                let occurred_at = format!("2026-08-10T00:00:{second}Z");
+                let event = ObservedLiveEvent {
+                    occurred_at: occurred_at.clone(),
+                    observed_at: occurred_at,
+                    expires_at: "2026-08-17T00:00:00Z".into(),
+                    agent: agent.into(),
+                    source_session_id: "lifecycle-session".into(),
+                    source_event_id: Some(format!("{agent}-event-{index}")),
+                    source_sequence: None,
+                    source_event_fingerprint: None,
+                    event_name: event_name.into(),
+                    project_label: "project".into(),
+                    payload_json: r#"{"prompt":"private","command":"private"}"#.into(),
+                    status: status.into(),
+                    phase: phase.map(str::to_string),
+                };
+                database
+                    .record_observed_live_event(&event)
+                    .expect("exact lifecycle event should persist");
+                if event_name == "Notification" {
+                    database
+                        .record_observed_live_event(&event)
+                        .expect("duplicate waiting event should be idempotent");
+                }
+            }
+
+            let connection = database.connect().expect("database should connect");
+            let canonical = connection
+                .prepare(
+                    "SELECT event_type, lifecycle_status, activity_cycle_id
+                     FROM canonical_events
+                     WHERE agent=?1 AND source_session_id='lifecycle-session'
+                     ORDER BY occurred_at, id",
+                )
+                .expect("canonical query should prepare")
+                .query_map(params![agent], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .expect("canonical lifecycle should load")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("canonical lifecycle should collect");
+            let cycles = connection
+                .prepare(
+                    "SELECT started_at, last_progress_at, ended_at, end_reason,
+                            active_duration_ms, evidence_level, source_coverage
+                     FROM activity_cycles
+                     WHERE agent=?1 AND source_session_id='lifecycle-session'
+                     ORDER BY started_at, id",
+                )
+                .expect("activity-cycle query should prepare")
+                .query_map(params![agent], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .expect("activity cycles should load")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("activity cycles should collect");
+            drop(connection);
+
+            assert_eq!(canonical.len(), events.len());
+            assert!(canonical.iter().all(|event| event.2.is_some()));
+            assert_eq!(
+                canonical
+                    .iter()
+                    .map(|event| event.0.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "lifecycle.start",
+                    "lifecycle.resume",
+                    "tool.start",
+                    "tool.finish",
+                    "lifecycle.wait",
+                    "lifecycle.resume",
+                    "context.compact",
+                    "agent.start",
+                    "agent.stop",
+                    "tool.error",
+                    "lifecycle.resume",
+                    "lifecycle.complete",
+                ]
+            );
+            assert_eq!(cycles.len(), 3);
+            assert_eq!(cycles[0].0, "2026-08-10T00:00:00Z");
+            assert_eq!(cycles[0].1, "2026-08-10T00:00:03Z");
+            assert_eq!(cycles[0].2.as_deref(), Some("2026-08-10T00:00:04Z"));
+            assert_eq!(cycles[0].3.as_deref(), Some("waiting"));
+            assert_eq!(cycles[0].4, 4_000);
+            assert_eq!(cycles[1].0, "2026-08-10T00:00:05Z");
+            assert_eq!(cycles[1].1, "2026-08-10T00:00:08Z");
+            assert_eq!(cycles[1].3.as_deref(), Some("error"));
+            assert_eq!(cycles[2].0, "2026-08-10T00:00:10Z");
+            assert_eq!(cycles[2].1, "2026-08-10T00:00:10Z");
+            assert_eq!(cycles[2].3.as_deref(), Some("completed"));
+            assert!(
+                cycles
+                    .iter()
+                    .all(|cycle| cycle.5 == "observed" && cycle.6 == "exact-lifecycle")
+            );
+
+            let activity = database.live_activity().expect("live activity should load");
+            assert_eq!(activity.timeline.len(), events.len());
+            let public_json = serde_json::to_string(&activity).expect("activity should serialize");
+            assert!(!public_json.contains("private"));
+            assert!(!public_json.contains("prompt"));
+            assert!(!public_json.contains("command"));
+        }
+    }
+
+    #[test]
+    fn exact_lifecycle_normalization_closes_unknown_and_private_fields() {
+        for agent in ["claude-code", "codex"] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let database = Database::open(temporary.path().join(format!("{agent}-private.sqlite")))
+                .expect("database should open");
+            database
+                .record_observed_live_event(&ObservedLiveEvent {
+                    occurred_at: "2026-08-10T00:01:00Z".into(),
+                    observed_at: "2026-08-10T00:01:01Z".into(),
+                    expires_at: "2026-08-17T00:00:00Z".into(),
+                    agent: agent.into(),
+                    source_session_id: "/Users/private/session".into(),
+                    source_event_id: Some(format!("{agent}-private-event")),
+                    source_sequence: None,
+                    source_event_fingerprint: None,
+                    event_name: "private prompt and command".into(),
+                    project_label: "/Users/private/project".into(),
+                    payload_json: r#"{"prompt":"secret","command":"secret","tool_arguments":{"path":"/Users/private"}}"#.into(),
+                    status: "private-status".into(),
+                    phase: Some("private-phase".into()),
+                })
+                .expect("private lifecycle envelope should normalize");
+
+            let connection = database.connect().expect("database should connect");
+            let canonical: (String, String, String, String, String) = connection
+                .query_row(
+                    "SELECT event_type, source_event_name, lifecycle_status,
+                            live_phase, project_label
+                     FROM canonical_events",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .expect("canonical event should load");
+            drop(connection);
+            assert_eq!(canonical.0, "activity.progress");
+            assert_eq!(canonical.1, "Activity");
+            assert_eq!(canonical.2, "running");
+            assert_eq!(canonical.3, "thinking");
+            assert!(canonical.4.starts_with("private-"));
+
+            let public_json = serde_json::to_string(
+                &database.live_activity().expect("live activity should load"),
+            )
+            .expect("activity should serialize");
+            for private_value in [
+                "private prompt",
+                "private-status",
+                "private-phase",
+                "/Users/private",
+                "tool_arguments",
+            ] {
+                assert!(!public_json.contains(private_value));
+            }
+        }
+    }
+
+    #[test]
+    fn shared_tool_use_id_preserves_each_tool_lifecycle_event() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("shared-tool-id.sqlite"))
+            .expect("database should open");
+        for (sequence, event_name, status) in [
+            (1, "PreToolUse", "running"),
+            (2, "PostToolUse", "running"),
+            (3, "PostToolUseFailure", "error"),
+        ] {
+            database
+                .record_observed_live_event(&ObservedLiveEvent {
+                    occurred_at: format!("2026-08-10T00:02:0{sequence}Z"),
+                    observed_at: format!("2026-08-10T00:02:0{sequence}Z"),
+                    expires_at: "2026-08-17T00:00:00Z".into(),
+                    agent: "codex".into(),
+                    source_session_id: "shared-tool-session".into(),
+                    source_event_id: Some("tool-use-1".into()),
+                    source_sequence: Some(sequence),
+                    source_event_fingerprint: None,
+                    event_name: event_name.into(),
+                    project_label: "project".into(),
+                    payload_json: "{}".into(),
+                    status: status.into(),
+                    phase: Some(if status == "error" {
+                        "error".into()
+                    } else {
+                        "running-tool".into()
+                    }),
+                })
+                .expect("tool lifecycle event should persist");
+        }
+
+        let connection = database.connect().expect("database should connect");
+        let event_types = connection
+            .prepare("SELECT event_type FROM canonical_events ORDER BY source_sequence")
+            .expect("event query should prepare")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("events should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("events should collect");
+        assert_eq!(event_types, ["tool.start", "tool.finish", "tool.error"]);
+    }
+
+    #[test]
+    fn source_sequence_orders_same_time_resume_before_waiting() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("same-time-sequence.sqlite"))
+            .expect("database should open");
+        let event = |source_event_id: &str,
+                     sequence: i64,
+                     event_name: &str,
+                     status: &str,
+                     occurred_at: &str| ObservedLiveEvent {
+            occurred_at: occurred_at.into(),
+            observed_at: occurred_at.into(),
+            expires_at: "2026-08-17T00:00:00Z".into(),
+            agent: "claude-code".into(),
+            source_session_id: "same-time-session".into(),
+            source_event_id: Some(source_event_id.into()),
+            source_sequence: Some(sequence),
+            source_event_fingerprint: None,
+            event_name: event_name.into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(if status == "waiting" {
+                "needs-you".into()
+            } else {
+                "thinking".into()
+            }),
+        };
+        database
+            .record_observed_live_event(&event(
+                "start",
+                0,
+                "SessionStart",
+                "idle",
+                "2026-08-10T00:03:00Z",
+            ))
+            .expect("start should persist");
+        database
+            .record_observed_live_event(&event(
+                "wait",
+                2,
+                "PermissionRequest",
+                "waiting",
+                "2026-08-10T00:03:01Z",
+            ))
+            .expect("waiting should persist");
+        database
+            .record_observed_live_event(&event(
+                "resume",
+                1,
+                "UserPromptSubmit",
+                "running",
+                "2026-08-10T00:03:01Z",
+            ))
+            .expect("out-of-order resume should rebuild deterministically");
+
+        let connection = database.connect().expect("database should connect");
+        let cycle: (i64, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT COUNT(*), MAX(ended_at), MAX(end_reason) FROM activity_cycles",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("cycle should load");
+        assert_eq!(cycle.0, 1);
+        assert_eq!(cycle.1.as_deref(), Some("2026-08-10T00:03:01Z"));
+        assert_eq!(cycle.2.as_deref(), Some("waiting"));
+    }
+
+    #[test]
+    fn ordered_activity_events_append_without_rebuilding_prior_cycles() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("incremental-cycle.sqlite"))
+            .expect("database should open");
+        let event = |id: &str, sequence: i64, time: &str| ObservedLiveEvent {
+            occurred_at: time.into(),
+            observed_at: time.into(),
+            expires_at: "2026-08-17T00:00:00Z".into(),
+            agent: "codex".into(),
+            source_session_id: "incremental-session".into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(sequence),
+            source_event_fingerprint: None,
+            event_name: "UserPromptSubmit".into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: "running".into(),
+            phase: Some("thinking".into()),
+        };
+        database
+            .record_observed_live_event(&event("first", 1, "2026-08-10T00:04:00Z"))
+            .expect("first event should open a cycle");
+        database
+            .connect()
+            .expect("database should connect")
+            .execute_batch(
+                "CREATE TRIGGER reject_activity_cycle_rebuild
+                 BEFORE DELETE ON activity_cycles
+                 BEGIN SELECT RAISE(FAIL, 'ordered append rebuilt cycles'); END;",
+            )
+            .expect("rebuild guard should install");
+        database
+            .record_observed_live_event(&event("second", 2, "2026-08-10T00:04:01Z"))
+            .expect("ordered event should append without a full rebuild");
+
+        let connection = database.connect().expect("database should connect");
+        let counts: (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM activity_cycles),
+                        (SELECT COUNT(*) FROM canonical_events WHERE activity_cycle_id IS NOT NULL)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("cycle counts should load");
+        assert_eq!(counts, (1, 2));
     }
 
     #[test]
@@ -5792,6 +6595,7 @@ mod concurrency_tests {
             agent: "codex".into(),
             source_session_id: "time-order-session".into(),
             source_event_id: Some(source_event_id.into()),
+            source_sequence: None,
             source_event_fingerprint: None,
             event_name: "PermissionRequest".into(),
             project_label: "project".into(),
@@ -5880,8 +6684,57 @@ mod concurrency_tests {
         assert_eq!(second_sessions.items[0].title, "Legacy indexed session");
         assert_eq!(second_detail.file_changes.len(), 1);
         assert_eq!(canonical_count, 0);
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
         assert_no_schema_migration_artifacts(temporary.path().join("legacy-live.sqlite").as_path());
+    }
+
+    #[test]
+    fn v14_canonical_events_remain_visible_after_activity_cycle_upgrade() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("v14-live.sqlite");
+        create_v14_live_database(&path);
+
+        let upgraded = Database::open(path.clone()).expect("v14 database should upgrade");
+        let first = upgraded.live_activity().expect("v14 activity should load");
+        let connection = upgraded.connect().expect("database should connect");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version should load");
+        let cycle_table: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='activity_cycles'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("activity cycle table should exist");
+        let canonical_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
+                row.get(0)
+            })
+            .expect("canonical count should load");
+        drop(connection);
+        drop(upgraded);
+
+        let reopened = Database::open(path.clone()).expect("upgraded database should reopen");
+        let second = reopened
+            .live_activity()
+            .expect("activity should remain visible");
+        let reopened_count: i64 = reopened
+            .connect()
+            .expect("database should connect")
+            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
+                row.get(0)
+            })
+            .expect("canonical count should remain stable");
+
+        assert_eq!(version, 15);
+        assert_eq!(cycle_table, 1);
+        assert_eq!(canonical_count, 1);
+        assert_eq!(reopened_count, canonical_count);
+        assert_eq!(first.timeline.len(), 1);
+        assert_eq!(second.timeline.len(), 1);
+        assert_no_schema_migration_artifacts(&path);
     }
 
     #[test]
@@ -5949,7 +6802,7 @@ mod concurrency_tests {
         staged
             .pragma_update(None, "journal_mode", "DELETE")
             .expect("staging should checkpoint");
-        validate_v14_connection(&staged).expect("staging should validate");
+        validate_current_connection(&staged).expect("staging should validate");
         drop(staged);
         std::fs::hard_link(&path, &rollback).expect("rollback link should persist");
         create_migration_marker(&marker).expect("migration marker should persist");
@@ -5962,7 +6815,7 @@ mod concurrency_tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version should load");
 
-        assert_eq!(version, 14);
+        assert_eq!(version, 15);
         assert_no_schema_migration_artifacts(&path);
     }
 
@@ -6086,6 +6939,7 @@ mod concurrency_tests {
             agent: "codex".into(),
             source_session_id: "/Users/private/work/private-session".into(),
             source_event_id: Some("request-private-value".into()),
+            source_sequence: None,
             source_event_fingerprint: None,
             event_name: "prompt-private-value".into(),
             project_label: "/Users/private/work/project".into(),
@@ -6709,8 +7563,10 @@ mod concurrency_tests {
 
         let activity = database.live_activity().expect("live activity");
         assert_eq!(activity.timeline.len(), 2);
-        assert_eq!(activity.timeline[0].event_name, "LaterEvent");
-        assert_eq!(activity.timeline[1].event_name, "EarlierEvent");
+        assert_eq!(activity.timeline[0].event_name, "Activity");
+        assert_eq!(activity.timeline[0].source_session_id, "later-session");
+        assert_eq!(activity.timeline[1].event_name, "Activity");
+        assert_eq!(activity.timeline[1].source_session_id, "earlier-session");
     }
 
     #[test]
@@ -6775,7 +7631,7 @@ mod concurrency_tests {
             .expect("canonical event count");
         assert_eq!(memory_metrics, 0);
         assert_eq!(real_metrics, 1);
-        assert_eq!(canonical_events, 0);
+        assert_eq!(canonical_events, 1);
     }
 
     #[test]

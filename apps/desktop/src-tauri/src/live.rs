@@ -6,7 +6,7 @@ use crate::models::{
     NotchCompletedSession, ObservedLiveEvent,
 };
 use crate::providers::{codex_binary, write_json_line};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -381,12 +381,30 @@ impl LiveMonitor {
                 }
                 let updates = poll_codex_transcripts(&transcript_watches, &transcript_sessions);
                 for (session_id, signal, live_append) in updates {
+                    let signal_for_recording = signal.clone();
                     let transition = merge_codex_metadata(
                         &transcript_sessions,
                         &session_id,
                         signal,
                         live_append,
                     );
+                    if live_append
+                        && signal_for_recording.status == "paused"
+                        && let Some(session) = transcript_sessions
+                            .read()
+                            .ok()
+                            .and_then(|items| items.get(&session_id).cloned())
+                        && session.updated_at == signal_for_recording.occurred_at
+                        && session.status == signal_for_recording.status
+                        && session.phase == signal_for_recording.phase
+                    {
+                        let observed = observed_live_event_from_codex_metadata(
+                            &session,
+                            &signal_for_recording,
+                            Utc::now().to_rfc3339(),
+                        );
+                        let _ = transcript_database.record_observed_live_event(&observed);
+                    }
                     if transition.as_deref() == Some("completed")
                         && let Some(session) = transcript_sessions
                             .read()
@@ -1526,7 +1544,7 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
     let received_at = object
         .get("received_at")
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .and_then(normalize_live_timestamp)
         .unwrap_or_else(|| Utc::now().to_rfc3339());
     let source_session_id = string_field(payload, &["session_id", "sessionId", "thread_id"])
         .filter(|value| !value.is_empty())
@@ -1544,7 +1562,12 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
     }
     let cwd = string_field(payload, &["cwd", "working_directory"]).unwrap_or_default();
     let project_label = project_label_from_cwd(&cwd);
-    let tool = string_field(payload, &["tool_name", "tool"]).unwrap_or_default();
+    let raw_tool = string_field(payload, &["tool_name", "tool"]).unwrap_or_default();
+    let tool = if raw_tool.is_empty() {
+        String::new()
+    } else {
+        crate::privacy::sanitize_tool_name(&raw_tool)
+    };
     let notification_type =
         string_field(payload, &["notification_type", "notificationType"]).unwrap_or_default();
     let error = event_name == "PostToolUseFailure"
@@ -1574,6 +1597,14 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
         "running"
     };
     let (phase, action_kind) = phase_for(&event_name, &tool, status);
+    let occurred_at = string_field(
+        payload,
+        &["timestamp", "occurred_at", "occurredAt", "created_at"],
+    )
+    .as_deref()
+    .and_then(normalize_live_timestamp)
+    .unwrap_or(received_at);
+    let event_order_key = source_event_order_key(payload, &event_name, status, phase, &tool);
     let waiting_reason = if status == "waiting" {
         Some(if tool.is_empty() {
             "Permission required".into()
@@ -1594,17 +1625,19 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
         conversation_title: None,
         status: status.into(),
         phase: phase.into(),
-        started_at: received_at.clone(),
-        updated_at: received_at.clone(),
+        started_at: occurred_at.clone(),
+        updated_at: occurred_at.clone(),
+        activity_ended_at: (!matches!(status, "idle" | "running")).then(|| occurred_at.clone()),
+        event_order_key,
         waiting_reason,
         actions: vec![LiveAction {
             kind: action_kind.into(),
             label: if tool.is_empty() {
-                event_name.clone()
+                visible_live_event_label(&event_name, status).into()
             } else {
                 tool
             },
-            occurred_at: received_at,
+            occurred_at,
         }],
         process_id: object
             .get("process_id")
@@ -1631,16 +1664,19 @@ fn observed_live_event_from_envelope(
     observed_at: String,
 ) -> ObservedLiveEvent {
     let payload = envelope.get("payload").and_then(Value::as_object);
-    let occurred_at = payload
+    let source_time = payload
         .and_then(|payload| {
             string_field(
                 payload,
                 &["timestamp", "occurred_at", "occurredAt", "created_at"],
             )
         })
-        .filter(|value| DateTime::parse_from_rfc3339(value).is_ok())
+        .as_deref()
+        .and_then(normalize_live_timestamp);
+    let occurred_at = source_time
+        .clone()
         .unwrap_or_else(|| session.updated_at.clone());
-    let source_event_id = payload.and_then(|payload| {
+    let explicit_source_event_id = payload.and_then(|payload| {
         string_field(
             payload,
             &[
@@ -1653,18 +1689,58 @@ fn observed_live_event_from_envelope(
             ],
         )
     });
+    let source_sequence = payload.and_then(|payload| {
+        ["sequence", "event_sequence", "eventSequence", "seq"]
+            .iter()
+            .find_map(|key| payload.get(*key))
+            .and_then(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| i64::try_from(value).ok())
+                    .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+            })
+    });
+    let safe_tool = payload
+        .and_then(|payload| string_field(payload, &["tool_name", "tool"]))
+        .as_deref()
+        .and_then(safe_tool_name)
+        .unwrap_or_default();
+    let source_event_id = explicit_source_event_id.or_else(|| {
+        source_time.as_ref().map(|source_time| {
+            format!(
+                "derived-{}",
+                crate::privacy::stable_hash(&format!(
+                    "{}|{}|{}|{}|{}|{}|{}",
+                    session.agent,
+                    session.source_session_id,
+                    event_name,
+                    source_time,
+                    source_sequence
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                    safe_tool,
+                    session.phase,
+                ))
+            )
+        })
+    });
     let source_event_fingerprint = payload.map(|payload| {
         let notification_kind = string_field(payload, &["notification_type", "notificationType"])
             .filter(|value| matches!(value.as_str(), "permission_prompt" | "idle_prompt"))
             .unwrap_or_default();
         crate::privacy::stable_hash(&format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
             session.agent,
             session.source_session_id,
             event_name,
             session.status,
             session.phase,
             notification_kind,
+            source_time.as_deref().unwrap_or_default(),
+            source_sequence
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            safe_tool,
         ))
     });
     let expires_at = DateTime::parse_from_rfc3339(&observed_at)
@@ -1678,12 +1754,66 @@ fn observed_live_event_from_envelope(
         agent: session.agent.clone(),
         source_session_id: session.source_session_id.clone(),
         source_event_id,
+        source_sequence,
         source_event_fingerprint,
         event_name,
         project_label: session.project_label.clone(),
         payload_json,
         status: session.status.clone(),
         phase: Some(session.phase.clone()),
+    }
+}
+
+fn observed_live_event_from_codex_metadata(
+    session: &LiveSession,
+    signal: &CodexMetadataSignal,
+    observed_at: String,
+) -> ObservedLiveEvent {
+    let event_name = if signal.status == "completed" {
+        "SessionEnd"
+    } else if signal.status == "paused" {
+        "TurnPaused"
+    } else if signal.phase == "compacting" {
+        "ContextCompact"
+    } else if signal.action_kind == "tool" {
+        "PreToolUse"
+    } else {
+        "MetadataProgress"
+    };
+    let identity = crate::privacy::stable_hash(&format!(
+        "{}|{}|{}|{}|{}|{}",
+        session.agent,
+        session.source_session_id,
+        event_name,
+        signal.occurred_at,
+        signal.status,
+        signal.phase,
+    ));
+    let expires_at = DateTime::parse_from_rfc3339(&observed_at)
+        .map(|value| (value.with_timezone(&Utc) + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339())
+        .unwrap_or_else(|_| (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339());
+    let payload_json = json!({
+        "source": "codex-metadata",
+        "event": event_name,
+        "status": signal.status,
+        "phase": signal.phase,
+    })
+    .to_string();
+
+    ObservedLiveEvent {
+        occurred_at: signal.occurred_at.clone(),
+        observed_at,
+        expires_at,
+        agent: session.agent.clone(),
+        source_session_id: session.source_session_id.clone(),
+        source_event_id: Some(format!("metadata-{identity}")),
+        source_sequence: None,
+        source_event_fingerprint: Some(identity),
+        event_name: event_name.into(),
+        project_label: session.project_label.clone(),
+        payload_json,
+        status: signal.status.clone(),
+        phase: Some(signal.phase.clone()),
     }
 }
 
@@ -1736,6 +1866,7 @@ fn fold_codex_memory_activity(
     incoming.started_at = parent.started_at;
     incoming.status = "running".into();
     incoming.phase = "reading".into();
+    incoming.activity_ended_at = None;
     incoming.waiting_reason = None;
     incoming.process_id = parent.process_id.or(incoming.process_id);
     incoming.origin = parent.origin.or(incoming.origin);
@@ -2195,6 +2326,7 @@ fn bootstrap_codex_transcript_from(
         )
     });
     let started_at = turn_started_at.unwrap_or_else(|| signal.occurred_at.clone());
+    let event_order_key = metadata_event_order_key(&signal);
     let session = LiveSession {
         id: session_id.clone(),
         source_session_id,
@@ -2205,6 +2337,9 @@ fn bootstrap_codex_transcript_from(
         phase: signal.phase.clone(),
         started_at,
         updated_at: signal.occurred_at.clone(),
+        activity_ended_at: (!matches!(signal.status.as_str(), "idle" | "running"))
+            .then(|| signal.occurred_at.clone()),
+        event_order_key,
         waiting_reason: signal.waiting_reason.clone(),
         actions: vec![LiveAction {
             kind: signal.action_kind,
@@ -2543,6 +2678,15 @@ fn merge_codex_metadata(
 ) -> Option<String> {
     let mut guard = sessions.write().ok()?;
     let session = guard.get_mut(session_id)?;
+    let incoming_order_key = metadata_event_order_key(&signal);
+    if !live_event_is_newer(
+        &session.updated_at,
+        &session.event_order_key,
+        &signal.occurred_at,
+        &incoming_order_key,
+    ) {
+        return None;
+    }
     if signal.status == "completed" && !live_append && session.status != "completed" {
         return None;
     }
@@ -2553,13 +2697,26 @@ fn merge_codex_metadata(
         return None;
     }
     let previous_status = session.status.clone();
-    if previous_status == "completed" && signal.status == "running" {
+    let previous_was_active = matches!(previous_status.as_str(), "idle" | "running");
+    if matches!(signal.status.as_str(), "idle" | "running") {
+        session.activity_ended_at = None;
+    } else if previous_was_active {
+        session.activity_ended_at = Some(signal.occurred_at.clone());
+    }
+    if matches!(
+        previous_status.as_str(),
+        "waiting" | "error" | "paused" | "completed"
+    ) && signal.status == "running"
+    {
         session.started_at = signal.occurred_at.clone();
+    }
+    if previous_status == "completed" && signal.status == "running" {
         session.actions.clear();
     }
     session.status = signal.status;
     session.phase = signal.phase;
     session.updated_at = signal.occurred_at.clone();
+    session.event_order_key = incoming_order_key;
     session.waiting_reason = signal.waiting_reason;
     session.actions.push(LiveAction {
         kind: signal.action_kind,
@@ -2578,11 +2735,29 @@ fn merge_codex_metadata(
 
 fn merge_session(
     sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
-    incoming: LiveSession,
+    mut incoming: LiveSession,
 ) -> Option<String> {
     let mut guard = sessions.write().ok()?;
     let previous_status = guard.get(&incoming.id).map(|item| item.status.clone());
     if let Some(existing) = guard.get_mut(&incoming.id) {
+        if !live_event_is_newer(
+            &existing.updated_at,
+            &existing.event_order_key,
+            &incoming.updated_at,
+            &incoming.event_order_key,
+        ) {
+            if matches!(
+                existing.status.as_str(),
+                "waiting" | "error" | "paused" | "completed"
+            ) && matches!(incoming.status.as_str(), "idle" | "running")
+                && live_event_time_order(&existing.started_at, &incoming.started_at)
+                    == std::cmp::Ordering::Less
+            {
+                existing.started_at = incoming.started_at.clone();
+            }
+            merge_live_actions(existing, std::mem::take(&mut incoming.actions));
+            return None;
+        }
         let auxiliary_refresh = incoming.status == "running"
             && !incoming.actions.is_empty()
             && incoming
@@ -2592,7 +2767,24 @@ fn merge_session(
         if auxiliary_refresh && !session_accepts_auxiliary_activity(existing) {
             return None;
         }
+        if matches!(
+            existing.status.as_str(),
+            "waiting" | "error" | "paused" | "completed"
+        ) && matches!(incoming.status.as_str(), "idle" | "running")
+        {
+            existing.started_at = incoming.updated_at.clone();
+            if existing.status == "completed" {
+                existing.actions.clear();
+            }
+        }
+        let existing_was_active = matches!(existing.status.as_str(), "idle" | "running");
+        if matches!(incoming.status.as_str(), "idle" | "running") {
+            existing.activity_ended_at = None;
+        } else if existing_was_active {
+            existing.activity_ended_at = Some(incoming.updated_at.clone());
+        }
         existing.updated_at = incoming.updated_at;
+        existing.event_order_key = incoming.event_order_key;
         existing.status = incoming.status.clone();
         existing.phase = incoming.phase;
         existing.project_label = incoming.project_label;
@@ -2605,10 +2797,7 @@ fn merge_session(
         existing.jump_context = incoming
             .jump_context
             .or_else(|| existing.jump_context.clone());
-        existing.actions.extend(incoming.actions);
-        if existing.actions.len() > 3 {
-            existing.actions.drain(0..existing.actions.len() - 3);
-        }
+        merge_live_actions(existing, incoming.actions);
     } else {
         guard.insert(incoming.id.clone(), incoming.clone());
     }
@@ -2619,6 +2808,23 @@ fn merge_session(
         Some(incoming.status)
     } else {
         None
+    }
+}
+
+fn merge_live_actions(session: &mut LiveSession, incoming: Vec<LiveAction>) {
+    session.actions.extend(incoming);
+    session.actions.sort_by(|left, right| {
+        compare_live_timestamps(&left.occurred_at, &right.occurred_at)
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    session.actions.dedup_by(|left, right| {
+        compare_live_timestamps(&left.occurred_at, &right.occurred_at) == std::cmp::Ordering::Equal
+            && left.kind == right.kind
+            && left.label == right.label
+    });
+    if session.actions.len() > 3 {
+        session.actions.drain(0..session.actions.len() - 3);
     }
 }
 
@@ -2653,7 +2859,7 @@ fn sort_live_sessions(items: &mut [LiveSession]) {
     items.sort_by(|left, right| {
         priority(&right.status)
             .cmp(&priority(&left.status))
-            .then_with(|| left.started_at.cmp(&right.started_at))
+            .then_with(|| compare_live_timestamps(&left.started_at, &right.started_at))
             .then_with(|| left.id.cmp(&right.id))
     });
 }
@@ -2838,6 +3044,8 @@ fn phase_for<'a>(event: &'a str, tool: &'a str, status: &str) -> (&'a str, &'a s
         ("thinking", "prompt")
     } else if matches!(event, "PreCompact" | "PostCompact") {
         ("compacting", "compact")
+    } else if matches!(event, "SubagentStart" | "SubagentStop") {
+        ("running-tool", "agent")
     } else if !tool.is_empty() {
         ("running-tool", "tool")
     } else {
@@ -2851,6 +3059,122 @@ fn string_field(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn normalize_live_timestamp(value: &str) -> Option<String> {
+    DateTime::parse_from_rfc3339(value).ok().map(|value| {
+        value
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+    })
+}
+
+fn visible_live_event_label(event_name: &str, status: &str) -> &'static str {
+    if status == "error" {
+        return "Error";
+    }
+    if status == "waiting" {
+        return "Needs You";
+    }
+    match event_name {
+        "SessionStart" => "Session Started",
+        "UserPromptSubmit" | "Resume" => "Resumed",
+        "Stop" | "SessionEnd" => "Completed",
+        "TurnPaused" => "Paused",
+        "PreCompact" | "PostCompact" | "ContextCompact" => "Compacting",
+        "PreToolUse" => "Tool Started",
+        "PostToolUse" => "Tool Finished",
+        "SubagentStart" => "Agent Started",
+        "SubagentStop" => "Agent Finished",
+        _ => "Activity",
+    }
+}
+
+fn live_event_rank(event_name: &str, status: &str) -> u8 {
+    match status {
+        "idle" => 0,
+        "running" if event_name == "PreToolUse" => 1,
+        "running" => 2,
+        "waiting" => 3,
+        "paused" => 4,
+        "error" => 5,
+        "completed" => 6,
+        _ => 2,
+    }
+}
+
+fn source_event_order_key(
+    payload: &Map<String, Value>,
+    event_name: &str,
+    status: &str,
+    phase: &str,
+    tool: &str,
+) -> String {
+    let rank = live_event_rank(event_name, status);
+    let context = crate::privacy::stable_hash(&format!("{event_name}|{status}|{phase}|{tool}"));
+    if let Some(sequence) = ["sequence", "event_sequence", "eventSequence", "seq"]
+        .iter()
+        .find_map(|key| payload.get(*key))
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|value| value.parse::<u64>().ok()))
+        })
+    {
+        return format!("sequence:{sequence:020}:{rank:02}:{context}");
+    }
+    if let Some(source_event_id) = string_field(
+        payload,
+        &[
+            "event_id",
+            "eventId",
+            "request_id",
+            "requestId",
+            "tool_use_id",
+            "toolUseId",
+        ],
+    ) {
+        return format!(
+            "source:{rank:02}:{}",
+            crate::privacy::stable_hash(&format!("{source_event_id}|{context}"))
+        );
+    }
+    format!("derived:{rank:02}:{context}")
+}
+
+fn metadata_event_order_key(signal: &CodexMetadataSignal) -> String {
+    format!(
+        "metadata:{}",
+        crate::privacy::stable_hash(&format!(
+            "{}|{}|{}|{}",
+            signal.status, signal.phase, signal.action_kind, signal.action_label
+        ))
+    )
+}
+
+fn live_event_is_newer(
+    existing_at: &str,
+    existing_key: &str,
+    incoming_at: &str,
+    incoming_key: &str,
+) -> bool {
+    match live_event_time_order(existing_at, incoming_at) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => incoming_key > existing_key,
+    }
+}
+
+fn live_event_time_order(existing_at: &str, incoming_at: &str) -> std::cmp::Ordering {
+    compare_live_timestamps(incoming_at, existing_at)
+}
+
+fn compare_live_timestamps(left: &str, right: &str) -> std::cmp::Ordering {
+    DateTime::parse_from_rfc3339(left)
+        .ok()
+        .zip(DateTime::parse_from_rfc3339(right).ok())
+        .map(|(left, right)| left.cmp(&right))
+        .unwrap_or_else(|| left.cmp(right))
 }
 
 fn notify_if_background(session: &LiveSession, status: &str) {
@@ -3430,6 +3754,48 @@ mod tests {
     }
 
     #[test]
+    fn untrusted_event_and_tool_names_never_reach_visible_live_fields() {
+        let envelope = json!({
+            "provider":"claude",
+            "received_at":"2026-08-10T00:00:00Z",
+            "payload":{
+                "session_id":"private-label-session",
+                "hook_event_name":"PermissionRequest",
+                "cwd":"/Users/private/project",
+                "tool_name":"/Users/private/.secrets/sk-abcdefghijklmnop"
+            }
+        });
+        let (session, _, _) = session_from_envelope(&envelope).expect("private event session");
+        let visible = serde_json::to_string(&session).expect("session should serialize");
+        assert_eq!(session.actions[0].label, "other");
+        assert_eq!(
+            session.waiting_reason.as_deref(),
+            Some("other needs approval")
+        );
+        for secret in ["/Users/private", "sk-abcdefghijklmnop"] {
+            assert!(!visible.contains(secret));
+        }
+
+        let unknown = json!({
+            "provider":"claude",
+            "received_at":"2026-08-10T00:00:00Z",
+            "payload":{
+                "session_id":"private-event-session",
+                "hook_event_name":"Notification",
+                "notification_type":"secret-visible-name",
+                "cwd":"/Users/private/project"
+            }
+        });
+        let (session, _, _) = session_from_envelope(&unknown).expect("unknown event session");
+        assert_eq!(session.actions[0].label, "Activity");
+        assert!(
+            !serde_json::to_string(&session)
+                .expect("session should serialize")
+                .contains("secret-visible-name")
+        );
+    }
+
+    #[test]
     fn exact_waiting_envelope_preserves_source_and_observation_times() {
         let envelope = json!({
             "provider":"codex",
@@ -3458,6 +3824,120 @@ mod tests {
         assert_eq!(observed.source_event_id.as_deref(), Some("permission-42"));
         assert_eq!(observed.status, "waiting");
         assert_eq!(observed.phase.as_deref(), Some("needs-you"));
+    }
+
+    #[test]
+    fn exact_source_envelopes_share_one_private_lifecycle_contract() {
+        for (provider, agent) in [("claude", "claude-code"), ("codex", "codex")] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let database = Database::open(temporary.path().join(format!("{agent}.sqlite")))
+                .expect("database should open");
+            let event_names = [
+                "SessionStart",
+                "UserPromptSubmit",
+                "PreToolUse",
+                "PostToolUse",
+                "WAITING",
+                "UserPromptSubmit",
+                "PreCompact",
+                "SubagentStart",
+                "SubagentStop",
+                "ERROR",
+                "UserPromptSubmit",
+                "Stop",
+            ];
+            for (index, source_name) in event_names.iter().enumerate() {
+                let event_name = match (*source_name, provider) {
+                    ("WAITING", "claude") => "Notification",
+                    ("WAITING", _) => "PermissionRequest",
+                    ("ERROR", "claude") => "PostToolUseFailure",
+                    ("ERROR", _) => "PostToolUse",
+                    (value, _) => value,
+                };
+                let timestamp = format!("2026-08-10T00:02:{index:02}Z");
+                let mut payload = json!({
+                    "session_id":"exact-source-session",
+                    "hook_event_name":event_name,
+                    "event_id":format!("{agent}-{index}"),
+                    "timestamp":timestamp,
+                    "cwd":"/Users/private/super-secret-project",
+                    "tool_name":"Bash",
+                    "prompt":"super-secret prompt",
+                    "command":"super-secret command",
+                    "tool_arguments":{"path":"/Users/private/super-secret-project"}
+                });
+                if *source_name == "WAITING" && provider == "claude" {
+                    payload["notification_type"] = json!("idle_prompt");
+                }
+                if *source_name == "ERROR" && provider == "codex" {
+                    payload["status"] = json!("failed");
+                }
+                let envelope = json!({
+                    "provider":provider,
+                    "received_at":format!("2026-08-10T00:03:{index:02}Z"),
+                    "payload":payload,
+                });
+                let (session, raw, source_event_name) =
+                    session_from_envelope(&envelope).expect("exact envelope should normalize");
+                let observed = observed_live_event_from_envelope(
+                    &envelope,
+                    &session,
+                    raw,
+                    source_event_name,
+                    format!("2026-08-10T00:04:{index:02}Z"),
+                );
+                database
+                    .record_observed_live_event(&observed)
+                    .expect("normalized lifecycle should persist");
+            }
+
+            let activity = database.live_activity().expect("live activity should load");
+            assert_eq!(activity.timeline.len(), event_names.len());
+            let public_json = serde_json::to_string(&activity).expect("activity should serialize");
+            assert!(!public_json.contains("super-secret prompt"));
+            assert!(!public_json.contains("super-secret command"));
+            assert!(!public_json.contains("/Users/private"));
+        }
+    }
+
+    #[test]
+    fn source_timestamp_builds_a_stable_private_event_identity() {
+        let envelope = |timestamp: &str| {
+            json!({
+                "provider":"codex",
+                "received_at":"2026-08-10T00:05:10Z",
+                "payload":{
+                    "session_id":"timestamp-session",
+                    "hook_event_name":"PreToolUse",
+                    "timestamp":timestamp,
+                    "cwd":"/Users/private/project",
+                    "tool_name":"Bash",
+                    "tool_arguments":{"command":"super-secret command"}
+                }
+            })
+        };
+        let observed = |envelope: &Value| {
+            let (session, raw, event_name) =
+                session_from_envelope(envelope).expect("exact envelope should normalize");
+            observed_live_event_from_envelope(
+                envelope,
+                &session,
+                raw,
+                event_name,
+                "2026-08-10T00:05:11Z".into(),
+            )
+        };
+        let first = observed(&envelope("2026-08-10T00:05:00Z"));
+        let replay = observed(&envelope("2026-08-10T00:05:00Z"));
+        let next = observed(&envelope("2026-08-10T00:05:01Z"));
+
+        assert_eq!(first.source_event_id, replay.source_event_id);
+        assert_ne!(first.source_event_id, next.source_event_id);
+        let identity = first
+            .source_event_id
+            .expect("derived identity should exist");
+        assert!(!identity.contains("super-secret"));
+        assert!(!identity.contains("/Users/private"));
     }
 
     #[test]
@@ -3548,6 +4028,8 @@ mod tests {
             phase: "thinking".into(),
             started_at: (now - Duration::minutes(10)).to_rfc3339(),
             updated_at: (now - Duration::seconds(8)).to_rfc3339(),
+            activity_ended_at: None,
+            event_order_key: String::new(),
             waiting_reason: None,
             actions: Vec::new(),
             process_id: Some(42),
@@ -3975,6 +4457,9 @@ mod tests {
         paused.id = "paused-session".into();
         paused.status = "paused".into();
         paused.phase = "paused".into();
+        paused.started_at = "2026-08-04T13:00:00Z".into();
+        paused.updated_at = "2026-08-04T13:05:00Z".into();
+        paused.event_order_key = "metadata:paused".into();
         paused.waiting_reason = Some("turn-paused".into());
         let session_id = paused.id.clone();
         let sessions = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), paused)])));
@@ -3991,6 +4476,97 @@ mod tests {
         let resumed = session_guard.get(&session_id).expect("resumed session");
         assert_eq!(resumed.status, "running");
         assert_eq!(resumed.waiting_reason, None);
+        assert_eq!(resumed.started_at, "2026-08-04T14:07:00Z");
+    }
+
+    #[test]
+    fn codex_pause_metadata_becomes_a_private_canonical_lifecycle_event() {
+        let session = jump_test_session("codex", "desktop", None);
+        let mut signal = metadata_signal(
+            "paused",
+            "paused",
+            "paused",
+            "private prompt text",
+            "2026-08-10T00:06:00Z".into(),
+        );
+        signal.waiting_reason = Some("turn-paused".into());
+
+        let observed = observed_live_event_from_codex_metadata(
+            &session,
+            &signal,
+            "2026-08-10T00:06:01Z".into(),
+        );
+
+        assert_eq!(observed.event_name, "TurnPaused");
+        assert_eq!(observed.status, "paused");
+        assert_eq!(observed.phase.as_deref(), Some("paused"));
+        assert!(!observed.payload_json.contains("private prompt text"));
+    }
+
+    #[test]
+    fn waiting_hook_session_starts_a_fresh_cycle_when_work_resumes() {
+        let mut waiting = jump_test_session("claude-code", "cli", None);
+        waiting.id = "waiting-session".into();
+        waiting.status = "waiting".into();
+        waiting.phase = "needs-you".into();
+        waiting.started_at = "2026-08-04T13:00:00Z".into();
+        waiting.updated_at = "2026-08-04T13:05:00Z".into();
+        waiting.waiting_reason = Some("Permission required".into());
+        let session_id = waiting.id.clone();
+        let sessions = Arc::new(RwLock::new(HashMap::from([(session_id.clone(), waiting)])));
+        let mut resumed = jump_test_session("claude-code", "cli", None);
+        resumed.id = session_id.clone();
+        resumed.status = "running".into();
+        resumed.phase = "thinking".into();
+        resumed.started_at = "2026-08-04T14:00:00Z".into();
+        resumed.updated_at = "2026-08-04T14:00:00Z".into();
+        resumed.waiting_reason = None;
+
+        assert!(merge_session(&sessions, resumed).is_none());
+        let session_guard = sessions.read().expect("sessions");
+        let resumed = session_guard.get(&session_id).expect("resumed session");
+        assert_eq!(resumed.status, "running");
+        assert_eq!(resumed.started_at, "2026-08-04T14:00:00Z");
+    }
+
+    #[test]
+    fn repeated_waiting_events_preserve_the_first_activity_stop_time() {
+        let mut running = jump_test_session("codex", "cli", None);
+        running.id = "repeated-waiting".into();
+        running.status = "running".into();
+        running.phase = "thinking".into();
+        running.started_at = "2026-08-04T13:00:00Z".into();
+        running.updated_at = "2026-08-04T13:02:00Z".into();
+        running.activity_ended_at = None;
+        let sessions = Arc::new(RwLock::new(HashMap::from([(running.id.clone(), running)])));
+
+        let mut first_waiting = jump_test_session("codex", "cli", None);
+        first_waiting.id = "repeated-waiting".into();
+        first_waiting.status = "waiting".into();
+        first_waiting.phase = "needs-you".into();
+        first_waiting.started_at = "2026-08-04T13:00:00Z".into();
+        first_waiting.updated_at = "2026-08-04T13:03:00Z".into();
+        first_waiting.activity_ended_at = Some(first_waiting.updated_at.clone());
+        first_waiting.waiting_reason = Some("Permission required".into());
+        merge_session(&sessions, first_waiting);
+
+        let mut repeated_waiting = jump_test_session("codex", "cli", None);
+        repeated_waiting.id = "repeated-waiting".into();
+        repeated_waiting.status = "waiting".into();
+        repeated_waiting.phase = "needs-you".into();
+        repeated_waiting.started_at = "2026-08-04T13:00:00Z".into();
+        repeated_waiting.updated_at = "2026-08-04T13:08:00Z".into();
+        repeated_waiting.activity_ended_at = Some(repeated_waiting.updated_at.clone());
+        repeated_waiting.waiting_reason = Some("Permission required".into());
+        merge_session(&sessions, repeated_waiting);
+
+        let guard = sessions.read().expect("sessions should lock");
+        let waiting = guard.get("repeated-waiting").expect("waiting session");
+        assert_eq!(waiting.updated_at, "2026-08-04T13:08:00Z");
+        assert_eq!(
+            waiting.activity_ended_at.as_deref(),
+            Some("2026-08-04T13:03:00Z")
+        );
     }
 
     #[test]
@@ -4047,6 +4623,134 @@ mod tests {
         assert_eq!(sessions[0].id, "second");
     }
 
+    #[test]
+    fn out_of_order_and_duplicate_hooks_converge_on_one_live_card() {
+        let envelope = |sequence: u64, event_name: &str, timestamp: &str| {
+            json!({
+                "provider":"codex",
+                "received_at":"2026-08-10T00:10:10Z",
+                "payload":{
+                    "session_id":"ordered-session",
+                    "hook_event_name":event_name,
+                    "timestamp":timestamp,
+                    "sequence":sequence,
+                    "cwd":"/Users/private/project"
+                }
+            })
+        };
+        let session = |value: Value| {
+            session_from_envelope(&value)
+                .expect("exact envelope should normalize")
+                .0
+        };
+        let earlier = session(envelope(0, "UserPromptSubmit", "2026-08-10T00:10:00Z"));
+        let same_time_lower = session(envelope(1, "UserPromptSubmit", "2026-08-10T00:10:01Z"));
+        let later = session(envelope(2, "PermissionRequest", "2026-08-10T00:10:01Z"));
+        let duplicate = later.clone();
+
+        let first_order = Arc::new(RwLock::new(HashMap::new()));
+        merge_session(&first_order, earlier.clone());
+        merge_session(&first_order, same_time_lower.clone());
+        merge_session(&first_order, later.clone());
+        merge_session(&first_order, duplicate);
+        merge_session(&first_order, earlier.clone());
+
+        let reverse_order = Arc::new(RwLock::new(HashMap::new()));
+        merge_session(&reverse_order, later);
+        merge_session(&reverse_order, same_time_lower);
+        merge_session(&reverse_order, earlier);
+
+        let mut rendered = Vec::new();
+        for sessions in [first_order, reverse_order] {
+            let guard = sessions.read().expect("sessions should lock");
+            assert_eq!(guard.len(), 1);
+            let current = guard.values().next().expect("live card should exist");
+            assert_eq!(current.status, "waiting");
+            assert_eq!(current.updated_at, "2026-08-10T00:10:01Z");
+            assert_eq!(current.actions.len(), 3);
+            let public_json = serde_json::to_string(current).expect("card should serialize");
+            assert!(!public_json.contains("eventOrderKey"));
+            rendered.push(public_json);
+        }
+        assert_eq!(rendered[0], rendered[1]);
+    }
+
+    #[test]
+    fn shared_tool_id_and_timestamp_converge_on_the_terminal_tool_state() {
+        let envelope = |event_name: &str, status: Option<&str>| {
+            json!({
+                "provider":"codex",
+                "received_at":"2026-08-10T00:11:00Z",
+                "payload":{
+                    "session_id":"shared-tool-card",
+                    "hook_event_name":event_name,
+                    "timestamp":"2026-08-10T00:11:00Z",
+                    "tool_use_id":"tool-use-1",
+                    "tool_name":"Bash",
+                    "status":status,
+                    "cwd":"/Users/private/project"
+                }
+            })
+        };
+        let session = |value: Value| {
+            session_from_envelope(&value)
+                .expect("tool envelope should normalize")
+                .0
+        };
+        let started = session(envelope("PreToolUse", None));
+        let failed = session(envelope("PostToolUse", Some("failed")));
+
+        for order in [
+            vec![started.clone(), failed.clone()],
+            vec![failed.clone(), started.clone()],
+        ] {
+            let sessions = Arc::new(RwLock::new(HashMap::new()));
+            for item in order {
+                merge_session(&sessions, item);
+            }
+            let guard = sessions.read().expect("sessions should lock");
+            let current = guard.values().next().expect("live card should exist");
+            assert_eq!(guard.len(), 1);
+            assert_eq!(current.status, "error");
+            assert_eq!(current.phase, "error");
+            assert_eq!(current.actions.len(), 2);
+        }
+    }
+
+    #[test]
+    fn equivalent_offset_timestamps_deduplicate_actions_and_stabilize_session_order() {
+        let mut first = jump_test_session("codex", "cli", None);
+        first.id = "a".into();
+        first.started_at = "2026-08-10T00:00:00Z".into();
+        first.actions = vec![LiveAction {
+            kind: "tool".into(),
+            label: "Bash".into(),
+            occurred_at: "2026-08-10T00:00:00Z".into(),
+        }];
+        merge_live_actions(
+            &mut first,
+            vec![LiveAction {
+                kind: "tool".into(),
+                label: "Bash".into(),
+                occurred_at: "2026-08-10T08:00:00+08:00".into(),
+            }],
+        );
+        assert_eq!(first.actions.len(), 1);
+
+        let mut second = first.clone();
+        second.id = "b".into();
+        second.started_at = "2026-08-10T08:00:00+08:00".into();
+        let mut sessions = vec![second, first];
+        sort_live_sessions(&mut sessions);
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
     fn jump_test_session(
         agent: &str,
         origin: &str,
@@ -4062,6 +4766,8 @@ mod tests {
             phase: "completed".into(),
             started_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
+            activity_ended_at: None,
+            event_order_key: String::new(),
             waiting_reason: None,
             actions: Vec::new(),
             process_id: Some(42),
@@ -4195,6 +4901,8 @@ mod tests {
             phase: "thinking".into(),
             started_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
+            activity_ended_at: None,
+            event_order_key: String::new(),
             waiting_reason: None,
             actions: Vec::new(),
             process_id: None,

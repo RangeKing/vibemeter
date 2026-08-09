@@ -66,6 +66,12 @@ export function formatLiveElapsed(startedAt: string, endedAt: number): string {
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+export function liveElapsedEnd(session: LiveSession, now: number): number {
+  if (session.status === "running") return now;
+  const endedAt = new Date(session.activityEndedAt ?? session.updatedAt).getTime();
+  return Number.isFinite(endedAt) ? endedAt : now;
+}
+
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
   if (session.status === "error") return t("live.reason.error");
   if (session.status === "paused") return t("live.reason.paused");
@@ -411,9 +417,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     "--notch-collapsed-right-inset": `${collapsedInsets.right}px`,
   } as CSSProperties;
 
-  const hasTimedSession = sessions.some(
-    (session) => ACTIVE_STATUSES.has(session.status) || session.status === "completed",
-  );
+  const hasTimedSession = sessions.some((session) => session.status === "running");
 
   useEffect(() => {
     if (!hasTimedSession) return;
@@ -702,7 +706,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
                   </span>
                   <small>
                     {agentName(session.agent)} · {t("notch.elapsed", {
-                      value: formatLiveElapsed(session.startedAt, now),
+                      value: formatLiveElapsed(session.startedAt, liveElapsedEnd(session, now)),
                     })}
                   </small>
                 </span>

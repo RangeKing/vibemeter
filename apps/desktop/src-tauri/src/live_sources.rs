@@ -527,6 +527,10 @@ fn runtime_session(
     let id = stable_hash(&format!("{agent}:{source_session_id}"));
     let occurred_at = signal.occurred_at;
     let started_at = signal.started_at.unwrap_or_else(|| occurred_at.clone());
+    let event_order_key = stable_hash(&format!(
+        "{}|{}|{}|{}|{}",
+        occurred_at, signal.status, signal.phase, signal.action_kind, signal.action_label
+    ));
     LiveSession {
         id,
         source_session_id,
@@ -537,6 +541,9 @@ fn runtime_session(
         phase: signal.phase.into(),
         started_at,
         updated_at: occurred_at.clone(),
+        activity_ended_at: (!matches!(signal.status, "idle" | "running"))
+            .then(|| occurred_at.clone()),
+        event_order_key,
         waiting_reason: (signal.status == "waiting").then(|| "Permission required".into()),
         actions: vec![LiveAction {
             kind: signal.action_kind.into(),

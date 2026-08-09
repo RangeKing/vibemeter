@@ -114,6 +114,13 @@ fn sanitize_bounded_text(value: &str, max_chars: usize) -> Option<String> {
 }
 
 pub fn sanitize_tool_name(value: &str) -> String {
+    if ABSOLUTE_PATH.is_match(value)
+        || EMAIL.is_match(value)
+        || SECRET.is_match(value)
+        || REPOSITORY_URL.is_match(value)
+    {
+        return "other".into();
+    }
     let compact = value
         .chars()
         .filter(|character| {

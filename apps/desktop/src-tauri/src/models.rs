@@ -640,6 +640,10 @@ pub struct LiveSession {
     pub phase: String,
     pub started_at: String,
     pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_ended_at: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub event_order_key: String,
     pub waiting_reason: Option<String>,
     pub actions: Vec<LiveAction>,
     pub process_id: Option<u32>,
@@ -699,6 +703,7 @@ pub struct ObservedLiveEvent {
     pub agent: String,
     pub source_session_id: String,
     pub source_event_id: Option<String>,
+    pub source_sequence: Option<i64>,
     pub source_event_fingerprint: Option<String>,
     pub event_name: String,
     pub project_label: String,

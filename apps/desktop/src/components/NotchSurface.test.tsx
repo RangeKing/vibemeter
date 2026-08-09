@@ -6,6 +6,7 @@ import {
   conversationTitleForSession,
   expandedHeightForSessions,
   formatLiveElapsed,
+  liveElapsedEnd,
   leftWingWidthForSession,
   pickRightWingSession,
 } from "./NotchSurface";
@@ -35,6 +36,18 @@ describe("Notch session selection", () => {
     expect(formatLiveElapsed(startedAt, Date.parse("2026-07-26T00:03:07Z"))).toBe("3:07");
     expect(formatLiveElapsed(startedAt, Date.parse("2026-07-26T01:02:09Z"))).toBe("1:02:09");
     expect(formatLiveElapsed("not-a-date", Date.now())).toBe("—");
+  });
+
+  it("freezes the current activity duration while a session needs attention", () => {
+    const waiting = session("waiting", "waiting", "codex", "2026-07-26T00:03:00Z");
+    waiting.startedAt = "2026-07-26T00:00:00Z";
+    waiting.activityEndedAt = "2026-07-26T00:03:00Z";
+    waiting.updatedAt = "2026-07-26T00:08:00Z";
+    const now = Date.parse("2026-07-26T00:10:00Z");
+    expect(formatLiveElapsed(waiting.startedAt, liveElapsedEnd(waiting, now))).toBe("3:00");
+
+    const running = { ...waiting, status: "running" as const };
+    expect(formatLiveElapsed(running.startedAt, liveElapsedEnd(running, now))).toBe("10:00");
   });
 
   it("keeps waiting and error ahead of running or completion cues", () => {
