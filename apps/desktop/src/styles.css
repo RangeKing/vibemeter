@@ -1099,6 +1099,7 @@ body.modal-open { overflow: hidden; }
 .source-selector.disabled { cursor: not-allowed; }
 .source-state { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border-radius: 99px; color: var(--muted); background: var(--surface-soft); font-size: var(--font-caption); font-weight: 750; }
 .source-state.available { color: var(--green); background: var(--green-soft); }
+.source-state.unavailable { color: var(--amber); background: var(--amber-soft); }
 .source-state.soon { color: var(--amber); background: var(--amber-soft); }
 .source-count { position: relative; z-index: 1; margin-top: 23px; }
 .source-count strong { display: block; font-family: var(--serif); font-size: 38px; line-height: 1; }

@@ -11,9 +11,18 @@ use std::collections::HashSet;
 use std::path::Path;
 
 const ACTIVE_GAP_SECONDS: i64 = 10 * 60;
-const MAX_EVENTS_PER_SESSION: usize = 4_000;
+pub(crate) const MAX_EVENTS_PER_SESSION: usize = 4_000;
 
 pub fn observe_timestamp(state: &mut ParseState, timestamp: Option<&str>, human: bool) {
+    observe_timestamp_with_source(state, timestamp, human, None);
+}
+
+fn observe_timestamp_with_source(
+    state: &mut ParseState,
+    timestamp: Option<&str>,
+    human: bool,
+    source_event_id: Option<&str>,
+) {
     let Some(timestamp) = timestamp.filter(|value| !value.is_empty()) else {
         return;
     };
@@ -67,13 +76,14 @@ pub fn observe_timestamp(state: &mut ParseState, timestamp: Option<&str>, human:
     if human {
         close_agent_run(state, timestamp);
         state.human_interventions = state.human_interventions.saturating_add(1);
-        record_event(
+        record_event_with_source(
             state,
             "prompt",
             "understand",
             "user",
             Some(true),
             Some(timestamp),
+            source_event_id,
         );
     } else if state.current_run_started_at.is_none() {
         state.current_run_started_at = Some(timestamp.to_string());
@@ -90,6 +100,28 @@ pub fn observe_timestamp(state: &mut ParseState, timestamp: Option<&str>, human:
         aggregate.events = aggregate.events.saturating_add(1);
     }
     state.event_count = state.event_count.saturating_add(1);
+}
+
+pub fn observe_prompt_with_source(
+    state: &mut ParseState,
+    timestamp: Option<&str>,
+    source_event_id: Option<&str>,
+) {
+    if timestamp.is_some() {
+        observe_timestamp_with_source(state, timestamp, true, source_event_id);
+    } else {
+        state.human_interventions = state.human_interventions.saturating_add(1);
+        state.event_count = state.event_count.saturating_add(1);
+        record_event_with_source(
+            state,
+            "prompt",
+            "understand",
+            "user",
+            Some(true),
+            None,
+            source_event_id,
+        );
+    }
 }
 
 fn close_agent_run(state: &mut ParseState, timestamp: &str) {
@@ -206,6 +238,12 @@ pub fn consider_title(state: &mut ParseState, text: Option<&str>) {
     }
     if state.title.is_none() {
         state.title = sanitize_title(trimmed);
+    }
+}
+
+pub fn set_observed_title(state: &mut ParseState, text: Option<&str>) {
+    if state.title.is_none() {
+        state.title = text.and_then(sanitize_title);
     }
 }
 

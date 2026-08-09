@@ -1,12 +1,12 @@
-use crate::adapters::{claude, codex, common, cursor, kimi, openclaw, zcode};
+use crate::adapters::{claude, codex, common, cursor, database_history, kimi, openclaw, zcode};
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
-use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, TokenUsage};
+use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState};
 use crate::privacy::stable_hash;
 use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::File;
@@ -44,6 +44,14 @@ struct SourceRoot {
     adapter: SourceAdapter,
 }
 
+#[derive(Debug)]
+struct PreparedDatabaseHistorySession {
+    source_file_hash: String,
+    revision_size: u64,
+    revision_time: i64,
+    state: ParseState,
+}
+
 pub fn start_indexing(
     database: Database,
     status: Arc<RwLock<IndexStatus>>,
@@ -70,8 +78,13 @@ pub fn start_indexing(
             current.finished_at = Some(Utc::now().to_rfc3339());
             match outcome {
                 Ok(()) => {
-                    current.phase = "complete".into();
-                    current.message_key = "index.complete".into();
+                    if current.warning_count > 0 {
+                        current.phase = "partial".into();
+                        current.message_key = "index.partial".into();
+                    } else {
+                        current.phase = "complete".into();
+                        current.message_key = "index.complete".into();
+                    }
                 }
                 Err(_) => {
                     current.phase = "partial".into();
@@ -131,8 +144,33 @@ fn run_index(
             .and_then(|value| value.to_str())
             .is_none_or(|stem| !zcode_model_io_ids.contains(stem))
     });
-    index_cursor_database(database, force)?;
-    index_hermes_database(database, force)?;
+    let cursor_database_ready = index_cursor_database(database, force)?;
+    let hermes_database_ready = index_hermes_database(database, force)?;
+    let mut unavailable_database_sources = HashSet::new();
+    if cursor_database_path().is_file() && !cursor_database_ready {
+        unavailable_database_sources.insert(AgentKind::Cursor);
+    }
+    if hermes_database_path().is_file() && !hermes_database_ready {
+        unavailable_database_sources.insert(AgentKind::Hermes);
+    }
+    let partial_database_sources = database
+        .sources()?
+        .into_iter()
+        .filter_map(
+            |source| match (source.agent.as_str(), source.status.as_str()) {
+                ("cursor", "partial") => Some(AgentKind::Cursor),
+                ("hermes", "partial") => Some(AgentKind::Hermes),
+                _ => None,
+            },
+        )
+        .collect::<HashSet<_>>();
+    if let Ok(mut current) = status.write() {
+        current.warning_count = current.warning_count.saturating_add(
+            unavailable_database_sources
+                .len()
+                .saturating_add(partial_database_sources.len()) as u64,
+        );
+    }
     files.sort_by_key(|item| std::cmp::Reverse(item.modified));
     if let Ok(mut current) = status.write() {
         current.phase = "indexing".into();
@@ -180,7 +218,8 @@ fn run_index(
             .filter(|root| root.agent == agent)
             .map(|root| root.path.to_string_lossy().to_string())
             .collect::<Vec<_>>();
-        let available = agent_roots.iter().any(|root| Path::new(root).is_dir())
+        let file_history_available = agent_roots.iter().any(|root| Path::new(root).is_dir());
+        let available = file_history_available
             || (agent == AgentKind::Cursor && cursor_database_path().is_file())
             || (agent == AgentKind::Hermes && hermes_database_path().is_file());
         let path_hash = stable_hash(&agent_roots.join("|"));
@@ -188,7 +227,19 @@ fn run_index(
             agent,
             &path_hash,
             available,
-            if available { "ready" } else { "not-found" },
+            if unavailable_database_sources.contains(&agent) {
+                if file_history_available {
+                    "partial"
+                } else {
+                    "unavailable"
+                }
+            } else if partial_database_sources.contains(&agent) {
+                "partial"
+            } else if available {
+                "ready"
+            } else {
+                "not-found"
+            },
         )?;
     }
     let total_sessions = database
@@ -616,121 +667,368 @@ fn hermes_database_path() -> PathBuf {
         .join(".hermes/state.db")
 }
 
-fn index_cursor_database(database: &Database, force: bool) -> AppResult<()> {
-    let path = cursor_database_path();
+fn index_cursor_database(database: &Database, force: bool) -> AppResult<bool> {
+    index_database_source_at(database, AgentKind::Cursor, &cursor_database_path(), force)
+}
+
+fn index_hermes_database(database: &Database, force: bool) -> AppResult<bool> {
+    index_database_source_at(database, AgentKind::Hermes, &hermes_database_path(), force)
+}
+
+fn index_database_source_at(
+    database: &Database,
+    agent: AgentKind,
+    path: &Path,
+    force: bool,
+) -> AppResult<bool> {
     let available = path.is_file();
+    let path_hash = stable_hash(&path.to_string_lossy());
     database.upsert_source(
-        AgentKind::Cursor,
-        &stable_hash(&path.to_string_lossy()),
+        agent,
+        &path_hash,
         available,
         if available { "indexing" } else { "not-found" },
     )?;
     if !available {
-        return Ok(());
+        database.set_source_warning(agent, &path_hash, "database-unavailable", false)?;
+        database.set_source_warning(agent, &path_hash, "database-partial", false)?;
+        return Ok(false);
     }
-    let connection =
-        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut statement = connection
-        .prepare("SELECT conversationId, title, model, updatedAt FROM conversation_summaries")?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0)?;
-        let title: Option<String> = row.get(1)?;
-        let model: Option<String> = row.get(2)?;
-        let updated: i64 = row.get(3)?;
-        let key = stable_hash(&format!("cursor:{id}"));
-        if !force
-            && database
-                .load_cursor(&key)?
-                .is_some_and(|cursor| cursor.state.parser_version == PARSER_VERSION)
-        {
-            continue;
+    let source_revision = match database_history::source_revision(path) {
+        Ok(revision) => revision,
+        Err(_) => {
+            database.set_source_warning(agent, &path_hash, "database-partial", false)?;
+            database.set_source_warning(agent, &path_hash, "database-unavailable", true)?;
+            database.upsert_source(agent, &path_hash, true, "unavailable")?;
+            return Ok(false);
         }
-        let stamp = timestamp_from_millis(updated);
-        let mut state = ParseState::new(AgentKind::Cursor, id);
-        state.source_session_observed = true;
-        common::observe_timestamp(&mut state, stamp.as_deref(), true);
-        common::consider_title(&mut state, title.as_deref());
-        common::set_model(&mut state, model.as_deref());
-        common::finalize_run(&mut state);
-        database.persist_parse_state(
-            &key,
-            updated.max(0) as u64,
-            updated,
-            updated.max(0) as u64,
-            &state,
+    };
+    let source_cursor_key = database_source_cursor_key(database, agent, path);
+    if !force && let Some(cached) = database.setting(&source_cursor_key)? {
+        let mut fields = cached.splitn(3, '\n');
+        let parser_matches = fields.next() == Some(PARSER_VERSION);
+        let revision_matches = fields.next() == Some(source_revision.as_str());
+        let cached_status = fields.next().unwrap_or("ready");
+        if parser_matches && revision_matches {
+            let partial = cached_status == "partial";
+            database.set_source_warning(agent, &path_hash, "database-unavailable", false)?;
+            database.set_source_warning(agent, &path_hash, "database-partial", partial)?;
+            database.upsert_source(
+                agent,
+                &path_hash,
+                true,
+                if partial { "partial" } else { "ready" },
+            )?;
+            return Ok(true);
+        }
+    }
+    let reader = match database_history::DatabaseHistoryReader::open(agent, path) {
+        Ok(reader) => reader,
+        Err(_) => {
+            database.set_source_warning(agent, &path_hash, "database-partial", false)?;
+            database.set_source_warning(agent, &path_hash, "database-unavailable", true)?;
+            database.upsert_source(agent, &path_hash, true, "unavailable")?;
+            return Ok(false);
+        }
+    };
+    let mut source_read_failed = false;
+    let pipeline_result = (|| -> AppResult<database_history::DatabaseHistoryReadSummary> {
+        let mut stage = Connection::open(reader.normalized_stage_path())?;
+        stage.execute_batch(
+            "PRAGMA journal_mode=OFF;
+             PRAGMA synchronous=OFF;
+             CREATE TABLE normalized_sessions(
+                ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_file_hash TEXT NOT NULL,
+                revision_size INTEGER NOT NULL,
+                revision_time INTEGER NOT NULL,
+                state_json TEXT NOT NULL
+             );",
+        )?;
+        let stage_transaction = stage.transaction()?;
+        let mut staging_error = None;
+        let read_summary = reader
+            .read_each(|session| {
+                let result = prepare_database_history_session(database, agent, path, &session)
+                    .and_then(|prepared| {
+                        stage_transaction.execute(
+                            "INSERT INTO normalized_sessions(
+                                source_file_hash,revision_size,revision_time,state_json
+                             ) VALUES(?1,?2,?3,?4)",
+                            params![
+                                prepared.source_file_hash,
+                                prepared.revision_size as i64,
+                                prepared.revision_time,
+                                serde_json::to_string(&prepared.state)?,
+                            ],
+                        )?;
+                        Ok(())
+                    });
+                match result {
+                    Ok(()) => true,
+                    Err(error) => {
+                        staging_error = Some(error);
+                        false
+                    }
+                }
+            })
+            .inspect_err(|_| {
+                source_read_failed = true;
+            })?;
+        if let Some(error) = staging_error {
+            return Err(error);
+        }
+        if !read_summary.completed {
+            return Err(crate::errors::AppError::InvalidRequest(
+                "database history indexing stopped before completion".into(),
+            ));
+        }
+        stage_transaction.commit()?;
+        stage.pragma_update(None, "query_only", true)?;
+        let mut statement = stage.prepare(
+            "SELECT source_file_hash,revision_size,revision_time,state_json
+             FROM normalized_sessions ORDER BY ordinal",
+        )?;
+        let mut rows = statement.query([])?;
+        database.with_parse_state_batch(|transaction| {
+            while let Some(row) = rows.next()? {
+                let source_file_hash = row.get::<_, String>(0)?;
+                let revision_size = row.get::<_, i64>(1)?.max(0) as u64;
+                let revision_time = row.get::<_, i64>(2)?;
+                let state = serde_json::from_str::<ParseState>(&row.get::<_, String>(3)?)?;
+                if !force
+                    && Database::cursor_matches_in_transaction(
+                        transaction,
+                        &source_file_hash,
+                        revision_size,
+                        revision_time,
+                    )?
+                {
+                    continue;
+                }
+                Database::persist_parse_state_in_transaction(
+                    transaction,
+                    &source_file_hash,
+                    revision_size,
+                    revision_time,
+                    revision_size,
+                    &state,
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(read_summary)
+    })();
+    let read_summary = match pipeline_result {
+        Ok(summary) => summary,
+        Err(error) => {
+            database.set_source_warning(agent, &path_hash, "database-partial", false)?;
+            database.set_source_warning(agent, &path_hash, "database-unavailable", true)?;
+            database.upsert_source(agent, &path_hash, true, "unavailable")?;
+            if source_read_failed {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+    };
+    let partial = read_summary.partial;
+    database.set_source_warning(agent, &path_hash, "database-unavailable", false)?;
+    database.set_source_warning(agent, &path_hash, "database-partial", partial)?;
+    let source_status = if partial { "partial" } else { "ready" };
+    database.upsert_source(agent, &path_hash, true, source_status)?;
+    if database_history::source_revision(path).is_ok_and(|current| current == source_revision) {
+        database.set_setting(
+            &source_cursor_key,
+            &format!("{PARSER_VERSION}\n{source_revision}\n{source_status}"),
         )?;
     }
-    Ok(())
+    Ok(true)
 }
 
-fn index_hermes_database(database: &Database, force: bool) -> AppResult<()> {
-    let path = hermes_database_path();
-    let available = path.is_file();
-    database.upsert_source(
-        AgentKind::Hermes,
-        &stable_hash(&path.to_string_lossy()),
-        available,
-        if available { "indexing" } else { "not-found" },
-    )?;
-    if !available {
-        return Ok(());
+fn prepare_database_history_session(
+    database: &Database,
+    agent: AgentKind,
+    path: &Path,
+    session: &database_history::DatabaseHistorySession,
+) -> AppResult<PreparedDatabaseHistorySession> {
+    let identity = serde_json::json!({
+        "type": "database-history-session",
+        "agent": agent.as_str(),
+        "sourcePath": path.to_string_lossy(),
+        "sourceSession": session.source_session_id,
+    });
+    let key = common::source_record_receipt(&identity, &database.source_record_receipt_key());
+    let (revision_size, revision_time) = database_session_revision(database, agent, path, session);
+    let mut state = ParseState::new(
+        agent,
+        database_session_reference(database, agent, path, &session.source_session_id),
+    );
+    state.source_session_observed = true;
+    state.started_at = session.started_at.clone();
+    state.ended_at = session.ended_at.clone();
+    common::set_observed_title(&mut state, session.title.as_deref());
+    common::set_model(&mut state, session.model.as_deref());
+    common::record_usage(&mut state, &session.usage, None, session.model.as_deref());
+    if let Some(cost) = session.estimated_cost_usd {
+        state.estimated_cost_usd = cost;
+        state.cost_coverage_tokens = session.usage.total();
     }
-    let connection =
-        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut statement = connection.prepare("SELECT id, model, started_at, ended_at, message_count, tool_call_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_usd, title FROM sessions")?;
-    let mut rows = statement.query([])?;
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0)?;
-        let key = stable_hash(&format!("hermes:{id}"));
-        if !force
-            && database
-                .load_cursor(&key)?
-                .is_some_and(|cursor| cursor.state.parser_version == PARSER_VERSION)
-        {
-            continue;
+    state.malformed_records = session.malformed_records;
+    state.unknown_records = session.unknown_records;
+    for event in &session.events {
+        let source_event_id = database_event_reference(
+            database,
+            agent,
+            path,
+            &session.source_session_id,
+            event.source_event_id.as_deref(),
+        );
+        match event.event_type.as_str() {
+            "prompt" => common::observe_prompt_with_source(
+                &mut state,
+                event.occurred_at.as_deref(),
+                source_event_id.as_deref(),
+            ),
+            "tool" => {
+                common::observe_timestamp(&mut state, event.occurred_at.as_deref(), false);
+                if event.occurred_at.is_none() {
+                    state.event_count = state.event_count.saturating_add(1);
+                }
+                common::record_tool_with_source(
+                    &mut state,
+                    &event.name,
+                    None,
+                    event.occurred_at.as_deref(),
+                    source_event_id.as_deref(),
+                );
+            }
+            _ => {
+                common::observe_timestamp(&mut state, event.occurred_at.as_deref(), false);
+                if event.occurred_at.is_none() {
+                    state.event_count = state.event_count.saturating_add(1);
+                }
+                common::record_event_with_source(
+                    &mut state,
+                    &event.event_type,
+                    &event.category,
+                    &event.name,
+                    None,
+                    event.occurred_at.as_deref(),
+                    source_event_id.as_deref(),
+                );
+            }
         }
-        let started: f64 = row.get(2)?;
-        let ended: Option<f64> = row.get(3)?;
-        let stamp = timestamp_from_seconds(started);
-        let mut state = ParseState::new(AgentKind::Hermes, id);
-        state.source_session_observed = true;
-        common::observe_timestamp(&mut state, stamp.as_deref(), true);
-        if let Some(end) = ended {
-            common::observe_timestamp(&mut state, timestamp_from_seconds(end).as_deref(), false);
-        }
-        let model: Option<String> = row.get(1)?;
-        common::set_model(&mut state, model.as_deref());
-        let title: Option<String> = row.get(12)?;
-        common::consider_title(&mut state, title.as_deref());
-        let usage = TokenUsage {
-            input_tokens: row.get::<_, i64>(6)?.max(0) as u64,
-            output_tokens: row.get::<_, i64>(7)?.max(0) as u64,
-            cache_read_tokens: row.get::<_, i64>(8)?.max(0) as u64,
-            cache_write_tokens: row.get::<_, i64>(9)?.max(0) as u64,
-            cache_write_1h_tokens: 0,
-            reasoning_tokens: row.get::<_, i64>(10)?.max(0) as u64,
-        };
-        common::record_usage(&mut state, &usage, stamp.as_deref(), model.as_deref());
-        state.tool_calls = row.get::<_, i64>(5)?.max(0) as u64;
-        state.human_interventions = row.get::<_, i64>(4)?.max(0) as u64;
-        state.estimated_cost_usd = row.get::<_, Option<f64>>(11)?.unwrap_or(0.0).max(0.0);
-        common::finalize_run(&mut state);
-        database.persist_parse_state(&key, 1, started as i64, 1, &state)?;
     }
-    Ok(())
+    state.tool_calls = state.tool_calls.max(session.declared_tool_calls);
+    common::finalize_run(&mut state);
+    Ok(PreparedDatabaseHistorySession {
+        source_file_hash: key,
+        revision_size,
+        revision_time,
+        state,
+    })
 }
 
-fn timestamp_from_millis(value: i64) -> Option<String> {
-    DateTime::<Utc>::from_timestamp_millis(value)
-        .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
-}
-fn timestamp_from_seconds(value: f64) -> Option<String> {
-    DateTime::<Utc>::from_timestamp(
-        value as i64,
-        ((value.fract().max(0.0)) * 1_000_000_000.0) as u32,
+fn database_source_cursor_key(database: &Database, agent: AgentKind, path: &Path) -> String {
+    let payload = serde_json::json!({
+        "type": "database-history-source",
+        "agent": agent.as_str(),
+        "sourcePath": path.to_string_lossy(),
+    });
+    format!(
+        "databaseHistoryRevision:{}",
+        common::source_record_receipt(&payload, &database.source_record_receipt_key())
     )
-    .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+fn database_session_reference(
+    database: &Database,
+    agent: AgentKind,
+    path: &Path,
+    source_session_id: &str,
+) -> String {
+    let payload = serde_json::json!({
+        "type": "database-history-session-reference",
+        "agent": agent.as_str(),
+        "sourcePath": path.to_string_lossy(),
+        "sourceSession": source_session_id,
+    });
+    common::source_record_receipt(&payload, &database.source_record_receipt_key())
+}
+
+fn database_event_reference(
+    database: &Database,
+    agent: AgentKind,
+    path: &Path,
+    source_session_id: &str,
+    source_event_id: Option<&str>,
+) -> Option<String> {
+    let source_event_id = source_event_id?;
+    let payload = serde_json::json!({
+        "type": "database-history-event",
+        "agent": agent.as_str(),
+        "sourcePath": path.to_string_lossy(),
+        "sourceSession": source_session_id,
+        "sourceEvent": source_event_id,
+    });
+    Some(common::source_record_receipt(
+        &payload,
+        &database.source_record_receipt_key(),
+    ))
+}
+
+fn database_session_revision(
+    database: &Database,
+    agent: AgentKind,
+    path: &Path,
+    session: &database_history::DatabaseHistorySession,
+) -> (u64, i64) {
+    let events = session
+        .events
+        .iter()
+        .map(|event| {
+            serde_json::json!({
+                "occurredAt": event.occurred_at,
+                "eventType": event.event_type,
+                "category": event.category,
+                "name": event.name,
+                "sourceEventId": event.source_event_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "type": "database-history-revision",
+        "agent": agent.as_str(),
+        "sourcePath": path.to_string_lossy(),
+        "sourceSession": session.source_session_id,
+        "title": session.title,
+        "model": session.model,
+        "startedAt": session.started_at,
+        "endedAt": session.ended_at,
+        "usage": session.usage,
+        "estimatedCostUsd": session.estimated_cost_usd,
+        "declaredToolCalls": session.declared_tool_calls,
+        "malformedRecords": session.malformed_records,
+        "unknownRecords": session.unknown_records,
+        "sourceRevision": session.source_revision,
+        "events": events,
+    });
+    let receipt = common::source_record_receipt(&payload, &database.source_record_receipt_key());
+    let digest = receipt.split_once(':').map_or("", |(_, digest)| digest);
+    let first = digest.get(..15).unwrap_or("0");
+    let second = digest.get(15..30).unwrap_or("0");
+    (
+        u64::from_str_radix(first, 16).unwrap_or(1).max(1),
+        i64::from_str_radix(second, 16).unwrap_or_default(),
+    )
+}
+
+fn timestamp_from_seconds(value: f64) -> Option<String> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    DateTime::<Utc>::from_timestamp(value as i64, (value.fract() * 1_000_000_000.0) as u32)
+        .map(|time| time.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
 #[cfg(test)]
@@ -1347,6 +1645,836 @@ mod tests {
             !interrupted_temporary_key.exists(),
             "reopening should retain the published key and clean interrupted artifacts"
         );
+    }
+
+    fn database_source_bytes(path: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let sidecar = |suffix: &str| PathBuf::from(format!("{}{suffix}", path.to_string_lossy()));
+        [path.to_path_buf(), sidecar("-wal"), sidecar("-shm")]
+            .into_iter()
+            .filter(|candidate| candidate.is_file())
+            .map(|candidate| {
+                let bytes =
+                    std::fs::read(&candidate).expect("source database artifact should read");
+                (candidate, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cursor_database_history_is_read_only_idempotent_and_account_isolated() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("cursor-source.sqlite");
+        let source = Connection::open(&source_path).expect("cursor source should open");
+        source
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE conversation_summaries(
+                    conversationId TEXT PRIMARY KEY, title TEXT, tldr TEXT,
+                    model TEXT, updatedAt INTEGER NOT NULL
+                 );
+                 CREATE TABLE ai_code_hashes(
+                    hash TEXT PRIMARY KEY, conversationId TEXT, timestamp INTEGER,
+                    createdAt INTEGER NOT NULL, model TEXT, source TEXT
+                 );
+                 CREATE TABLE account_usage(
+                    account_id TEXT, input_tokens INTEGER, output_tokens INTEGER, secret TEXT
+                 );
+                 INSERT INTO conversation_summaries VALUES
+                    ('cursor-session-1','Cursor local work','private tldr must stay local',
+                     'composer-test',1775000003000),
+                    ('person@example.com','Cursor summary only','private summary must stay local',
+                     'sk-super-secret-token',1775000004000);
+                 INSERT INTO ai_code_hashes VALUES
+                    ('edit-hash-1','cursor-session-1',1775000001000,1775000001000,'composer-test','private-source-a'),
+                    ('edit-hash-2','cursor-session-1',1775000002000,1775000002000,'composer-test','private-source-b'),
+                    ('orphan-hash',NULL,1775000002000,1775000002000,'composer-test','private-source-c');
+                 INSERT INTO account_usage VALUES('account-elsewhere',999999,999999,'sk-account-secret');",
+            )
+            .expect("cursor fixture should write");
+        let before = database_source_bytes(&source_path);
+        let vibemeter_path = temporary.path().join("vibemeter.sqlite");
+        let database = Database::open(vibemeter_path.clone()).expect("database should open");
+
+        assert!(
+            index_database_source_at(&database, AgentKind::Cursor, &source_path, false)
+                .expect("cursor database should index")
+        );
+        assert_eq!(database_source_bytes(&source_path), before);
+        let first = database
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("cursor"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                100,
+            )
+            .expect("cursor sessions should load");
+        assert_eq!(first.total, 2);
+        assert!(first.items.iter().all(|session| session.usage.total() == 0));
+        let cursor_work = first
+            .items
+            .iter()
+            .find(|session| session.title == "Cursor local work")
+            .expect("event-backed Cursor session should remain visible");
+        let detail = database
+            .session_detail(&cursor_work.id)
+            .expect("cursor detail should load");
+        assert_eq!(detail.phases.len(), 1);
+        assert_eq!(
+            detail
+                .phases
+                .iter()
+                .map(|phase| phase.event_count)
+                .sum::<u64>(),
+            2
+        );
+        assert!(detail.phases.iter().all(|phase| phase.phase_key == "edit"));
+        assert!(
+            detail
+                .phases
+                .iter()
+                .flat_map(|phase| &phase.events)
+                .all(|event| event.event_type != "prompt")
+        );
+        let summary_only = first
+            .items
+            .iter()
+            .find(|session| session.title == "Cursor summary only")
+            .expect("summary-only Cursor session should remain visible");
+        let summary_only_detail = database
+            .session_detail(&summary_only.id)
+            .expect("summary-only Cursor detail should load");
+        assert!(
+            summary_only_detail
+                .phases
+                .iter()
+                .flat_map(|phase| &phase.events)
+                .next()
+                .is_none(),
+            "summary metadata must not be promoted into an observed activity"
+        );
+        assert_eq!(summary_only.active_seconds, 0);
+        assert_eq!(summary_only.model, None);
+        let evidence = Connection::open_with_flags(
+            &vibemeter_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("persisted evidence should open read-only");
+        let mut statement = evidence
+            .prepare("SELECT source_event_id FROM events WHERE source_event_id IS NOT NULL")
+            .expect("event identities should query");
+        let identities = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("event identities should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("event identities should collect");
+        assert_eq!(identities.len(), 2);
+        assert!(identities.iter().all(|identity| {
+            !identity.contains("edit-hash-1")
+                && !identity.contains("edit-hash-2")
+                && !identity.contains("person@example.com")
+        }));
+        let session_identities = evidence
+            .prepare("SELECT source_session_id FROM sessions")
+            .expect("session identities should query")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("session identities should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("session identities should collect");
+        assert!(session_identities.iter().all(|identity| {
+            identity.starts_with("keyed:")
+                && !identity.contains("cursor-session-1")
+                && !identity.contains("person@example.com")
+        }));
+        let overview = database
+            .overview("all", IndexStatus::default())
+            .expect("overview should load");
+        assert_eq!(
+            overview.totals.usage.total(),
+            0,
+            "Cursor account rows must never enter local-history totals"
+        );
+        assert_eq!(overview.behavior.prompt_count, 0);
+        assert_eq!(
+            database
+                .vcti_profile("all")
+                .expect("local VCTI should load")
+                .session_count,
+            2
+        );
+        let share = crate::export::preview(
+            &database,
+            ShareRenderRequest {
+                template_id: "usage-overview".into(),
+                locale: "en-US".into(),
+                aspect_ratio: "1:1".into(),
+                theme: "light".into(),
+                range: "all".into(),
+                session_id: None,
+                compare_ids: Vec::new(),
+                title: String::new(),
+                summary: String::new(),
+                project_name: String::new(),
+                metrics: Vec::new(),
+                show_brand: true,
+                show_model: true,
+                show_cost: false,
+                show_project: false,
+                show_behavior_evidence: false,
+                privacy_reviewed: true,
+            },
+        )
+        .expect("local share preview should load");
+        assert!(share.can_export);
+        assert!(!share.svg.contains("account-elsewhere"));
+        assert!(!share.svg.contains("sk-account-secret"));
+
+        let snapshot_count = database_history::snapshot_creation_count(&source_path);
+        assert!(
+            index_database_source_at(&database, AgentKind::Cursor, &source_path, false)
+                .expect("repeat cursor index should work")
+        );
+        assert_eq!(
+            database_history::snapshot_creation_count(&source_path),
+            snapshot_count,
+            "unchanged database history must skip the full snapshot"
+        );
+        let repeated = database
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("cursor"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                100,
+            )
+            .expect("cursor sessions should reload");
+        assert_eq!(repeated.total, 2);
+        let repeated_work = repeated
+            .items
+            .iter()
+            .find(|session| session.title == "Cursor local work")
+            .expect("repeated Cursor session should remain visible");
+        assert_eq!(
+            database
+                .session_detail(&repeated_work.id)
+                .expect("cursor detail should reload")
+                .phases
+                .len(),
+            1
+        );
+        #[cfg(unix)]
+        {
+            let original_permissions = std::fs::metadata(&source_path)
+                .expect("source permissions should load")
+                .permissions();
+            std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o000))
+                .expect("source should become unreadable after its revision is cached");
+            let revoked =
+                index_database_source_at(&database, AgentKind::Cursor, &source_path, false);
+            std::fs::set_permissions(&source_path, original_permissions)
+                .expect("source permissions should restore");
+            assert!(
+                !revoked.expect("revoked read access should degrade safely"),
+                "a cached revision must not hide revoked source access"
+            );
+            assert_eq!(
+                database
+                    .sources()
+                    .expect("sources should load")
+                    .into_iter()
+                    .find(|source| source.agent == "cursor")
+                    .expect("Cursor source status")
+                    .status,
+                "unavailable"
+            );
+            assert_eq!(
+                database
+                    .sessions(
+                        "all",
+                        SessionListFilters {
+                            agent: Some("cursor"),
+                            ..SessionListFilters::default()
+                        },
+                        0,
+                        100,
+                    )
+                    .expect("existing Cursor sessions should remain")
+                    .total,
+                2
+            );
+        }
+        assert_eq!(database_source_bytes(&source_path), before);
+    }
+
+    #[test]
+    fn database_history_rejects_active_rollback_journals_and_never_reads_uncommitted_rows() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("cursor-delete-journal.sqlite");
+        let source = Connection::open(&source_path).expect("cursor source should open");
+        source
+            .execute_batch(
+                "PRAGMA journal_mode=DELETE;
+                 CREATE TABLE conversation_summaries(
+                    conversationId TEXT PRIMARY KEY, title TEXT, updatedAt INTEGER NOT NULL
+                 );
+                 INSERT INTO conversation_summaries VALUES(
+                    'committed-session','Committed title',1775000000000
+                 );",
+            )
+            .expect("committed fixture should write");
+        source
+            .execute_batch(
+                "PRAGMA cache_size=10;
+                 BEGIN IMMEDIATE;
+                 UPDATE conversation_summaries
+                 SET title='Uncommitted title' WHERE conversationId='committed-session';
+                 INSERT INTO conversation_summaries VALUES(
+                    'uncommitted-session','Uncommitted row',1775000001000
+                 );
+                 WITH RECURSIVE counter(value) AS(
+                    SELECT 1 UNION ALL SELECT value + 1 FROM counter WHERE value < 200
+                 )
+                 INSERT INTO conversation_summaries(conversationId, title, updatedAt)
+                 SELECT 'spill-' || value, hex(zeroblob(4096)), 1775000001000 + value
+                 FROM counter;",
+            )
+            .expect("uncommitted fixture should write");
+        let journal_path = PathBuf::from(format!("{}-journal", source_path.to_string_lossy()));
+        assert!(
+            std::fs::metadata(&journal_path)
+                .expect("rollback journal should exist")
+                .len()
+                > 0
+        );
+        assert!(
+            std::fs::read(&journal_path)
+                .expect("rollback journal header should read")
+                .iter()
+                .take(8)
+                .any(|byte| *byte != 0),
+            "the fixture must force a hot journal header before testing rejection"
+        );
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+        assert!(
+            !index_database_source_at(&database, AgentKind::Cursor, &source_path, false)
+                .expect("hot journal should degrade safely")
+        );
+        assert_eq!(
+            database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some("cursor"),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    100,
+                )
+                .expect("sessions should remain queryable")
+                .total,
+            0
+        );
+        source
+            .execute_batch("ROLLBACK")
+            .expect("uncommitted source write should roll back");
+        assert!(
+            index_database_source_at(&database, AgentKind::Cursor, &source_path, false)
+                .expect("committed source should index after rollback")
+        );
+        let sessions = database
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("cursor"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                100,
+            )
+            .expect("committed sessions should load");
+        assert_eq!(sessions.total, 1);
+        assert_eq!(sessions.items[0].title, "Committed title");
+    }
+
+    #[test]
+    fn database_history_accepts_an_idle_persistent_rollback_journal() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("cursor-persist-journal.sqlite");
+        let source = Connection::open(&source_path).expect("Cursor source should open");
+        source
+            .execute_batch(
+                "PRAGMA journal_mode=PERSIST;
+                 CREATE TABLE conversation_summaries(
+                    conversationId TEXT PRIMARY KEY, title TEXT, updatedAt INTEGER NOT NULL
+                 );
+                 INSERT INTO conversation_summaries VALUES(
+                    'persist-session','Committed persistent journal',1775000000000
+                 );",
+            )
+            .expect("persistent journal fixture should write");
+        let journal_path = PathBuf::from(format!("{}-journal", source_path.to_string_lossy()));
+        assert!(
+            std::fs::metadata(&journal_path)
+                .expect("persistent journal should remain")
+                .len()
+                > 512
+        );
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+        assert!(
+            index_database_source_at(&database, AgentKind::Cursor, &source_path, false)
+                .expect("idle persistent journal should be readable")
+        );
+        assert_eq!(
+            database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some("cursor"),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    100,
+                )
+                .expect("persistent-journal session should load")
+                .total,
+            1
+        );
+    }
+
+    #[test]
+    fn database_history_publishes_all_changed_sessions_atomically() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("cursor-atomic.sqlite");
+        let source = Connection::open(&source_path).expect("Cursor source should open");
+        source
+            .execute_batch(
+                "CREATE TABLE conversation_summaries(
+                    conversationId TEXT PRIMARY KEY, title TEXT, updatedAt INTEGER NOT NULL
+                 );
+                 INSERT INTO conversation_summaries VALUES
+                    ('a-session','First session',1775000000000),
+                    ('z-session','Trigger failure',1775000001000);",
+            )
+            .expect("atomic source fixture should write");
+        drop(source);
+        let database_path = temporary.path().join("vibemeter.sqlite");
+        let database = Database::open(database_path.clone()).expect("database should open");
+        let fixture = Connection::open(database_path).expect("fixture database should open");
+        fixture
+            .execute_batch(
+                "CREATE TRIGGER fail_database_history_fixture
+                 BEFORE INSERT ON sessions
+                 WHEN NEW.title='Trigger failure'
+                 BEGIN
+                    SELECT RAISE(ABORT, 'fixture persistence failure');
+                 END;",
+            )
+            .expect("failure trigger should install");
+        drop(fixture);
+        assert!(
+            index_database_source_at(&database, AgentKind::Cursor, &source_path, false).is_err(),
+            "a persistence failure must abort the whole source generation"
+        );
+        assert_eq!(
+            database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some("cursor"),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    100,
+                )
+                .expect("rolled-back sessions should remain queryable")
+                .total,
+            0,
+            "the first session must roll back with the failing second session"
+        );
+        assert_eq!(
+            database
+                .sources()
+                .expect("sources should remain queryable after rollback")
+                .into_iter()
+                .find(|source| source.agent == "cursor")
+                .expect("Cursor source status should remain visible")
+                .status,
+            "unavailable",
+            "a failed publication must not leave the source stuck as indexing"
+        );
+    }
+
+    #[test]
+    fn clearing_local_data_removes_abandoned_database_snapshots_and_source_cursors() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+        database
+            .set_setting("databaseHistoryRevision:keyed:test", "6.7\nrevision\nready")
+            .expect("source cursor should write");
+        let abandoned = std::env::temp_dir().join(format!(
+            "vibemeter-database-history-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&abandoned).expect("abandoned snapshot should create");
+        std::fs::write(abandoned.join("source.sqlite"), b"private source database")
+            .expect("abandoned source snapshot should write");
+        std::fs::write(abandoned.join(".active"), b"interrupted\n")
+            .expect("abandoned lock marker should write");
+        database
+            .clear_local_data()
+            .expect("local data should clear");
+        assert!(!abandoned.exists());
+        assert_eq!(
+            database
+                .setting("databaseHistoryRevision:keyed:test")
+                .expect("source cursor should query"),
+            None
+        );
+    }
+
+    #[test]
+    fn hermes_database_history_maps_observed_fields_and_degrades_without_data_loss() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("hermes-source.sqlite");
+        let source = Connection::open(&source_path).expect("hermes source should open");
+        source
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE sessions(
+                    id TEXT PRIMARY KEY, model TEXT, started_at REAL, ended_at REAL,
+                    message_count INTEGER, tool_call_count INTEGER,
+                    input_tokens INTEGER, output_tokens INTEGER,
+                    cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                    reasoning_tokens INTEGER, estimated_cost_usd REAL, title TEXT
+                 );
+                 CREATE TABLE messages(
+                    id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT,
+                    tool_calls TEXT, timestamp REAL
+                 );
+                 CREATE TABLE account_usage(account_id TEXT, total_tokens INTEGER, secret TEXT);
+                 INSERT INTO sessions VALUES(
+                    'hermes-session-1','hermes-test',1775000000.0,1775000004.0,
+                    3,1,60,40,5,3,2,0.25,'Hermes local work'
+                 );
+                 INSERT INTO messages VALUES
+                    (1,'hermes-session-1','user','private prompt',NULL,1775000001.0),
+                    (2,'hermes-session-1','assistant','private response',
+                     '[{\"id\":\"tool-1\",\"type\":\"function\",\"function\":{\"name\":\"terminal\",\"arguments\":\"private command\"}}]',1775000002.0),
+                    (3,'hermes-session-1','tool','private tool output',NULL,1775000003.0);
+                 INSERT INTO account_usage VALUES('remote-account',999999,'sk-account-secret');",
+            )
+            .expect("hermes fixture should write");
+        source
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("source lock should start");
+        let before = database_source_bytes(&source_path);
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+
+        assert!(
+            index_database_source_at(&database, AgentKind::Hermes, &source_path, false)
+                .expect("hermes database should index")
+        );
+        assert_eq!(database_source_bytes(&source_path), before);
+        let sessions = database
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("hermes"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                100,
+            )
+            .expect("hermes sessions should load");
+        assert_eq!(sessions.total, 1);
+        let summary = &sessions.items[0];
+        assert_eq!(summary.usage.input_tokens, 60);
+        assert_eq!(summary.usage.output_tokens, 40);
+        assert_eq!(summary.usage.cache_read_tokens, 5);
+        assert_eq!(summary.usage.cache_write_tokens, 3);
+        assert_eq!(summary.usage.reasoning_tokens, 2);
+        assert_eq!(summary.tool_calls, 1);
+        let detail = database
+            .session_detail(&summary.id)
+            .expect("hermes detail should load");
+        assert!(detail.tools.iter().any(|tool| tool.label == "other"));
+        assert!(
+            detail
+                .phases
+                .iter()
+                .flat_map(|phase| &phase.events)
+                .any(|event| event.name == "terminal")
+        );
+        assert!(
+            detail
+                .phases
+                .iter()
+                .any(|phase| phase.phase_key == "execute")
+        );
+        assert_eq!(
+            detail
+                .phases
+                .iter()
+                .flat_map(|phase| &phase.events)
+                .filter(|event| event.event_type == "prompt")
+                .count(),
+            1
+        );
+        source
+            .execute_batch("ROLLBACK")
+            .expect("source lock should end");
+
+        let unsupported_path = temporary.path().join("unsupported-hermes.sqlite");
+        let unsupported = Connection::open(&unsupported_path).expect("unsupported source");
+        unsupported
+            .execute_batch("CREATE TABLE unrelated(id INTEGER PRIMARY KEY, private TEXT);")
+            .expect("unsupported fixture should write");
+        drop(unsupported);
+        assert!(
+            !index_database_source_at(&database, AgentKind::Hermes, &unsupported_path, false,)
+                .expect("unsupported schema should degrade safely")
+        );
+        assert_eq!(
+            database
+                .sources()
+                .expect("sources should load")
+                .into_iter()
+                .find(|item| item.agent == "hermes")
+                .expect("Hermes source status")
+                .status,
+            "unavailable"
+        );
+        assert_eq!(
+            database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some("hermes"),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    100,
+                )
+                .expect("existing Hermes data should remain")
+                .total,
+            1
+        );
+    }
+
+    #[test]
+    fn hermes_database_history_reports_partial_when_message_fields_are_unreadable() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("partial-hermes.sqlite");
+        let source = Connection::open(&source_path).expect("Hermes source should open");
+        source
+            .execute_batch(
+                "CREATE TABLE sessions(
+                    id TEXT PRIMARY KEY, model TEXT, started_at REAL, ended_at REAL,
+                    message_count INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    title TEXT
+                 );
+                 CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, content TEXT);
+                 INSERT INTO sessions VALUES(
+                    'partial-session','hermes-test',1775000000.0,1775000001.0,
+                    1,4,2,'Partially readable Hermes session'
+                 );
+                 INSERT INTO messages VALUES(1,'partial-session','private prompt');",
+            )
+            .expect("partial Hermes fixture should write");
+        drop(source);
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+        assert!(
+            index_database_source_at(&database, AgentKind::Hermes, &source_path, false)
+                .expect("partially readable Hermes source should retain session metadata")
+        );
+        let status = database
+            .sources()
+            .expect("sources should load")
+            .into_iter()
+            .find(|source| source.agent == "hermes")
+            .expect("Hermes source status");
+        assert_eq!(status.status, "partial");
+        assert!(status.warning_count >= 1);
+        let sessions = database
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("hermes"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                100,
+            )
+            .expect("partial Hermes sessions should load");
+        assert_eq!(sessions.total, 1);
+        assert_eq!(sessions.items[0].usage.total(), 6);
+        assert!(
+            database
+                .session_detail(&sessions.items[0].id)
+                .expect("partial session detail should load")
+                .phases
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn hermes_database_history_rejects_oversized_tool_payloads_before_materializing_them() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("oversized-hermes.sqlite");
+        let source = Connection::open(&source_path).expect("Hermes source should open");
+        source
+            .execute_batch(
+                "CREATE TABLE sessions(
+                    id TEXT PRIMARY KEY, model TEXT, started_at REAL, ended_at REAL,
+                    message_count INTEGER, tool_call_count INTEGER, title TEXT
+                 );
+                 CREATE TABLE messages(
+                    id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+                    tool_calls TEXT, timestamp REAL
+                 );
+                 INSERT INTO sessions VALUES(
+                    'oversized-session','hermes-test',1775000000.0,1775000001.0,
+                    1,1,'Oversized Hermes payload'
+                 );
+                 INSERT INTO messages
+                 SELECT 1,'oversized-session','assistant',hex(zeroblob(524289)),1775000000.5;",
+            )
+            .expect("oversized Hermes fixture should write");
+        drop(source);
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+
+        assert!(
+            index_database_source_at(&database, AgentKind::Hermes, &source_path, false)
+                .expect("oversized field should degrade without aborting the source")
+        );
+        let status = database
+            .sources()
+            .expect("sources should load")
+            .into_iter()
+            .find(|source| source.agent == "hermes")
+            .expect("Hermes source status");
+        assert_eq!(status.status, "partial");
+        let sessions = database
+            .sessions(
+                "all",
+                SessionListFilters {
+                    agent: Some("hermes"),
+                    ..SessionListFilters::default()
+                },
+                0,
+                100,
+            )
+            .expect("bounded Hermes session should load");
+        assert_eq!(sessions.total, 1);
+        assert!(
+            database
+                .session_detail(&sessions.items[0].id)
+                .expect("bounded Hermes detail should load")
+                .phases
+                .is_empty(),
+            "an oversized private tool payload must not enter normalized evidence"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_database_history_reports_unavailable_without_local_rows() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let source_path = temporary.path().join("unreadable-cursor.sqlite");
+        let source = Connection::open(&source_path).expect("source should open");
+        source
+            .execute_batch(
+                "CREATE TABLE conversation_summaries(
+                    conversationId TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL
+                 );
+                 INSERT INTO conversation_summaries VALUES('session-1',1775000000000);",
+            )
+            .expect("source fixture should write");
+        drop(source);
+        let original_permissions = std::fs::metadata(&source_path)
+            .expect("source metadata")
+            .permissions();
+        std::fs::set_permissions(&source_path, std::fs::Permissions::from_mode(0o000))
+            .expect("source should become unreadable");
+        let database = Database::open(temporary.path().join("vibemeter.sqlite"))
+            .expect("database should open");
+        let result = index_database_source_at(&database, AgentKind::Cursor, &source_path, false);
+        std::fs::set_permissions(&source_path, original_permissions)
+            .expect("source permissions should restore");
+        assert!(!result.expect("permission failure should degrade safely"));
+        let source_status = database
+            .sources()
+            .expect("sources should load")
+            .into_iter()
+            .find(|source| source.agent == "cursor")
+            .expect("Cursor source status");
+        assert!(source_status.available);
+        assert_eq!(source_status.status, "unavailable");
+        assert_eq!(source_status.warning_count, 1);
+        assert_eq!(
+            database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some("cursor"),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    100,
+                )
+                .expect("sessions should remain queryable")
+                .total,
+            0
+        );
+    }
+
+    #[test]
+    #[ignore = "reads the current Mac's database history sources into an isolated database"]
+    fn real_database_history_sources_remain_byte_identical() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("vibemeter-audit.sqlite"))
+            .expect("audit database should open");
+        for (agent, path) in [
+            (AgentKind::Cursor, cursor_database_path()),
+            (AgentKind::Hermes, hermes_database_path()),
+        ] {
+            if !path.is_file() {
+                continue;
+            }
+            let before = database_source_bytes(&path);
+            assert!(
+                index_database_source_at(&database, agent, &path, true)
+                    .expect("real database source should index")
+            );
+            assert_eq!(database_source_bytes(&path), before);
+            assert!(
+                database
+                    .sessions(
+                        "all",
+                        SessionListFilters {
+                            agent: Some(agent.as_str()),
+                            ..SessionListFilters::default()
+                        },
+                        0,
+                        1,
+                    )
+                    .expect("audited sessions should load")
+                    .total
+                    > 0
+            );
+        }
     }
 
     #[test]

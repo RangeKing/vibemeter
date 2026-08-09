@@ -867,7 +867,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
 fn history_evidence_coverage(agent: &str) -> Option<&'static str> {
     match agent {
         "claude-code" | "codex" => Some("full-history"),
-        "kimi-code" | "openclaw" | "zcode" => Some("partial-history"),
+        "kimi-code" | "cursor" | "openclaw" | "hermes" | "zcode" => Some("partial-history"),
         _ => None,
     }
 }
@@ -2029,6 +2029,7 @@ fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
 
 impl Database {
     pub fn open(path: PathBuf) -> AppResult<Self> {
+        crate::adapters::database_history::clear_snapshot_artifacts()?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -2108,11 +2109,69 @@ impl Database {
         byte_offset: u64,
         state: &ParseState,
     ) -> AppResult<String> {
+        self.with_parse_state_batch(|transaction| {
+            Self::persist_parse_state_in_transaction(
+                transaction,
+                file_hash,
+                source_size,
+                source_mtime,
+                byte_offset,
+                state,
+            )
+        })
+    }
+
+    pub(crate) fn with_parse_state_batch<T>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let result = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    pub(crate) fn cursor_matches_in_transaction(
+        transaction: &Transaction<'_>,
+        file_hash: &str,
+        source_size: u64,
+        source_mtime: i64,
+    ) -> AppResult<bool> {
+        let row = transaction
+            .query_row(
+                "SELECT source_size, source_mtime, state_json
+                 FROM ingestion_cursors WHERE source_file_hash=?1",
+                params![file_hash],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((stored_size, stored_mtime, state_json)) = row else {
+            return Ok(false);
+        };
+        let state = serde_json::from_str::<ParseState>(&state_json)?;
+        Ok(state.parser_version == PARSER_VERSION
+            && stored_size.max(0) as u64 == source_size
+            && stored_mtime == source_mtime)
+    }
+
+    pub(crate) fn persist_parse_state_in_transaction(
+        transaction: &Transaction<'_>,
+        file_hash: &str,
+        source_size: u64,
+        source_mtime: i64,
+        byte_offset: u64,
+        state: &ParseState,
+    ) -> AppResult<String> {
         let mut persisted_state = state.clone();
         crate::phrases::compact(&mut persisted_state);
         let state = &persisted_state;
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction()?;
         let derived_session_id = session_database_id(state.agent, &state.source_session_id);
         // The source file is the durable identity. Older builds briefly indexed Kimi
         // wire logs through the Claude adapter, so changing the agent also changed the
@@ -2184,8 +2243,7 @@ impl Database {
                     now,
                 ],
             )?;
-            persist_history_record_ids(&transaction, file_hash, state)?;
-            transaction.commit()?;
+            persist_history_record_ids(transaction, file_hash, state)?;
             return Ok(session_id);
         }
         let started_at = state.started_at.as_deref().or(state.ended_at.as_deref());
@@ -2305,10 +2363,10 @@ impl Database {
             params![session_id, serde_json::to_string(&state.behavior)?, now],
         )?;
 
-        replace_session_children(&transaction, &session_id, state)?;
+        replace_session_children(transaction, &session_id, state)?;
         let file_changes = state.file_changes.values().cloned().collect::<Vec<_>>();
         sync_history_evidence(
-            &transaction,
+            transaction,
             &session_id,
             file_hash,
             state.agent.as_str(),
@@ -2319,7 +2377,7 @@ impl Database {
             &state.events,
             &file_changes,
         )?;
-        upsert_derived_task(&transaction, &session_id, state, &now)?;
+        upsert_derived_task(transaction, &session_id, state, &now)?;
         transaction.execute(
             "INSERT INTO ingestion_cursors (
                 source_file_hash, agent, source_size, source_mtime, byte_offset,
@@ -2342,9 +2400,8 @@ impl Database {
                 now,
             ],
         )?;
-        persist_history_record_ids(&transaction, file_hash, state)?;
-        upsert_warning_rows(&transaction, file_hash, state, &now)?;
-        transaction.commit()?;
+        persist_history_record_ids(transaction, file_hash, state)?;
+        upsert_warning_rows(transaction, file_hash, state, &now)?;
         Ok(session_id)
     }
 
@@ -2384,6 +2441,37 @@ impl Database {
                 status
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn set_source_warning(
+        &self,
+        agent: AgentKind,
+        source_file_hash: &str,
+        warning_code: &str,
+        active: bool,
+    ) -> AppResult<()> {
+        let connection = self.connect()?;
+        if active {
+            connection.execute(
+                "INSERT INTO parser_warnings(
+                    source_file_hash, agent, warning_code, count, updated_at
+                 ) VALUES(?1, ?2, ?3, 1, ?4)
+                 ON CONFLICT(source_file_hash, warning_code) DO UPDATE SET
+                    agent=excluded.agent, count=1, updated_at=excluded.updated_at",
+                params![
+                    source_file_hash,
+                    agent.as_str(),
+                    warning_code,
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+        } else {
+            connection.execute(
+                "DELETE FROM parser_warnings WHERE source_file_hash=?1 AND warning_code=?2",
+                params![source_file_hash, warning_code],
+            )?;
+        }
         Ok(())
     }
 
@@ -2630,25 +2718,28 @@ impl Database {
     }
 
     pub fn clear_local_data(&self) -> AppResult<()> {
-        let connection = self.connect()?;
-        connection.execute_batch(
-            "DELETE FROM reviews;
-             DELETE FROM playbook_items;
-             DELETE FROM tasks;
-             DELETE FROM sessions;
-             DELETE FROM ingestion_cursors;
-             DELETE FROM history_record_ids;
-             DELETE FROM parser_warnings;
-             DELETE FROM sources;
-             DELETE FROM share_exports;
-             DELETE FROM vcti_profile_snapshots;
-             DELETE FROM live_events;
-             DELETE FROM activity_cycles;
-             DELETE FROM canonical_events;
-             DELETE FROM live_session_metrics;
-             DELETE FROM excluded_projects;",
-        )?;
-        Ok(())
+        crate::adapters::database_history::with_snapshot_exclusion(|| {
+            let connection = self.connect()?;
+            connection.execute_batch(
+                "DELETE FROM reviews;
+                 DELETE FROM playbook_items;
+                 DELETE FROM tasks;
+                 DELETE FROM sessions;
+                 DELETE FROM ingestion_cursors;
+                 DELETE FROM history_record_ids;
+                 DELETE FROM parser_warnings;
+                 DELETE FROM sources;
+                 DELETE FROM share_exports;
+                 DELETE FROM vcti_profile_snapshots;
+                 DELETE FROM live_events;
+                 DELETE FROM activity_cycles;
+                 DELETE FROM canonical_events;
+                 DELETE FROM live_session_metrics;
+                 DELETE FROM excluded_projects;
+                 DELETE FROM app_settings WHERE key LIKE 'databaseHistoryRevision:%';",
+            )?;
+            Ok(())
+        })
     }
 
     pub fn overview(&self, range: &str, index_status: IndexStatus) -> AppResult<OverviewResponse> {

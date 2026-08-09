@@ -47,12 +47,16 @@ export function SourcesPage({ locale }: { locale: Locale }) {
         const liveProvider = live.data?.hookStatus.providers.find((provider) => provider.provider === source.agent);
         const liveIntegrationReady = live.data ? Boolean(liveProvider?.installed) : undefined;
         const selected = source.available && source.selected;
+        const readIssue = source.available && (source.status === "unavailable" || source.status === "partial");
         const cursorAccountDisabled = source.agent === "cursor" && settings.data?.cursorDashboardUsage === "false";
         return <section className={`source-card capability-${source.capabilityLevel} ${selected ? "is-selected" : "is-unselected"} ${source.available ? "" : "is-missing"}`} key={source.agent}>
           <span className="source-number">{String(index + 1).padStart(2, "0")}</span>
           <header>
             <AgentBadge agent={source.agent} />
-            <span className={`source-state ${source.available ? "available" : "missing"}`}>{source.available ? <CheckCircle2 size={13} /> : <Slash size={13} />}{source.available ? t("sources.available") : t("sources.notFound")}</span>
+            <span className={`source-state ${readIssue ? "unavailable" : source.available ? "available" : "missing"}`}>
+              {readIssue ? <CircleHelp size={13} /> : source.available ? <CheckCircle2 size={13} /> : <Slash size={13} />}
+              {t(source.status === "partial" ? "sources.partiallyReadable" : readIssue ? "sources.readUnavailable" : source.available ? "sources.available" : "sources.notFound")}
+            </span>
           </header>
           <label className={`source-selector ${selected ? "selected" : ""} ${source.available ? "" : "disabled"}`}>
             <input
