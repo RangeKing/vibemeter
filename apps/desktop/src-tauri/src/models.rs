@@ -691,11 +691,29 @@ pub struct LiveSnapshot {
     pub hook_status: HookStatus,
 }
 
+#[derive(Debug, Clone)]
+pub struct ObservedLiveEvent {
+    pub occurred_at: String,
+    pub observed_at: String,
+    pub expires_at: String,
+    pub agent: String,
+    pub source_session_id: String,
+    pub source_event_id: Option<String>,
+    pub source_event_fingerprint: Option<String>,
+    pub event_name: String,
+    pub project_label: String,
+    pub payload_json: String,
+    pub status: String,
+    pub phase: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveTimelinePoint {
     pub id: String,
-    pub received_at: String,
+    pub occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
     pub agent: String,
     pub project_label: String,
     pub event_name: String,
@@ -708,6 +726,8 @@ pub struct LiveTimelinePoint {
 pub struct LiveHistoryItem {
     pub id: String,
     pub occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
     pub agent: String,
     pub project_label: String,
     pub status: String,

@@ -3,7 +3,7 @@ use crate::errors::{AppError, AppResult};
 use crate::live_sources;
 use crate::models::{
     HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession, LiveSnapshot,
-    NotchCompletedSession,
+    NotchCompletedSession, ObservedLiveEvent,
 };
 use crate::providers::{codex_binary, write_json_line};
 use chrono::{DateTime, Duration, Utc};
@@ -546,25 +546,14 @@ impl LiveMonitor {
                         register_codex_transcript(&listener_watches, &envelope, &session);
                     }
                     let transitioned_session_id = session.id.clone();
-                    let received = session.updated_at.clone();
-                    let expires = DateTime::parse_from_rfc3339(&received)
-                        .map(|value| {
-                            (value.with_timezone(&Utc) + Duration::days(RAW_RETENTION_DAYS))
-                                .to_rfc3339()
-                        })
-                        .unwrap_or_else(|_| {
-                            (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339()
-                        });
-                    let _ = database.record_live_event(
-                        &received,
-                        &expires,
-                        &session.agent,
-                        &session.source_session_id,
-                        &event_name,
-                        &session.project_label,
-                        &raw,
-                        &session.status,
+                    let observed = observed_live_event_from_envelope(
+                        &envelope,
+                        &session,
+                        raw,
+                        event_name,
+                        Utc::now().to_rfc3339(),
                     );
+                    let _ = database.record_observed_live_event(&observed);
                     let transition = merge_session(&sessions, session);
                     if transition.as_deref() == Some("completed")
                         && let Some(session) = sessions
@@ -1547,6 +1536,7 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
                 .and_then(Value::as_u64)
                 .map(|pid| format!("process-{pid}"))
         })?;
+    let source_session_id = crate::privacy::safe_opaque_identifier(&source_session_id);
     let event_name = string_field(payload, &["hook_event_name", "event", "type"])
         .unwrap_or_else(|| "Unknown".into());
     if !hook_event_belongs_to_provider(provider, payload, &event_name) {
@@ -1631,6 +1621,70 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
     };
     let raw = serde_json::to_string(envelope).ok()?;
     Some((session, raw, event_name))
+}
+
+fn observed_live_event_from_envelope(
+    envelope: &Value,
+    session: &LiveSession,
+    payload_json: String,
+    event_name: String,
+    observed_at: String,
+) -> ObservedLiveEvent {
+    let payload = envelope.get("payload").and_then(Value::as_object);
+    let occurred_at = payload
+        .and_then(|payload| {
+            string_field(
+                payload,
+                &["timestamp", "occurred_at", "occurredAt", "created_at"],
+            )
+        })
+        .filter(|value| DateTime::parse_from_rfc3339(value).is_ok())
+        .unwrap_or_else(|| session.updated_at.clone());
+    let source_event_id = payload.and_then(|payload| {
+        string_field(
+            payload,
+            &[
+                "event_id",
+                "eventId",
+                "request_id",
+                "requestId",
+                "tool_use_id",
+                "toolUseId",
+            ],
+        )
+    });
+    let source_event_fingerprint = payload.map(|payload| {
+        let notification_kind = string_field(payload, &["notification_type", "notificationType"])
+            .filter(|value| matches!(value.as_str(), "permission_prompt" | "idle_prompt"))
+            .unwrap_or_default();
+        crate::privacy::stable_hash(&format!(
+            "{}|{}|{}|{}|{}|{}",
+            session.agent,
+            session.source_session_id,
+            event_name,
+            session.status,
+            session.phase,
+            notification_kind,
+        ))
+    });
+    let expires_at = DateTime::parse_from_rfc3339(&observed_at)
+        .map(|value| (value.with_timezone(&Utc) + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339())
+        .unwrap_or_else(|_| (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339());
+
+    ObservedLiveEvent {
+        occurred_at,
+        observed_at,
+        expires_at,
+        agent: session.agent.clone(),
+        source_session_id: session.source_session_id.clone(),
+        source_event_id,
+        source_event_fingerprint,
+        event_name,
+        project_label: session.project_label.clone(),
+        payload_json,
+        status: session.status.clone(),
+        phase: Some(session.phase.clone()),
+    }
 }
 
 fn fold_codex_memory_activity(
@@ -3373,6 +3427,82 @@ mod tests {
         let (session, _, _) = session_from_envelope(&attention).expect("attention session");
         assert_eq!(session.status, "waiting");
         assert_eq!(session.phase, "needs-you");
+    }
+
+    #[test]
+    fn exact_waiting_envelope_preserves_source_and_observation_times() {
+        let envelope = json!({
+            "provider":"codex",
+            "received_at":"2026-08-09T10:00:01Z",
+            "payload":{
+                "session_id":"codex-waiting",
+                "hook_event_name":"PermissionRequest",
+                "timestamp":"2026-08-09T10:00:00Z",
+                "request_id":"permission-42",
+                "cwd":"/Users/private/project",
+                "tool_name":"Bash"
+            }
+        });
+        let (session, raw, event_name) = session_from_envelope(&envelope).expect("waiting session");
+
+        let observed = observed_live_event_from_envelope(
+            &envelope,
+            &session,
+            raw,
+            event_name,
+            "2026-08-09T10:00:02Z".into(),
+        );
+
+        assert_eq!(observed.occurred_at, "2026-08-09T10:00:00Z");
+        assert_eq!(observed.observed_at, "2026-08-09T10:00:02Z");
+        assert_eq!(observed.source_event_id.as_deref(), Some("permission-42"));
+        assert_eq!(observed.status, "waiting");
+        assert_eq!(observed.phase.as_deref(), Some("needs-you"));
+    }
+
+    #[test]
+    fn waiting_replay_without_source_id_or_time_keeps_a_stable_fingerprint() {
+        let envelope = |received_at: &str| {
+            json!({
+                "provider":"claude",
+                "received_at":received_at,
+                "payload":{
+                    "session_id":"claude-waiting",
+                    "hook_event_name":"Notification",
+                    "notification_type":"idle_prompt",
+                    "cwd":"/Users/private/project"
+                }
+            })
+        };
+        let first_envelope = envelope("2026-08-09T10:00:01Z");
+        let second_envelope = envelope("2026-08-09T10:00:02Z");
+        let (first_session, first_raw, first_name) =
+            session_from_envelope(&first_envelope).expect("first replay session");
+        let (second_session, second_raw, second_name) =
+            session_from_envelope(&second_envelope).expect("second replay session");
+
+        let first = observed_live_event_from_envelope(
+            &first_envelope,
+            &first_session,
+            first_raw,
+            first_name,
+            "2026-08-09T10:00:03Z".into(),
+        );
+        let second = observed_live_event_from_envelope(
+            &second_envelope,
+            &second_session,
+            second_raw,
+            second_name,
+            "2026-08-09T10:00:04Z".into(),
+        );
+
+        assert_eq!(first.source_event_id, None);
+        assert_eq!(
+            first.source_event_fingerprint,
+            second.source_event_fingerprint
+        );
+        assert_ne!(first.occurred_at, second.occurred_at);
+        assert_ne!(first.observed_at, second.observed_at);
     }
 
     #[test]

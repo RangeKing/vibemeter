@@ -62,7 +62,7 @@ describe("Live timeline", () => {
   it("keeps the timeline in a bounded scroll region", () => {
     const points: LiveTimelinePoint[] = Array.from({ length: 21 }, (_, index) => ({
       id: String(index),
-      receivedAt: new Date(Date.UTC(2026, 6, 31, 12, 21 - index)).toISOString(),
+      occurredAt: new Date(Date.UTC(2026, 6, 31, 12, 21 - index)).toISOString(),
       agent: "codex",
       projectLabel: `project-${index}`,
       status: "running",

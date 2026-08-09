@@ -4,18 +4,19 @@ use crate::models::{
     DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, GitCommitEvidence,
     GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat,
     InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem, LiveSession,
-    LiveTimelinePoint, NotchClearResult, NotchCompletedSession, OverviewResponse, OverviewTotals,
-    PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem,
-    PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase,
-    ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
-    SessionSummary, SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary,
-    TokenUsage, VctiProfile,
+    LiveTimelinePoint, NotchClearResult, NotchCompletedSession, ObservedLiveEvent,
+    OverviewResponse, OverviewTotals, PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud,
+    PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
+    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail,
+    SessionListFilters, SessionSummary, SessionsResponse, SkillUsageItem, SkillUsageSummary,
+    SourceStatus, TaskSummary, TokenUsage, VctiProfile,
 };
-use crate::source_capabilities::{source_capabilities, source_capability};
-use chrono::{DateTime, Duration, Local, Utc};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
+use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
+use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, params};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 type RangeUsageActivity = (
@@ -448,6 +449,55 @@ CREATE INDEX IF NOT EXISTS skill_usage_skill_idx ON skill_usage(skill);
 PRAGMA user_version = 13;
 "#;
 
+const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
+const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 14;
+const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
+const DATABASE_SCHEMA_VERSION: i64 = 14;
+const WAITING_REPLAY_WINDOW_SECONDS: i64 = 30;
+
+const MIGRATION_V14: &str = r#"
+BEGIN IMMEDIATE;
+ALTER TABLE live_events ADD COLUMN canonical_event_id TEXT;
+
+CREATE TABLE canonical_events (
+    id TEXT PRIMARY KEY,
+    source_event_id TEXT,
+    event_fingerprint TEXT NOT NULL,
+    dedup_key TEXT NOT NULL UNIQUE,
+    protocol_version TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    activity_cycle_id TEXT,
+    work_unit_id TEXT,
+    parent_session_id TEXT,
+    relation_type TEXT,
+    lifecycle_status TEXT NOT NULL,
+    live_phase TEXT,
+    event_type TEXT NOT NULL,
+    source_event_name TEXT NOT NULL,
+    process_phase TEXT,
+    evidence_level TEXT NOT NULL,
+    source_coverage TEXT NOT NULL,
+    privacy_level TEXT NOT NULL,
+    project_label TEXT NOT NULL DEFAULT '',
+    deleted_at TEXT
+);
+CREATE INDEX canonical_events_occurred_idx
+    ON canonical_events(occurred_at DESC);
+CREATE INDEX canonical_events_status_idx
+    ON canonical_events(lifecycle_status, occurred_at DESC);
+CREATE INDEX canonical_events_session_idx
+    ON canonical_events(agent, source_session_id, occurred_at DESC);
+CREATE INDEX live_events_canonical_idx ON live_events(canonical_event_id);
+PRAGMA user_version = 14;
+COMMIT;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -461,53 +511,489 @@ pub struct CursorRecord {
     pub state: ParseState,
 }
 
+#[derive(Debug)]
+struct CanonicalWaitingEvent {
+    id: String,
+    source_event_id: Option<String>,
+    event_fingerprint: String,
+    dedup_key: String,
+    occurred_at: String,
+    observed_at: String,
+    agent: String,
+    source_session_id: String,
+    live_phase: String,
+    source_event_name: String,
+    project_label: String,
+}
+
+fn canonical_waiting_event(event: &ObservedLiveEvent) -> Option<CanonicalWaitingEvent> {
+    let exact_source = source_capabilities().iter().any(|capability| {
+        capability.agent == event.agent && capability.live_capability == SourceLiveCapability::Exact
+    });
+    if !exact_source || event.status != "waiting" {
+        return None;
+    }
+    let occurred_at = DateTime::parse_from_rfc3339(&event.occurred_at)
+        .ok()?
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+    let observed_at = DateTime::parse_from_rfc3339(&event.observed_at)
+        .ok()?
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+
+    let source_event_name = match event.event_name.as_str() {
+        "PermissionRequest" => "PermissionRequest",
+        _ => "Waiting",
+    };
+    let live_phase = match event.phase.as_deref() {
+        Some("needs-you") => "needs-you",
+        _ => "needs-you",
+    };
+    let project_label = if event.project_label.contains(['/', '\\']) {
+        format!(
+            "private-{}",
+            crate::privacy::stable_hash(&event.project_label)
+        )
+    } else {
+        event.project_label.chars().take(80).collect()
+    };
+    let source_fingerprint = event.source_event_fingerprint.clone().unwrap_or_else(|| {
+        crate::privacy::stable_hash(&format!(
+            "{}|{}|{}|{}|{}|{}",
+            event.agent,
+            event.source_session_id,
+            source_event_name,
+            occurred_at,
+            event.status,
+            live_phase,
+        ))
+    });
+    let event_fingerprint = crate::privacy::stable_hash(&format!(
+        "{}|{}|{}|{}",
+        event.agent, event.source_session_id, source_event_name, source_fingerprint,
+    ));
+    let dedup_identity = event
+        .source_event_id
+        .as_deref()
+        .map(|source_event_id| {
+            format!(
+                "source|{}|{}|{}",
+                event.agent, event.source_session_id, source_event_id
+            )
+        })
+        .unwrap_or_else(|| format!("episode|{event_fingerprint}|{observed_at}"));
+    let dedup_key = crate::privacy::stable_hash(&dedup_identity);
+
+    Some(CanonicalWaitingEvent {
+        id: format!("waiting-{dedup_key}"),
+        source_event_id: event
+            .source_event_id
+            .as_deref()
+            .map(crate::privacy::stable_hash),
+        event_fingerprint,
+        dedup_key,
+        occurred_at,
+        observed_at,
+        agent: event.agent.clone(),
+        source_session_id: crate::privacy::safe_opaque_identifier(&event.source_session_id),
+        live_phase: live_phase.into(),
+        source_event_name: source_event_name.into(),
+        project_label,
+    })
+}
+
+fn resolve_waiting_episode(
+    transaction: &Transaction<'_>,
+    event: &ObservedLiveEvent,
+    canonical: &mut CanonicalWaitingEvent,
+) -> AppResult<()> {
+    if event.source_event_id.is_some() {
+        return Ok(());
+    }
+    let latest = transaction
+        .query_row(
+            "SELECT le.id, le.status, le.received_at,
+                    ce.id, ce.dedup_key, ce.event_fingerprint
+             FROM live_events le
+             LEFT JOIN canonical_events ce ON ce.id=le.canonical_event_id
+             WHERE le.agent=?1 AND le.source_session_id=?2
+             ORDER BY le.id DESC
+             LIMIT 1",
+            params![event.agent, event.source_session_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    if let Some((_, status, received_at, Some(id), Some(dedup_key), Some(fingerprint))) = &latest
+        && status == "waiting"
+        && fingerprint == &canonical.event_fingerprint
+        && DateTime::parse_from_rfc3339(&canonical.observed_at)
+            .ok()
+            .zip(DateTime::parse_from_rfc3339(received_at).ok())
+            .is_some_and(|(observed, previous)| {
+                observed
+                    .signed_duration_since(previous)
+                    .num_seconds()
+                    .unsigned_abs()
+                    <= WAITING_REPLAY_WINDOW_SECONDS as u64
+            })
+    {
+        canonical.id = id.clone();
+        canonical.dedup_key = dedup_key.clone();
+        return Ok(());
+    }
+
+    let previous_raw_id = latest.map(|value| value.0).unwrap_or_default();
+    canonical.dedup_key = crate::privacy::stable_hash(&format!(
+        "episode|{}|{}|{previous_raw_id}",
+        canonical.event_fingerprint, canonical.observed_at,
+    ));
+    canonical.id = format!("waiting-{}", canonical.dedup_key);
+    Ok(())
+}
+
+fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<()> {
+    for (target_version, migration) in [
+        (1, MIGRATION_V1),
+        (2, MIGRATION_V2),
+        (3, MIGRATION_V3),
+        (4, MIGRATION_V4),
+        (5, MIGRATION_V5),
+        (6, MIGRATION_V6),
+        (7, MIGRATION_V7),
+        (8, MIGRATION_V8),
+        (9, MIGRATION_V9),
+        (10, MIGRATION_V10),
+        (11, MIGRATION_V11),
+        (12, MIGRATION_V12),
+        (13, MIGRATION_V13),
+        (14, MIGRATION_V14),
+    ] {
+        if version < target_version {
+            connection.execute_batch(migration)?;
+        }
+    }
+    Ok(())
+}
+
+fn database_version(path: &Path) -> AppResult<i64> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(connection.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+fn sqlite_sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn migration_artifact(path: &Path, label: &str) -> PathBuf {
+    path.with_extension(format!("sqlite.{label}"))
+}
+
+fn migration_paths(path: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    (
+        migration_artifact(path, "schema-migrating"),
+        migration_artifact(path, "schema-rollback"),
+        migration_artifact(path, "schema-migration"),
+    )
+}
+
+fn rollback_copy_path(rollback: &Path) -> PathBuf {
+    sqlite_sidecar(rollback, "-copying")
+}
+
+fn remove_file_if_exists(path: &Path) -> AppResult<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_database_artifact(path: &Path) -> AppResult<()> {
+    remove_file_if_exists(&sqlite_sidecar(path, "-wal"))?;
+    remove_file_if_exists(&sqlite_sidecar(path, "-shm"))?;
+    remove_file_if_exists(path)
+}
+
+fn database_header_version(path: &Path) -> AppResult<i64> {
+    let mut file = std::fs::File::open(path)?;
+    let mut header = [0_u8; 64];
+    file.read_exact(&mut header)?;
+    if &header[..16] != b"SQLite format 3\0" {
+        return Err(AppError::InvalidRequest(
+            "database header is not a supported SQLite file".into(),
+        ));
+    }
+    Ok(u32::from_be_bytes(
+        header[60..64]
+            .try_into()
+            .map_err(|_| AppError::InvalidRequest("database header is incomplete".into()))?,
+    ) as i64)
+}
+
+fn validate_v14_connection(connection: &Connection) -> AppResult<()> {
+    let quick_check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let canonical_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('canonical_events')
+         WHERE name IN (
+            'id', 'dedup_key', 'protocol_version', 'schema_version',
+            'occurred_at', 'observed_at', 'evidence_level',
+            'source_coverage', 'privacy_level'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let live_link_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('live_events')
+         WHERE name='canonical_event_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if quick_check != "ok"
+        || version != DATABASE_SCHEMA_VERSION
+        || canonical_columns != 9
+        || live_link_columns != 1
+    {
+        return Err(AppError::InvalidRequest(
+            "database migration did not pass version and schema verification".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_v14_database(path: &Path) -> AppResult<()> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    validate_v14_connection(&connection)
+}
+
+fn validate_legacy_database(path: &Path) -> AppResult<()> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let quick_check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if quick_check != "ok" || version >= DATABASE_SCHEMA_VERSION {
+        return Err(AppError::InvalidRequest(
+            "database rollback artifact did not pass integrity and version verification".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn create_rollback_artifact(path: &Path, rollback: &Path) -> AppResult<()> {
+    if std::fs::hard_link(path, rollback).is_ok() {
+        return validate_legacy_database(rollback);
+    }
+
+    let copying = rollback_copy_path(rollback);
+    let source_size = std::fs::metadata(path)?.len();
+    std::fs::copy(path, &copying)?;
+    std::fs::File::open(&copying)?.sync_all()?;
+    if std::fs::metadata(&copying)?.len() != source_size {
+        return Err(AppError::InvalidRequest(
+            "database rollback copy is incomplete".into(),
+        ));
+    }
+    validate_legacy_database(&copying)?;
+    std::fs::rename(copying, rollback)?;
+    Ok(())
+}
+
+fn archive_source_sidecars(path: &Path, rollback: &Path) -> AppResult<()> {
+    for suffix in ["-wal", "-shm"] {
+        let original = sqlite_sidecar(path, suffix);
+        if original.exists() {
+            std::fs::rename(original, sqlite_sidecar(rollback, suffix))?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_rollback_sidecars(path: &Path, rollback: &Path) -> AppResult<()> {
+    for suffix in ["-wal", "-shm"] {
+        let backup = sqlite_sidecar(rollback, suffix);
+        if !backup.exists() {
+            continue;
+        }
+        let original = sqlite_sidecar(path, suffix);
+        remove_file_if_exists(&original)?;
+        std::fs::rename(backup, original)?;
+    }
+    Ok(())
+}
+
+fn restore_database(path: &Path, rollback: &Path) -> AppResult<()> {
+    if !rollback.exists() {
+        return Err(AppError::InvalidRequest(
+            "database rollback artifact is unavailable".into(),
+        ));
+    }
+    validate_legacy_database(rollback)?;
+    std::fs::rename(rollback, path)?;
+    restore_rollback_sidecars(path, rollback)?;
+    validate_legacy_database(path)
+}
+
+fn cleanup_migration_artifacts(staging: &Path, rollback: &Path, marker: &Path) -> AppResult<()> {
+    remove_database_artifact(staging)?;
+    remove_database_artifact(rollback)?;
+    remove_database_artifact(&rollback_copy_path(rollback))?;
+    remove_file_if_exists(marker)?;
+    Ok(())
+}
+
+fn recover_schema_migration_state(path: &Path) -> AppResult<()> {
+    let (staging, rollback, marker) = migration_paths(path);
+    let installed = path.exists()
+        && database_header_version(path).is_ok_and(|version| version == DATABASE_SCHEMA_VERSION);
+    if installed {
+        for suffix in ["-wal", "-shm"] {
+            let original = sqlite_sidecar(path, suffix);
+            if !original.exists() {
+                continue;
+            }
+            let backup = sqlite_sidecar(&rollback, suffix);
+            if rollback.exists() && !backup.exists() {
+                std::fs::rename(&original, backup)?;
+            } else {
+                remove_file_if_exists(&original)?;
+            }
+        }
+        if validate_v14_database(path).is_ok() {
+            return cleanup_migration_artifacts(&staging, &rollback, &marker);
+        }
+    }
+
+    let legacy_installed = path.exists()
+        && database_header_version(path).is_ok_and(|version| version < DATABASE_SCHEMA_VERSION);
+    if legacy_installed {
+        restore_rollback_sidecars(path, &rollback)?;
+        if validate_legacy_database(path).is_ok() {
+            return cleanup_migration_artifacts(&staging, &rollback, &marker);
+        }
+    }
+
+    if rollback.exists() {
+        restore_database(path, &rollback)?;
+    } else if !path.exists() {
+        return Err(AppError::InvalidRequest(
+            "interrupted database migration cannot be recovered".into(),
+        ));
+    }
+    cleanup_migration_artifacts(&staging, &rollback, &marker)
+}
+
+fn recover_interrupted_schema_migration(path: &Path) -> AppResult<()> {
+    let (_, _, marker) = migration_paths(path);
+    if !marker.exists() {
+        return Ok(());
+    }
+    let marker_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&marker)?;
+    marker_lock.try_lock().map_err(|_| {
+        AppError::InvalidRequest("database migration is already in progress".into())
+    })?;
+    recover_schema_migration_state(path)
+}
+
+fn create_migration_marker(marker: &Path) -> AppResult<std::fs::File> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)?;
+    file.try_lock().map_err(|_| {
+        AppError::InvalidRequest("database migration marker could not be locked".into())
+    })?;
+    file.write_all(b"v14\n")?;
+    file.sync_all()?;
+    Ok(file)
+}
+
+fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
+    let (staging, rollback, marker) = migration_paths(path);
+    if staging.exists() || rollback.exists() || marker.exists() {
+        return Err(AppError::InvalidRequest(
+            "database migration artifacts require recovery".into(),
+        ));
+    }
+    let _marker_lock = create_migration_marker(&marker)?;
+    let mut installed_validated = false;
+    let migration_result = (|| -> AppResult<()> {
+        let migration_lock = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        migration_lock.busy_timeout(std::time::Duration::from_secs(10))?;
+        migration_lock.execute_batch("BEGIN IMMEDIATE")?;
+
+        let source = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        source.busy_timeout(std::time::Duration::from_secs(10))?;
+        source.backup(MAIN_DB, &staging, None)?;
+        drop(source);
+
+        let staged = Connection::open(&staging)?;
+        staged.busy_timeout(std::time::Duration::from_secs(10))?;
+        let version: i64 = staged.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        apply_schema_migrations(&staged, version)?;
+        staged.pragma_update(None, "journal_mode", "DELETE")?;
+        validate_v14_connection(&staged)?;
+        drop(staged);
+
+        create_rollback_artifact(path, &rollback)?;
+        std::fs::rename(&staging, path)?;
+        migration_lock.execute_batch("COMMIT")?;
+        drop(migration_lock);
+        archive_source_sidecars(path, &rollback)?;
+        validate_v14_database(path)?;
+        installed_validated = true;
+        cleanup_migration_artifacts(&staging, &rollback, &marker)
+    })();
+
+    if migration_result.is_err() && !installed_validated {
+        recover_schema_migration_state(path)?;
+    }
+    migration_result
+}
+
 impl Database {
     pub fn open(path: PathBuf) -> AppResult<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        recover_interrupted_schema_migration(&path)?;
+        if path.is_file() && database_version(&path)? < DATABASE_SCHEMA_VERSION {
+            migrate_schema_on_copy(&path)?;
+        }
         let connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version < 1 {
-            connection.execute_batch(MIGRATION_V1)?;
-        }
-        if version < 2 {
-            connection.execute_batch(MIGRATION_V2)?;
-        }
-        if version < 3 {
-            connection.execute_batch(MIGRATION_V3)?;
-        }
-        if version < 4 {
-            connection.execute_batch(MIGRATION_V4)?;
-        }
-        if version < 5 {
-            connection.execute_batch(MIGRATION_V5)?;
-        }
-        if version < 6 {
-            connection.execute_batch(MIGRATION_V6)?;
-        }
-        if version < 7 {
-            connection.execute_batch(MIGRATION_V7)?;
-        }
-        if version < 8 {
-            connection.execute_batch(MIGRATION_V8)?;
-        }
-        if version < 9 {
-            connection.execute_batch(MIGRATION_V9)?;
-        }
-        if version < 10 {
-            connection.execute_batch(MIGRATION_V10)?;
-        }
-        if version < 11 {
-            connection.execute_batch(MIGRATION_V11)?;
-        }
-        if version < 12 {
-            connection.execute_batch(MIGRATION_V12)?;
-        }
-        if version < 13 {
-            connection.execute_batch(MIGRATION_V13)?;
-        }
+        apply_schema_migrations(&connection, version)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
@@ -1050,6 +1536,7 @@ impl Database {
              DELETE FROM share_exports;
              DELETE FROM vcti_profile_snapshots;
              DELETE FROM live_events;
+             DELETE FROM canonical_events;
              DELETE FROM live_session_metrics;
              DELETE FROM excluded_projects;",
         )?;
@@ -1163,47 +1650,115 @@ impl Database {
         payload_json: &str,
         status: &str,
     ) -> AppResult<()> {
+        self.record_observed_live_event(&ObservedLiveEvent {
+            occurred_at: received_at.into(),
+            observed_at: received_at.into(),
+            expires_at: expires_at.into(),
+            agent: agent.into(),
+            source_session_id: source_session_id.into(),
+            source_event_id: None,
+            source_event_fingerprint: Some(crate::privacy::stable_hash(&format!(
+                "{agent}|{source_session_id}|{event_name}|{status}"
+            ))),
+            event_name: event_name.into(),
+            project_label: project_label.into(),
+            payload_json: payload_json.into(),
+            status: status.into(),
+            phase: (status == "waiting").then(|| "needs-you".into()),
+        })
+    }
+
+    pub fn record_observed_live_event(&self, event: &ObservedLiveEvent) -> AppResult<()> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
+        let mut canonical = canonical_waiting_event(event);
+        if let Some(canonical) = &mut canonical {
+            resolve_waiting_episode(&transaction, event, canonical)?;
+        }
+        let canonical_inserted = if let Some(canonical) = &canonical {
+            transaction.execute(
+                "INSERT INTO canonical_events(
+                    id, source_event_id, event_fingerprint, dedup_key,
+                    protocol_version, schema_version, algorithm_version,
+                    occurred_at, observed_at, source, agent, source_session_id,
+                    lifecycle_status, live_phase, event_type, source_event_name,
+                    evidence_level, source_coverage, privacy_level, project_label
+                 ) VALUES(
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                    ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                 ) ON CONFLICT(dedup_key) DO NOTHING",
+                params![
+                    canonical.id,
+                    canonical.source_event_id,
+                    canonical.event_fingerprint,
+                    canonical.dedup_key,
+                    CANONICAL_EVENT_PROTOCOL_VERSION,
+                    CANONICAL_EVENT_SCHEMA_VERSION,
+                    LIVE_NORMALIZER_VERSION,
+                    canonical.occurred_at,
+                    canonical.observed_at,
+                    "live-hook",
+                    canonical.agent,
+                    canonical.source_session_id,
+                    "waiting",
+                    canonical.live_phase,
+                    "attention.waiting",
+                    canonical.source_event_name,
+                    "observed",
+                    "exact-lifecycle",
+                    "normalized-local",
+                    canonical.project_label,
+                ],
+            )? == 1
+        } else {
+            false
+        };
+        let visible_project_label = canonical
+            .as_ref()
+            .map(|value| value.project_label.as_str())
+            .unwrap_or(&event.project_label);
         transaction.execute(
             "INSERT INTO live_events(
                 received_at, expires_at, agent, source_session_id,
-                event_name, project_label, payload_json, status
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                event_name, project_label, payload_json, status, canonical_event_id
+             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
-                received_at,
-                expires_at,
-                agent,
-                source_session_id,
-                event_name,
-                project_label,
-                payload_json,
-                status
+                event.observed_at,
+                event.expires_at,
+                event.agent,
+                event.source_session_id,
+                event.event_name,
+                visible_project_label,
+                event.payload_json,
+                event.status,
+                canonical.as_ref().map(|value| value.id.as_str()),
             ],
         )?;
-        transaction.execute(
-            "INSERT INTO live_session_metrics(
-                agent, source_session_id, started_at, last_seen_at,
-                event_count, waiting_count, error_count, completion_count
-             ) VALUES(?1, ?2, ?3, ?3, 1, ?4, ?5, ?6)
-             ON CONFLICT(agent, source_session_id) DO UPDATE SET
-                last_seen_at=excluded.last_seen_at,
-                event_count=live_session_metrics.event_count+1,
-                waiting_count=live_session_metrics.waiting_count+excluded.waiting_count,
-                error_count=live_session_metrics.error_count+excluded.error_count,
-                completion_count=live_session_metrics.completion_count+excluded.completion_count",
-            params![
-                agent,
-                source_session_id,
-                received_at,
-                i64::from(status == "waiting"),
-                i64::from(status == "error"),
-                i64::from(status == "completed"),
-            ],
-        )?;
+        if canonical.is_none() || canonical_inserted {
+            transaction.execute(
+                "INSERT INTO live_session_metrics(
+                    agent, source_session_id, started_at, last_seen_at,
+                    event_count, waiting_count, error_count, completion_count
+                 ) VALUES(?1, ?2, ?3, ?3, 1, ?4, ?5, ?6)
+                 ON CONFLICT(agent, source_session_id) DO UPDATE SET
+                    last_seen_at=excluded.last_seen_at,
+                    event_count=live_session_metrics.event_count+1,
+                    waiting_count=live_session_metrics.waiting_count+excluded.waiting_count,
+                    error_count=live_session_metrics.error_count+excluded.error_count,
+                    completion_count=live_session_metrics.completion_count+excluded.completion_count",
+                params![
+                    event.agent,
+                    event.source_session_id,
+                    event.observed_at,
+                    i64::from(event.status == "waiting"),
+                    i64::from(event.status == "error"),
+                    i64::from(event.status == "completed"),
+                ],
+            )?;
+        }
         transaction.execute(
             "DELETE FROM live_events WHERE expires_at<?1",
-            params![received_at],
+            params![event.observed_at],
         )?;
         transaction.commit()?;
         Ok(())
@@ -1451,6 +2006,17 @@ impl Database {
                )",
             params![cursor_marker],
         )?;
+        transaction.execute(
+            "DELETE FROM canonical_events
+             WHERE id IN (
+                SELECT canonical_event_id
+                FROM live_events
+                WHERE agent='claude-code'
+                  AND instr(payload_json, ?1)>0
+                  AND canonical_event_id IS NOT NULL
+             )",
+            params![cursor_marker],
+        )?;
         let removed = transaction.execute(
             "DELETE FROM live_events
              WHERE agent='claude-code'
@@ -1477,6 +2043,18 @@ impl Database {
                )",
             params![memory_marker],
         )?;
+        transaction.execute(
+            "DELETE FROM canonical_events
+             WHERE id IN (
+                SELECT canonical_event_id
+                FROM live_events
+                WHERE agent='codex'
+                  AND project_label='memories'
+                  AND instr(payload_json, ?1)>0
+                  AND canonical_event_id IS NOT NULL
+             )",
+            params![memory_marker],
+        )?;
         let removed = transaction.execute(
             "DELETE FROM live_events
              WHERE agent='codex'
@@ -1500,6 +2078,21 @@ impl Database {
         transaction.execute(
             "DELETE FROM live_session_metrics
              WHERE source_session_id IN (?1, ?2, ?3, ?4)",
+            params![
+                session_ids[0],
+                session_ids[1],
+                session_ids[2],
+                session_ids[3]
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM canonical_events
+             WHERE id IN (
+                SELECT canonical_event_id
+                FROM live_events
+                WHERE source_session_id IN (?1, ?2, ?3, ?4)
+                  AND canonical_event_id IS NOT NULL
+             )",
             params![
                 session_ids[0],
                 session_ids[1],
@@ -1537,34 +2130,58 @@ impl Database {
             .unwrap_or_else(|| format!("{}T00:00:00Z", Local::now().date_naive()));
         let history_start = (now - Duration::days(7)).to_rfc3339();
         let mut timeline_statement = connection.prepare(
-            "SELECT id, received_at, agent, project_label, event_name,
-                    COALESCE(NULLIF(status, ''), 'running'), source_session_id
-             FROM live_events
-             WHERE received_at>=?1
-             ORDER BY received_at DESC
+            "WITH activity_events AS (
+                SELECT id, occurred_at, observed_at, agent, project_label,
+                       source_event_name AS event_name,
+                       lifecycle_status AS status, source_session_id
+                FROM canonical_events
+                WHERE deleted_at IS NULL
+                UNION ALL
+                SELECT printf('legacy:%d:%s:%s', id, agent, source_session_id),
+                       received_at, NULL, agent, project_label, event_name,
+                       COALESCE(NULLIF(status, ''), 'running'), source_session_id
+                FROM live_events
+                WHERE canonical_event_id IS NULL
+             )
+             SELECT id, occurred_at, observed_at, agent, project_label, event_name,
+                    status, source_session_id
+             FROM activity_events
+             WHERE occurred_at>=?1
+             ORDER BY occurred_at DESC, id ASC
              LIMIT 200",
         )?;
         let timeline = timeline_statement
             .query_map(params![period_start], |row| {
-                let id: i64 = row.get(0)?;
-                let agent: String = row.get(2)?;
-                let source_session_id: String = row.get(6)?;
                 Ok(LiveTimelinePoint {
-                    id: format!("{id}:{agent}:{source_session_id}"),
-                    received_at: row.get(1)?,
-                    agent,
-                    project_label: row.get(3)?,
-                    event_name: row.get(4)?,
-                    status: row.get(5)?,
-                    source_session_id,
+                    id: row.get(0)?,
+                    occurred_at: row.get(1)?,
+                    observed_at: row.get(2)?,
+                    agent: row.get(3)?,
+                    project_label: row.get(4)?,
+                    event_name: row.get(5)?,
+                    status: row.get(6)?,
+                    source_session_id: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(timeline_statement);
 
         let mut history_statement = connection.prepare(
-            "SELECT le.id, le.received_at, le.agent, le.project_label, le.event_name,
-                    COALESCE(NULLIF(le.status, ''), 'running'), le.source_session_id,
+            "WITH activity_events AS (
+                SELECT id, occurred_at, observed_at, agent, project_label,
+                       source_event_name AS event_name,
+                       lifecycle_status AS status, source_session_id
+                FROM canonical_events
+                WHERE deleted_at IS NULL
+                UNION ALL
+                SELECT printf('legacy:%d:%s:%s', id, agent, source_session_id),
+                       received_at, NULL, agent, project_label, event_name,
+                       COALESCE(NULLIF(status, ''), 'running'), source_session_id
+                FROM live_events
+                WHERE canonical_event_id IS NULL
+             )
+             SELECT le.id, le.occurred_at, le.observed_at, le.agent, le.project_label,
+                    le.event_name, le.status, le.source_session_id,
                     (
                         SELECT s.id
                         FROM sessions s
@@ -1573,34 +2190,35 @@ impl Database {
                         ORDER BY COALESCE(s.ended_at, s.started_at) DESC
                         LIMIT 1
                     )
-             FROM live_events le
-             WHERE le.received_at>=?1
+             FROM activity_events le
+             WHERE le.occurred_at>=?1
                AND (
                     le.status IN ('waiting', 'error')
                     OR le.event_name='PermissionRequest'
                )
-             ORDER BY le.received_at DESC
+             ORDER BY le.occurred_at DESC, le.id ASC
              LIMIT 60",
         )?;
         let history = history_statement
             .query_map(params![history_start], |row| {
-                let id: i64 = row.get(0)?;
-                let agent: String = row.get(2)?;
-                let event_name: String = row.get(4)?;
-                let mut status: String = row.get(5)?;
+                let id: String = row.get(0)?;
+                let agent: String = row.get(3)?;
+                let event_name: String = row.get(5)?;
+                let mut status: String = row.get(6)?;
                 if status != "waiting" && status != "error" && event_name == "PermissionRequest" {
                     status = "waiting".into();
                 }
-                let source_session_id: String = row.get(6)?;
+                let source_session_id: String = row.get(7)?;
                 Ok(LiveHistoryItem {
-                    id: format!("hist:{id}:{agent}:{source_session_id}"),
+                    id: format!("hist:{id}"),
                     occurred_at: row.get(1)?,
+                    observed_at: row.get(2)?,
                     agent,
-                    project_label: row.get(3)?,
+                    project_label: row.get(4)?,
                     status,
                     event_name,
                     source_session_id,
-                    session_id: row.get(7)?,
+                    session_id: row.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -4741,9 +5359,97 @@ fn add_rate_count(current: Option<f64>, value: u64) -> Option<f64> {
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
-    use crate::models::{DailyAggregate, PhraseAggregate};
+    use crate::models::{DailyAggregate, ObservedLiveEvent, PhraseAggregate};
     use std::collections::HashMap;
+    use std::path::Path;
     use std::sync::{Arc, Barrier};
+
+    fn create_v13_live_database(path: &Path, incompatible_canonical_view: bool) {
+        let database = Database::open(path.to_path_buf()).expect("fixture database should open");
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let mut state = ParseState::new(AgentKind::Codex, "legacy-session".into());
+        state.started_at = Some(now.clone());
+        state.ended_at = Some(now.clone());
+        state.title = Some("Legacy indexed session".into());
+        state.project_hash = Some("legacy-project-hash".into());
+        state.project_label = Some("legacy-project".into());
+        state.usage.input_tokens = 42;
+        state.file_changes.insert(
+            "src/legacy.rs".into(),
+            crate::models::FileChangeAccumulator {
+                path: "src/legacy.rs".into(),
+                change_kind: "modified".into(),
+                lines_added: 3,
+                modification_count: 1,
+                ..crate::models::FileChangeAccumulator::default()
+            },
+        );
+        database
+            .persist_parse_state("legacy-source-file", 1, 1, 1, &state)
+            .expect("legacy indexed session should persist");
+        database
+            .record_live_event(
+                &now,
+                &(Utc::now() + Duration::hours(1)).to_rfc3339_opts(SecondsFormat::AutoSi, true),
+                "codex",
+                "legacy-session",
+                "PermissionRequest",
+                "legacy-project",
+                "{}",
+                "waiting",
+            )
+            .expect("legacy live event should persist");
+        drop(database);
+
+        let connection = Connection::open(path).expect("legacy database should reopen");
+        connection
+            .execute_batch(
+                "ALTER TABLE live_events RENAME TO live_events_v14;
+                 CREATE TABLE live_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    received_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    source_session_id TEXT NOT NULL,
+                    event_name TEXT NOT NULL,
+                    project_label TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running'
+                 );
+                 INSERT INTO live_events(
+                    id,
+                    received_at, expires_at, agent, source_session_id,
+                    event_name, project_label, payload_json, status
+                 ) SELECT
+                    id,
+                    received_at, expires_at, agent, source_session_id,
+                    event_name, project_label, payload_json, status
+                   FROM live_events_v14;
+                 DROP TABLE live_events_v14;
+                 DROP TABLE canonical_events;
+                 CREATE INDEX live_events_expiry_idx ON live_events(expires_at);
+                 CREATE INDEX live_events_session_idx
+                    ON live_events(agent, source_session_id, received_at);
+                 CREATE INDEX live_events_status_idx ON live_events(status, received_at);
+                 PRAGMA user_version = 13;",
+            )
+            .expect("v13 fixture schema should be restored");
+        if incompatible_canonical_view {
+            connection
+                .execute("CREATE VIEW canonical_events AS SELECT 1 AS id", [])
+                .expect("incompatible view should be created");
+        }
+    }
+
+    fn assert_no_schema_migration_artifacts(path: &Path) {
+        let (staging, rollback, marker) = migration_paths(path);
+        let copying = rollback_copy_path(&rollback);
+        for artifact in [staging, rollback, copying, marker] {
+            assert!(!artifact.exists(), "migration artifact should be removed");
+            assert!(!sqlite_sidecar(&artifact, "-wal").exists());
+            assert!(!sqlite_sidecar(&artifact, "-shm").exists());
+        }
+    }
 
     fn notch_session(id: &str, status: &str, started_at: &str, updated_at: &str) -> LiveSession {
         LiveSession {
@@ -4861,6 +5567,562 @@ mod concurrency_tests {
             .find(|source| source.agent == "zcode")
             .expect("zcode should be present");
         assert!(!source.selected);
+    }
+
+    #[test]
+    fn exact_waiting_event_is_canonical_deduplicated_and_user_visible() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("canonical-waiting.sqlite"))
+            .expect("database should open");
+        let occurred_at =
+            (Utc::now() - Duration::seconds(2)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let first_observed_at =
+            (Utc::now() - Duration::seconds(1)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let second_observed_at = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        let waiting = |observed_at: &str| ObservedLiveEvent {
+            occurred_at: occurred_at.clone(),
+            observed_at: observed_at.into(),
+            expires_at: expires_at.clone(),
+            agent: "codex".into(),
+            source_session_id: "source-session".into(),
+            source_event_id: Some("permission-1".into()),
+            source_event_fingerprint: None,
+            event_name: "PermissionRequest".into(),
+            project_label: "project".into(),
+            payload_json: r#"{"prompt":"do not expose","command":"rm private"}"#.into(),
+            status: "waiting".into(),
+            phase: Some("needs-you".into()),
+        };
+
+        database
+            .record_observed_live_event(&waiting(&first_observed_at))
+            .expect("first observation should persist");
+        database
+            .record_observed_live_event(&waiting(&second_observed_at))
+            .expect("duplicate observation should be accepted");
+
+        let connection = database.connect().expect("database should connect");
+        let canonical = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(occurred_at), MIN(observed_at),
+                        MIN(protocol_version), MIN(schema_version), MIN(algorithm_version),
+                        MIN(evidence_level), MIN(source_coverage), MIN(privacy_level),
+                        MIN(lifecycle_status), MIN(live_phase), MIN(event_type),
+                        MIN(source_event_name)
+                 FROM canonical_events",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, String>(12)?,
+                    ))
+                },
+            )
+            .expect("canonical event should load");
+        let payload_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('canonical_events')
+                 WHERE name IN ('payload_json', 'prompt', 'command', 'path', 'tool_arguments')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("canonical columns should load");
+        let metrics: (i64, i64) = connection
+            .query_row(
+                "SELECT event_count, waiting_count
+                 FROM live_session_metrics
+                 WHERE agent='codex' AND source_session_id='source-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("canonical metrics should load");
+        drop(connection);
+
+        assert_eq!(canonical.0, 1);
+        assert_eq!(canonical.1, occurred_at);
+        assert_eq!(canonical.2, first_observed_at);
+        assert_eq!(canonical.3, "1.0.0");
+        assert_eq!(canonical.4, 14);
+        assert_eq!(canonical.5, "live-normalizer-1.0.0");
+        assert_eq!(canonical.6, "observed");
+        assert_eq!(canonical.7, "exact-lifecycle");
+        assert_eq!(canonical.8, "normalized-local");
+        assert_eq!(canonical.9, "waiting");
+        assert_eq!(canonical.10, "needs-you");
+        assert_eq!(canonical.11, "attention.waiting");
+        assert_eq!(canonical.12, "PermissionRequest");
+        assert_eq!(payload_columns, 0);
+        assert_eq!(metrics, (1, 1));
+
+        let activity = database.live_activity().expect("live activity should load");
+        assert_eq!(activity.timeline.len(), 1);
+        assert_eq!(activity.timeline[0].status, "waiting");
+        assert_eq!(
+            activity.timeline[0].observed_at.as_deref(),
+            Some(first_observed_at.as_str())
+        );
+        assert_eq!(activity.history.len(), 1);
+        assert_eq!(activity.history[0].status, "waiting");
+        assert_eq!(
+            activity.history[0].observed_at.as_deref(),
+            Some(first_observed_at.as_str())
+        );
+    }
+
+    #[test]
+    fn stable_fingerprint_deduplicates_waiting_replays_without_source_id_or_time() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("fingerprint-waiting.sqlite"))
+            .expect("database should open");
+        let first_time = "2026-08-09T10:00:01Z";
+        let second_time = "2026-08-09T10:00:02Z";
+        let event = |time: &str| ObservedLiveEvent {
+            occurred_at: time.into(),
+            observed_at: time.into(),
+            expires_at: "2026-08-09T11:00:00Z".into(),
+            agent: "claude-code".into(),
+            source_session_id: "fingerprint-session".into(),
+            source_event_id: None,
+            source_event_fingerprint: Some("stable-private-payload-hash".into()),
+            event_name: "Notification".into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: "waiting".into(),
+            phase: Some("needs-you".into()),
+        };
+
+        database
+            .record_observed_live_event(&event(first_time))
+            .expect("first replay should persist");
+        database
+            .record_observed_live_event(&event(second_time))
+            .expect("second replay should deduplicate");
+
+        let connection = database.connect().expect("database should connect");
+        let canonical: (i64, String, String) = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(occurred_at), MIN(observed_at)
+                 FROM canonical_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("canonical replay should load");
+        assert_eq!(canonical, (1, first_time.into(), first_time.into()));
+    }
+
+    #[test]
+    fn resumed_session_creates_a_new_waiting_episode_without_source_ids() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("resumed-waiting.sqlite"))
+            .expect("database should open");
+        let event = |time: &str, status: &str| ObservedLiveEvent {
+            occurred_at: time.into(),
+            observed_at: time.into(),
+            expires_at: "2026-08-09T11:00:00Z".into(),
+            agent: "claude-code".into(),
+            source_session_id: "resumed-session".into(),
+            source_event_id: None,
+            source_event_fingerprint: Some(if status == "waiting" {
+                "stable-waiting-fingerprint".into()
+            } else {
+                "stable-running-fingerprint".into()
+            }),
+            event_name: if status == "waiting" {
+                "Notification".into()
+            } else {
+                "PostToolUse".into()
+            },
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(if status == "waiting" {
+                "needs-you".into()
+            } else {
+                "thinking".into()
+            }),
+        };
+
+        database
+            .record_observed_live_event(&event("2026-08-09T10:00:01Z", "waiting"))
+            .expect("first waiting episode should persist");
+        database
+            .record_observed_live_event(&event("2026-08-09T10:00:02Z", "running"))
+            .expect("resume should persist");
+        database
+            .record_observed_live_event(&event("2026-08-09T10:00:03Z", "waiting"))
+            .expect("second waiting episode should persist");
+
+        let connection = database.connect().expect("database should connect");
+        let canonical_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
+                row.get(0)
+            })
+            .expect("canonical count should load");
+        assert_eq!(canonical_count, 2);
+    }
+
+    #[test]
+    fn canonical_times_normalize_to_utc_and_ties_use_stable_ids() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("canonical-time-order.sqlite"))
+            .expect("database should open");
+        let instant = Utc::now() - Duration::seconds(1);
+        let utc_time = instant.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let offset_time = instant
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 60 * 60).expect("valid offset"))
+            .to_rfc3339_opts(SecondsFormat::AutoSi, false);
+        let observed_at = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let event = |source_event_id: &str, occurred_at: &str| ObservedLiveEvent {
+            occurred_at: occurred_at.into(),
+            observed_at: observed_at.clone(),
+            expires_at: (Utc::now() + Duration::hours(1))
+                .to_rfc3339_opts(SecondsFormat::AutoSi, true),
+            agent: "codex".into(),
+            source_session_id: "time-order-session".into(),
+            source_event_id: Some(source_event_id.into()),
+            source_event_fingerprint: None,
+            event_name: "PermissionRequest".into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: "waiting".into(),
+            phase: Some("needs-you".into()),
+        };
+        database
+            .record_observed_live_event(&event("event-b", &offset_time))
+            .expect("offset event should persist");
+        database
+            .record_observed_live_event(&event("event-a", &utc_time))
+            .expect("UTC event should persist");
+
+        let connection = database.connect().expect("database should connect");
+        let times: (i64, String, String) = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT occurred_at), MIN(occurred_at), MAX(occurred_at)
+                 FROM canonical_events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("canonical times should load");
+        drop(connection);
+        let activity = database.live_activity().expect("activity should load");
+        let ids = activity
+            .timeline
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<Vec<_>>();
+        let mut sorted_ids = ids.clone();
+        sorted_ids.sort();
+
+        assert_eq!(times.0, 1);
+        assert_eq!(times.1, utc_time);
+        assert_eq!(times.2, utc_time);
+        assert_eq!(ids, sorted_ids);
+    }
+
+    #[test]
+    fn v13_live_records_remain_visible_after_idempotent_upgrade() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("legacy-live.sqlite");
+        create_v13_live_database(&path, false);
+
+        let database = Database::open(path.clone()).expect("legacy database should upgrade");
+        let first = database
+            .live_activity()
+            .expect("legacy activity should load");
+        let first_sessions = database
+            .sessions("all", SessionListFilters::default(), 0, 10)
+            .expect("legacy sessions should load");
+        let first_detail = database
+            .session_detail(&first_sessions.items[0].id)
+            .expect("legacy session detail should load");
+        assert_eq!(first.timeline.len(), 1);
+        assert_eq!(first.timeline[0].status, "waiting");
+        assert_eq!(first.timeline[0].observed_at, None);
+        assert_eq!(first_sessions.items[0].title, "Legacy indexed session");
+        assert_eq!(first_detail.file_changes.len(), 1);
+        drop(database);
+        let _ = std::fs::remove_file(sqlite_sidecar(&path, "-wal"));
+        let _ = std::fs::remove_file(sqlite_sidecar(&path, "-shm"));
+
+        let reopened = Database::open(path).expect("upgraded database should reopen");
+        let second = reopened
+            .live_activity()
+            .expect("activity should still load");
+        let second_sessions = reopened
+            .sessions("all", SessionListFilters::default(), 0, 10)
+            .expect("legacy sessions should still load");
+        let second_detail = reopened
+            .session_detail(&second_sessions.items[0].id)
+            .expect("legacy session detail should still load");
+        let connection = reopened.connect().expect("database should connect");
+        let canonical_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
+                row.get(0)
+            })
+            .expect("canonical count should load");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version should load");
+
+        assert_eq!(second.timeline.len(), 1);
+        assert_eq!(second_sessions.items[0].title, "Legacy indexed session");
+        assert_eq!(second_detail.file_changes.len(), 1);
+        assert_eq!(canonical_count, 0);
+        assert_eq!(version, 14);
+        assert_no_schema_migration_artifacts(temporary.path().join("legacy-live.sqlite").as_path());
+    }
+
+    #[test]
+    fn failed_v14_migration_rolls_back_without_damaging_v13_data() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("migration-rollback.sqlite");
+        create_v13_live_database(&path, true);
+        let original_bytes = std::fs::read(&path).expect("original database should be readable");
+
+        assert!(Database::open(path.clone()).is_err());
+        let after_bytes = std::fs::read(&path).expect("failed migration should preserve database");
+
+        let connection = Connection::open(path).expect("original database should remain usable");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version should remain readable");
+        let rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM live_events", [], |row| row.get(0))
+            .expect("legacy events should remain readable");
+        let canonical_link_columns: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('live_events')
+                 WHERE name='canonical_event_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy schema should remain readable");
+        let historical_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM sessions s JOIN file_changes fc ON fc.session_id=s.id",
+                [],
+                |row| row.get(0),
+            )
+            .expect("historical evidence should remain readable");
+
+        assert_eq!(after_bytes, original_bytes);
+        assert_eq!(version, 13);
+        assert_eq!(rows, 1);
+        assert_eq!(canonical_link_columns, 0);
+        assert_eq!(historical_rows, 1);
+        assert_no_schema_migration_artifacts(
+            temporary.path().join("migration-rollback.sqlite").as_path(),
+        );
+    }
+
+    #[test]
+    fn interrupted_installed_migration_recovers_from_its_persistent_marker() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("interrupted-migration.sqlite");
+        create_v13_live_database(&path, false);
+        let (staging, rollback, marker) = migration_paths(&path);
+
+        let source = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .expect("source should open");
+        source
+            .backup(MAIN_DB, &staging, None)
+            .expect("staging copy should be created");
+        drop(source);
+        let staged = Connection::open(&staging).expect("staging should open");
+        apply_schema_migrations(&staged, 13).expect("staging should migrate");
+        staged
+            .pragma_update(None, "journal_mode", "DELETE")
+            .expect("staging should checkpoint");
+        validate_v14_connection(&staged).expect("staging should validate");
+        drop(staged);
+        std::fs::hard_link(&path, &rollback).expect("rollback link should persist");
+        create_migration_marker(&marker).expect("migration marker should persist");
+        std::fs::rename(&staging, &path).expect("staging should be installed");
+
+        let recovered = Database::open(path.clone()).expect("interrupted migration should recover");
+        let version: i64 = recovered
+            .connect()
+            .expect("database should connect")
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version should load");
+
+        assert_eq!(version, 14);
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn interrupted_rollback_resumes_sidecar_restoration() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("interrupted-rollback.sqlite");
+        let base = temporary.path().join("interrupted-rollback-base.sqlite");
+        create_v13_live_database(&path, false);
+        let (_, rollback, marker) = migration_paths(&path);
+
+        let connection = Connection::open(&path).expect("legacy database should open");
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .expect("legacy database should use WAL");
+        connection
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .expect("automatic checkpointing should be disabled");
+        connection
+            .execute(
+                "INSERT INTO live_events(
+                    received_at, expires_at, agent, source_session_id,
+                    event_name, project_label, payload_json, status
+                 ) VALUES (
+                    '2026-08-10T00:00:00Z', '2026-08-10T01:00:00Z',
+                    'codex', 'sidecar-session', 'SidecarOnly', 'project', '{}', 'waiting'
+                 )",
+                [],
+            )
+            .expect("sidecar-only transaction should commit");
+        std::fs::copy(&path, &base).expect("pre-checkpoint main database should be copied");
+        std::fs::copy(
+            sqlite_sidecar(&path, "-wal"),
+            sqlite_sidecar(&rollback, "-wal"),
+        )
+        .expect("rollback WAL should be copied");
+        std::fs::copy(
+            sqlite_sidecar(&path, "-shm"),
+            sqlite_sidecar(&rollback, "-shm"),
+        )
+        .expect("rollback shared-memory file should be copied");
+        drop(connection);
+
+        std::fs::copy(&base, &path).expect("restored main database should be simulated");
+        remove_file_if_exists(&sqlite_sidecar(&path, "-wal")).expect("live WAL should be absent");
+        remove_file_if_exists(&sqlite_sidecar(&path, "-shm")).expect("live SHM should be absent");
+        drop(create_migration_marker(&marker).expect("migration marker should persist"));
+        assert!(
+            !rollback.exists(),
+            "main rollback should already be restored"
+        );
+
+        recover_interrupted_schema_migration(&path)
+            .expect("sidecar restoration should resume after interruption");
+
+        let recovered = Connection::open(&path).expect("restored database should open");
+        let rows: i64 = recovered
+            .query_row(
+                "SELECT COUNT(*) FROM live_events WHERE event_name='SidecarOnly'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sidecar transaction should remain visible");
+        assert_eq!(rows, 1);
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn partial_rollback_copy_never_replaces_a_valid_legacy_database() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("partial-rollback.sqlite");
+        create_v13_live_database(&path, false);
+        let (_, rollback, marker) = migration_paths(&path);
+        let copying = rollback_copy_path(&rollback);
+        let original_bytes = std::fs::read(&path).expect("legacy database should be readable");
+        std::fs::write(&copying, b"incomplete rollback copy")
+            .expect("partial rollback copy should be simulated");
+        drop(create_migration_marker(&marker).expect("migration marker should persist"));
+
+        recover_interrupted_schema_migration(&path)
+            .expect("valid legacy database should win over a partial copy");
+
+        assert_eq!(
+            std::fs::read(&path).expect("legacy database should remain readable"),
+            original_bytes
+        );
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn active_migration_marker_prevents_a_second_migrator() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("active-migration.sqlite");
+        create_v13_live_database(&path, false);
+        let (_, _, marker) = migration_paths(&path);
+        let marker_lock = create_migration_marker(&marker).expect("marker should lock");
+        let original_bytes = std::fs::read(&path).expect("database should be readable");
+
+        assert!(Database::open(path.clone()).is_err());
+        assert_eq!(
+            std::fs::read(&path).expect("database should remain readable"),
+            original_bytes
+        );
+        assert!(marker.exists());
+
+        drop(marker_lock);
+        recover_interrupted_schema_migration(&path).expect("stale marker should recover");
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn canonical_waiting_output_excludes_sensitive_payload_and_paths() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("private-waiting.sqlite"))
+            .expect("database should open");
+        let now = Utc::now().to_rfc3339();
+        let event = ObservedLiveEvent {
+            occurred_at: now.clone(),
+            observed_at: now,
+            expires_at: (Utc::now() + Duration::hours(1)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: "/Users/private/work/private-session".into(),
+            source_event_id: Some("request-private-value".into()),
+            source_event_fingerprint: None,
+            event_name: "prompt-private-value".into(),
+            project_label: "/Users/private/work/project".into(),
+            payload_json: r#"{"prompt":"private-value","command":"private-command","tool_arguments":{"path":"/Users/private/work/project"}}"#.into(),
+            status: "waiting".into(),
+            phase: Some("prompt-private-value".into()),
+        };
+        database
+            .record_observed_live_event(&event)
+            .expect("private event should persist safely");
+
+        let activity = database.live_activity().expect("activity should load");
+        let output = serde_json::to_string(&activity).expect("activity should serialize");
+        let connection = database.connect().expect("database should connect");
+        let canonical_projection: String = connection
+            .query_row(
+                "SELECT id || '|' || COALESCE(source_event_id, '') || '|' || source_session_id || '|' ||
+                        event_fingerprint || '|' || dedup_key || '|' || source_event_name ||
+                        '|' || project_label || '|' || COALESCE(live_phase, '')
+                 FROM canonical_events",
+                [],
+                |row| row.get(0),
+            )
+            .expect("canonical projection should load");
+
+        for sensitive in [
+            "private-value",
+            "private-command",
+            "/Users/private/work/project",
+            "/Users/private/work/private-session",
+            "tool_arguments",
+        ] {
+            assert!(!output.contains(sensitive));
+            assert!(!canonical_projection.contains(sensitive));
+        }
+        assert_eq!(activity.timeline[0].event_name, "Waiting");
+        assert!(activity.timeline[0].project_label.starts_with("private-"));
     }
 
     #[test]
@@ -5278,22 +6540,29 @@ mod concurrency_tests {
             .expect("database should open");
         let received_at = Utc::now().to_rfc3339();
         let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
-        for session_id in [
+        for (index, session_id) in [
             "claude-expanded-check",
             "codex-expanded-check",
             "vibemeter-direct-check",
             "vibemeter-visual-check",
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             database
                 .record_live_event(
                     &received_at,
                     &expires_at,
                     "codex",
                     session_id,
-                    "PreToolUse",
+                    if index == 0 {
+                        "PermissionRequest"
+                    } else {
+                        "PreToolUse"
+                    },
                     "validation",
                     "{}",
-                    "running",
+                    if index == 0 { "waiting" } else { "running" },
                 )
                 .expect("validation event should persist");
         }
@@ -5351,9 +6620,15 @@ mod concurrency_tests {
                 |row| row.get(0),
             )
             .expect("real event count");
+        let canonical_events: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
+                row.get(0)
+            })
+            .expect("canonical event count");
         assert_eq!(validation_events, 0);
         assert_eq!(validation_metrics, 0);
         assert_eq!(real_events, 1);
+        assert_eq!(canonical_events, 1);
     }
 
     #[test]
@@ -5451,10 +6726,10 @@ mod concurrency_tests {
                 &expires_at,
                 "codex",
                 "memory-child",
-                "SessionStart",
+                "PermissionRequest",
                 "memories",
                 r#"{"payload":{"cwd":"/Users/test/.codex/memories"}}"#,
-                "running",
+                "waiting",
             )
             .expect("memory child should persist");
         database
@@ -5493,8 +6768,14 @@ mod concurrency_tests {
                 |row| row.get(0),
             )
             .expect("real metric count");
+        let canonical_events: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
+                row.get(0)
+            })
+            .expect("canonical event count");
         assert_eq!(memory_metrics, 0);
         assert_eq!(real_metrics, 1);
+        assert_eq!(canonical_events, 0);
     }
 
     #[test]

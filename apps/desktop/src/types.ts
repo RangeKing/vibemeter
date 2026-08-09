@@ -279,7 +279,8 @@ export interface LiveSnapshot {
 
 export interface LiveTimelinePoint {
   id: string;
-  receivedAt: string;
+  occurredAt: string;
+  observedAt?: string;
   agent: string;
   projectLabel: string;
   eventName: string;
@@ -290,6 +291,7 @@ export interface LiveTimelinePoint {
 export interface LiveHistoryItem {
   id: string;
   occurredAt: string;
+  observedAt?: string;
   agent: string;
   projectLabel: string;
   status: "waiting" | "error" | string;

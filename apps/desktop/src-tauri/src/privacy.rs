@@ -25,6 +25,17 @@ pub fn stable_hash(value: &str) -> String {
     hex::encode(&hasher.finalize()[..8])
 }
 
+pub fn safe_opaque_identifier(value: &str) -> String {
+    let unsafe_value = value.contains(['/', '\\'])
+        || value.chars().any(char::is_control)
+        || value.chars().count() > 128;
+    if unsafe_value {
+        format!("private-{}", stable_hash(value))
+    } else {
+        value.into()
+    }
+}
+
 static LEADING_MARKER: Lazy<Regex> = Lazy::new(|| {
     // Matches, at the start of a string, one "noise" token that prompts often begin
     // with: a complete markdown/skill link `[label](target)`, a broken link whose target

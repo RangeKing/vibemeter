@@ -82,7 +82,7 @@ export function TimelineList({ points, locale }: { points: LiveTimelinePoint[]; 
     <ol className="live-timeline-list">
       {points.map((point) => (
         <li key={point.id} className={`status-${point.status}`}>
-          <time>{formatTime(point.receivedAt, locale)}</time>
+          <time>{formatTime(point.occurredAt, locale)}</time>
           <AgentBadge agent={point.agent} compact />
           <div>
             <strong>{point.projectLabel || agentName(point.agent)}</strong>
