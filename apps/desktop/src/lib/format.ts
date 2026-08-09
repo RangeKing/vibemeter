@@ -35,7 +35,8 @@ export function formatDate(value: string, locale: Locale, style: "short" | "medi
   return new Intl.DateTimeFormat(locale, { dateStyle: style }).format(date);
 }
 
-export function formatDateTime(value: string, locale: Locale): string {
+export function formatDateTime(value: string | null | undefined, locale: Locale): string {
+  if (!value) return "—";
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 

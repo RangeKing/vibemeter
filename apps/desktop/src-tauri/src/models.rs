@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.4.0";
+pub const PARSER_VERSION: &str = "6.5.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -109,6 +109,10 @@ pub struct DailyAggregate {
 #[serde(rename_all = "camelCase")]
 pub struct CanonicalEvent {
     pub sequence: u64,
+    #[serde(default)]
+    pub source_event_id: Option<String>,
+    #[serde(default)]
+    pub source_event_fingerprint: Option<String>,
     pub occurred_at: Option<String>,
     pub event_type: String,
     pub category: String,
@@ -440,7 +444,7 @@ pub struct SessionSummary {
     pub model: Option<String>,
     pub title: String,
     pub project_label: String,
-    pub started_at: String,
+    pub started_at: Option<String>,
     pub ended_at: Option<String>,
     pub active_seconds: u64,
     pub usage: TokenUsage,

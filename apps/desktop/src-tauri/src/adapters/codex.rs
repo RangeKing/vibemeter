@@ -135,8 +135,10 @@ fn parse_response_item(state: &mut ParseState, payload: &Value, timestamp: Optio
         .unwrap_or_default()
     {
         "custom_tool_call" => {
-            if let Some(tool_id) = common::normalized_tool_id(payload)
-                && !state.seen_tool_ids.insert(tool_id)
+            let tool_id = common::normalized_tool_id(payload);
+            if tool_id
+                .as_ref()
+                .is_some_and(|tool_id| !state.seen_tool_ids.insert(tool_id.clone()))
             {
                 return;
             }
@@ -156,26 +158,54 @@ fn parse_response_item(state: &mut ParseState, payload: &Value, timestamp: Optio
                 {
                     common::inspect_codex_requested_patch(state, patch);
                 }
-                common::record_tool(state, name, None, timestamp);
+                common::record_tool_with_source(state, name, None, timestamp, tool_id.as_deref());
             } else if name == "exec"
                 && let Some(source) = raw_input
             {
                 let patches = common::inspect_codex_exec_patches(state, source);
-                let commands = common::record_codex_exec_commands(state, source, timestamp);
+                let commands = common::record_codex_exec_commands(
+                    state,
+                    source,
+                    timestamp,
+                    tool_id.as_deref(),
+                );
                 if patches == 0 && commands == 0 {
-                    common::record_tool(state, name, Some(&input), timestamp);
+                    common::record_tool_with_source(
+                        state,
+                        name,
+                        Some(&input),
+                        timestamp,
+                        tool_id.as_deref(),
+                    );
                 } else if patches > 0 {
-                    for _ in 0..patches {
-                        common::record_tool(state, "apply_patch", None, timestamp);
+                    for index in 0..patches {
+                        let patch_id = tool_id.as_deref().map(|tool_id| {
+                            common::derived_source_event_id(tool_id, "apply-patch", index)
+                        });
+                        common::record_tool_with_source(
+                            state,
+                            "apply_patch",
+                            None,
+                            timestamp,
+                            patch_id.as_deref(),
+                        );
                     }
                 }
             } else {
-                common::record_tool(state, name, Some(&input), timestamp);
+                common::record_tool_with_source(
+                    state,
+                    name,
+                    Some(&input),
+                    timestamp,
+                    tool_id.as_deref(),
+                );
             }
         }
         "function_call" => {
-            if let Some(tool_id) = common::normalized_tool_id(payload)
-                && !state.seen_tool_ids.insert(tool_id)
+            let tool_id = common::normalized_tool_id(payload);
+            if tool_id
+                .as_ref()
+                .is_some_and(|tool_id| !state.seen_tool_ids.insert(tool_id.clone()))
             {
                 return;
             }
@@ -196,9 +226,15 @@ fn parse_response_item(state: &mut ParseState, payload: &Value, timestamp: Optio
                 {
                     common::inspect_codex_requested_patch(state, patch);
                 }
-                common::record_tool(state, name, None, timestamp);
+                common::record_tool_with_source(state, name, None, timestamp, tool_id.as_deref());
             } else {
-                common::record_tool(state, name, Some(&input), timestamp);
+                common::record_tool_with_source(
+                    state,
+                    name,
+                    Some(&input),
+                    timestamp,
+                    tool_id.as_deref(),
+                );
             }
         }
         "custom_tool_call_output" | "function_call_output" => {

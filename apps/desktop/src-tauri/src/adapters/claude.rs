@@ -99,13 +99,21 @@ fn parse_assistant(state: &mut ParseState, record: &Value, timestamp: Option<&st
             if item.get("type").and_then(Value::as_str) != Some("tool_use") {
                 continue;
             }
-            if let Some(tool_id) = common::normalized_tool_id(item)
-                && !state.seen_tool_ids.insert(tool_id)
+            let tool_id = common::normalized_tool_id(item);
+            if tool_id
+                .as_ref()
+                .is_some_and(|tool_id| !state.seen_tool_ids.insert(tool_id.clone()))
             {
                 continue;
             }
             let name = item.get("name").and_then(Value::as_str).unwrap_or("other");
-            common::record_tool(state, name, item.get("input"), timestamp);
+            common::record_tool_with_source(
+                state,
+                name,
+                item.get("input"),
+                timestamp,
+                tool_id.as_deref(),
+            );
         }
     }
 }

@@ -89,7 +89,7 @@ export interface SessionSummary {
   model?: string;
   title: string;
   projectLabel: string;
-  startedAt: string;
+  startedAt?: string | null;
   endedAt?: string;
   activeSeconds: number;
   usage: TokenUsage;

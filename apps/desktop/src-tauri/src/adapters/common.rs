@@ -4,7 +4,7 @@ use crate::privacy::{
     safe_project_relative_path, sanitize_prompt_excerpt, sanitize_result_excerpt, sanitize_title,
     sanitize_tool_name, stable_hash,
 };
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, SecondsFormat, Utc};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
@@ -346,19 +346,84 @@ pub fn record_event(
     success: Option<bool>,
     timestamp: Option<&str>,
 ) {
+    record_event_with_source(state, event_type, category, name, success, timestamp, None);
+}
+
+pub fn record_event_with_source(
+    state: &mut ParseState,
+    event_type: &str,
+    category: &str,
+    name: &str,
+    success: Option<bool>,
+    timestamp: Option<&str>,
+    source_event_id: Option<&str>,
+) {
     if state.events.len() >= MAX_EVENTS_PER_SESSION {
         return;
     }
+    let sanitized_name = sanitize_tool_name(name);
+    let fingerprint_base = source_event_fingerprint_base(
+        event_type,
+        category,
+        &sanitized_name,
+        success,
+        None,
+        timestamp,
+        "observed",
+    );
+    let fingerprint_ordinal = state
+        .events
+        .iter()
+        .filter(|event| {
+            event.event_type == event_type
+                && event.category == category
+                && event.name == sanitized_name
+                && event.success == success
+                && event.occurred_at.as_deref() == timestamp
+        })
+        .count();
     state.events.push(CanonicalEvent {
         sequence: state.events.len() as u64 + 1,
+        source_event_id: source_event_id.map(ToString::to_string),
+        source_event_fingerprint: Some(if fingerprint_ordinal == 0 {
+            fingerprint_base
+        } else {
+            stable_hash(&format!("{fingerprint_base}|{fingerprint_ordinal}"))
+        }),
         occurred_at: timestamp.map(ToString::to_string),
         event_type: event_type.into(),
         category: category.into(),
-        name: sanitize_tool_name(name),
+        name: sanitized_name,
         success,
         duration_ms: None,
         provenance: "observed".into(),
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn source_event_fingerprint_base(
+    event_type: &str,
+    category: &str,
+    name: &str,
+    success: Option<bool>,
+    duration_ms: Option<u64>,
+    timestamp: Option<&str>,
+    provenance: &str,
+) -> String {
+    let timestamp = timestamp
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| {
+            value
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        })
+        .unwrap_or_else(|| "time-unavailable".into());
+    stable_hash(&format!(
+        "{event_type}|{category}|{}|{}|{}|{timestamp}|{provenance}",
+        sanitize_tool_name(name),
+        success.map(i64::from).unwrap_or(-1),
+        duration_ms.unwrap_or_default(),
+    ))
 }
 
 pub fn text_from_message(value: &Value) -> Option<String> {
@@ -514,6 +579,16 @@ pub fn record_tool(
     input: Option<&Value>,
     timestamp: Option<&str>,
 ) {
+    record_tool_with_source(state, raw_name, input, timestamp, None);
+}
+
+pub fn record_tool_with_source(
+    state: &mut ParseState,
+    raw_name: &str,
+    input: Option<&Value>,
+    timestamp: Option<&str>,
+    source_event_id: Option<&str>,
+) {
     let name = raw_name.to_ascii_lowercase();
     let mut category = match name.as_str() {
         value if value.contains("read") || value.contains("view") => "read",
@@ -592,7 +667,15 @@ pub fn record_tool(
             .get(&local_date(timestamp).unwrap_or_default())
             .map_or(1, |aggregate| aggregate.tool_calls.saturating_add(1));
     }
-    record_event(state, "tool", category, raw_name, None, timestamp);
+    record_event_with_source(
+        state,
+        "tool",
+        category,
+        raw_name,
+        None,
+        timestamp,
+        source_event_id,
+    );
 }
 
 fn extract_command(input: &Value) -> Option<&str> {
@@ -1084,20 +1167,29 @@ pub fn record_codex_exec_commands(
     state: &mut ParseState,
     source: &str,
     timestamp: Option<&str>,
+    parent_source_event_id: Option<&str>,
 ) -> usize {
     let mut observed = 0;
     let calls = tool_call_arguments(source, "exec_command");
     if calls.len() > 1 || source.contains("Promise.all") || source.contains("Promise.allSettled") {
         state.behavior.parallel_batches = state.behavior.parallel_batches.saturating_add(1);
     }
-    for (call_start, argument_start) in calls {
+    for (index, (call_start, argument_start)) in calls.into_iter().enumerate() {
         let Some(command) =
             object_string_property(source, call_start, argument_start, &["cmd", "command"])
         else {
             continue;
         };
         let input = serde_json::json!({ "cmd": command });
-        record_tool(state, "exec", Some(&input), timestamp);
+        let source_event_id = parent_source_event_id
+            .map(|parent| stable_hash(&format!("{parent}|exec-command|{index}")));
+        record_tool_with_source(
+            state,
+            "exec",
+            Some(&input),
+            timestamp,
+            source_event_id.as_deref(),
+        );
         observed += 1;
     }
     observed
@@ -1370,6 +1462,10 @@ pub fn normalized_tool_id(value: &Value) -> Option<String> {
         .or_else(|| value.get("call_id"))
         .and_then(Value::as_str)
         .map(stable_hash)
+}
+
+pub fn derived_source_event_id(parent: &str, kind: &str, index: usize) -> String {
+    stable_hash(&format!("{parent}|{kind}|{index}"))
 }
 
 pub fn set_source_session(state: &mut ParseState, value: Option<&str>) {
