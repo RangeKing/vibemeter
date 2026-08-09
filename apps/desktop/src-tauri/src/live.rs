@@ -318,7 +318,11 @@ pub struct LiveMonitor {
 }
 
 impl LiveMonitor {
-    pub fn start(database: Database, app: AppHandle) -> AppResult<Self> {
+    pub fn start(
+        database: Database,
+        app: AppHandle,
+        diagnostics: crate::diagnostics::DiagnosticRetention,
+    ) -> AppResult<Self> {
         database.purge_misattributed_cursor_live_events()?;
         database.purge_codex_memory_live_events()?;
         database.purge_known_live_validation_events()?;
@@ -571,7 +575,11 @@ impl LiveMonitor {
                         event_name,
                         Utc::now().to_rfc3339(),
                     );
-                    let _ = database.record_observed_live_event(&observed);
+                    if database.record_observed_live_event(&observed).is_ok()
+                        && diagnostics.retain(&observed.payload_json).is_err()
+                    {
+                        eprintln!("VibeMeter diagnostic retention is unavailable");
+                    }
                     let transition = merge_session(&sessions, session);
                     if transition.as_deref() == Some("completed")
                         && let Some(session) = sessions

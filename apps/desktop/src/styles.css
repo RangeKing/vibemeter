@@ -1151,6 +1151,14 @@ body.modal-open { overflow: hidden; }
 .setting-row strong { font-size: var(--font-meta); font-weight: 680; }
 .setting-row p { max-width: 470px; margin: 4px 0 0; color: var(--muted); font-size: var(--font-meta); font-weight: 510; line-height: 1.5; }
 .setting-row select { min-width: 145px; font-size: var(--font-meta); }
+.diagnostic-retention-row { align-items: flex-start; }
+.diagnostic-retention-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; margin: 12px 0 0; }
+.diagnostic-retention-details div { min-width: 0; }
+.diagnostic-retention-details dt { color: var(--muted); font-size: var(--font-caption); }
+.diagnostic-retention-details dd { margin: 2px 0 0; overflow-wrap: anywhere; font-size: var(--font-caption); font-weight: 620; }
+.diagnostic-retention-actions { display: flex; min-width: 168px; flex-direction: column; align-items: flex-end; gap: 10px; }
+.setting-error { color: var(--danger) !important; }
+.setting-success { color: var(--positive) !important; }
 .nested-setting { padding-left: 14px; border-left: 2px solid color-mix(in srgb, var(--chart-4) 28%, var(--line)); }
 .disabled-setting { opacity: .62; }
 .project-list { display: grid; }

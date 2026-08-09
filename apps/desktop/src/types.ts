@@ -676,3 +676,17 @@ export interface AppSettings {
   notchEnabled: string;
   menuBarEnabled: string;
 }
+
+export interface DiagnosticRetentionStatus {
+  state: "disabled" | "active" | "expired" | "unavailable" | string;
+  enabled: boolean;
+  startedAt?: string;
+  expiresAt?: string;
+  storageLocation: string;
+  retainedEnvelopes: number;
+}
+
+export interface DiagnosticClearResult {
+  removed: number;
+  status: DiagnosticRetentionStatus;
+}

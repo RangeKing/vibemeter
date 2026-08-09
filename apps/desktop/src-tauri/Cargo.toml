@@ -26,6 +26,7 @@ portable-pty = "0.9"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "socks"] }
 resvg = "0.45"
+ring = "0.17"
 rusqlite = { version = "0.38", features = ["bundled", "chrono", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -45,6 +46,8 @@ block2 = "0.6.2"
 objc2 = "0.6.2"
 objc2-app-kit = { version = "0.3.2", features = ["NSEvent", "NSRunningApplication", "NSScreen", "NSWindow", "NSWorkspace"] }
 objc2-foundation = "0.3.2"
+security-framework = "3.7"
+security-framework-sys = "2.17"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 [dev-dependencies]

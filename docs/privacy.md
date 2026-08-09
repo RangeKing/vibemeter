@@ -12,7 +12,7 @@ VibeMeter is local-first. It can encounter sensitive development data, so collec
 - optional read-only Git evidence;
 - generated reviews, settings, and user edits;
 - derived catchphrase counts, session counts, and Agent attribution;
-- raw local Hook envelopes for at most 90 days;
+- raw local Hook envelopes only when the user enables diagnostic mode, encrypted with a platform-secured key and deleted after seven days;
 - long-term derived live counters used by activity analytics and VCTI.
 
 ## Not stored
@@ -40,6 +40,8 @@ The managed script sends bounded events only to `~/.vibemeter/vibemeter.sock`, w
 ## Optional features
 
 Git evidence, prompt-structure analysis, and Cursor Dashboard usage require separate user choices. Account-level Cursor usage is kept separate from local session evidence and does not affect local VCTI.
+
+Diagnostic retention is also off by default. Normal live processing discards the unredacted envelope after a canonical event forms. When the user explicitly enables diagnostics, encrypted envelopes remain in VibeMeter's application database for no more than seven days; macOS Keychain protects the encryption key. If secure storage is unavailable, VibeMeter refuses to enable the mode instead of storing plaintext. The user can clear the envelopes and key early from Settings.
 
 ## Export boundary
 

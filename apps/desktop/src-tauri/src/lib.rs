@@ -1,5 +1,6 @@
 mod adapters;
 pub mod database;
+mod diagnostics;
 pub mod errors;
 pub mod export;
 mod export_localization;
@@ -21,11 +22,11 @@ mod vcti;
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    ComparisonItem, ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse,
-    LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, NotchClearResult, OverviewResponse,
-    PhraseCloudResponse, PlaybookItem, ProjectControl, ProviderUsage, SavePlaybookRequest,
-    SessionDetail, SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest,
-    SourceStatus, TaskSummary, VctiProfile,
+    ComparisonItem, DiagnosticClearResult, DiagnosticRetentionStatus, ExportRequest, ExportResult,
+    HookStatus, IndexStatus, InsightsResponse, LiveActivityResponse, LiveSnapshot, MenuBarSnapshot,
+    NotchClearResult, OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl,
+    ProviderUsage, SavePlaybookRequest, SessionDetail, SessionListFilters, SessionsResponse,
+    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -39,6 +40,7 @@ struct AppState {
     index_status: Arc<RwLock<IndexStatus>>,
     providers: ProviderStore,
     live: live::LiveMonitor,
+    diagnostics: diagnostics::DiagnosticRetention,
 }
 
 #[tauri::command]
@@ -430,7 +432,48 @@ async fn include_project(state: State<'_, AppState>, project_hash: String) -> Ap
 #[tauri::command]
 async fn clear_local_data(state: State<'_, AppState>) -> AppResult<()> {
     let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.clear_local_data())
+    let diagnostics = state.diagnostics.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = diagnostics.clear()?;
+        database.clear_local_data()
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_diagnostic_retention(
+    state: State<'_, AppState>,
+) -> AppResult<DiagnosticRetentionStatus> {
+    let diagnostics = state.diagnostics.clone();
+    tauri::async_runtime::spawn_blocking(move || diagnostics.status())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn set_diagnostic_retention(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> AppResult<DiagnosticRetentionStatus> {
+    let diagnostics = state.diagnostics.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if enabled {
+            diagnostics.enable()
+        } else {
+            Ok(diagnostics.clear()?.status)
+        }
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn clear_diagnostic_retention(
+    state: State<'_, AppState>,
+) -> AppResult<DiagnosticClearResult> {
+    let diagnostics = state.diagnostics.clone();
+    tauri::async_runtime::spawn_blocking(move || diagnostics.clear())
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
@@ -716,10 +759,21 @@ pub fn run() {
                 .unwrap_or(migration::prepare_database(&data_dir)?);
             #[cfg(not(debug_assertions))]
             let database_path = migration::prepare_database(&data_dir)?;
-            let database = Database::open(database_path)?;
+            let database = Database::open(database_path.clone())?;
             let index_status = Arc::new(RwLock::new(IndexStatus::default()));
             let providers = ProviderStore::new(data_dir.join("ProviderProbe"))?;
-            let live = live::LiveMonitor::start(database.clone(), app.handle().clone())?;
+            let diagnostics = diagnostics::DiagnosticRetention::new(
+                database.clone(),
+                database_path.to_string_lossy().to_string(),
+            );
+            if diagnostics.expire_if_needed().is_err() {
+                eprintln!("VibeMeter diagnostic cleanup requires attention in Settings");
+            }
+            let live = live::LiveMonitor::start(
+                database.clone(),
+                app.handle().clone(),
+                diagnostics.clone(),
+            )?;
             let onboarding_complete = database
                 .setting("onboardingComplete")?
                 .is_some_and(|value| value == "true");
@@ -735,6 +789,7 @@ pub fn run() {
                 index_status: index_status.clone(),
                 providers: providers.clone(),
                 live,
+                diagnostics: diagnostics.clone(),
             };
             app.manage(state);
             let notch_enabled = onboarding_complete
@@ -812,6 +867,13 @@ pub fn run() {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
+            let diagnostic_expiry = diagnostics;
+            std::thread::spawn(move || {
+                loop {
+                    let _ = diagnostic_expiry.expire_if_needed();
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -867,6 +929,9 @@ pub fn run() {
             exclude_project,
             include_project,
             clear_local_data,
+            get_diagnostic_retention,
+            set_diagnostic_retention,
+            clear_diagnostic_retention,
             get_sources,
             set_source_selected,
             get_index_status,

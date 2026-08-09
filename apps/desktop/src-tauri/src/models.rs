@@ -683,6 +683,24 @@ pub struct NotchClearResult {
     pub count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticRetentionStatus {
+    pub state: String,
+    pub enabled: bool,
+    pub started_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub storage_location: String,
+    pub retained_envelopes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticClearResult {
+    pub removed: u64,
+    pub status: DiagnosticRetentionStatus,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookProviderStatus {

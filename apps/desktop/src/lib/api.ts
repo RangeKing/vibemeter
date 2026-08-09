@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   ComparisonItem,
+  DiagnosticClearResult,
+  DiagnosticRetentionStatus,
   ExportResult,
   InsightsResponse,
   IndexStatus,
@@ -89,6 +91,12 @@ export const api = {
   excludeProject: (projectHash: string) => invoke<void>("exclude_project", { projectHash }),
   includeProject: (projectHash: string) => invoke<void>("include_project", { projectHash }),
   clearLocalData: () => invoke<void>("clear_local_data"),
+  diagnosticRetention: () =>
+    invoke<DiagnosticRetentionStatus>("get_diagnostic_retention"),
+  setDiagnosticRetention: (enabled: boolean) =>
+    invoke<DiagnosticRetentionStatus>("set_diagnostic_retention", { enabled }),
+  clearDiagnosticRetention: () =>
+    invoke<DiagnosticClearResult>("clear_diagnostic_retention"),
   showMain: () => invoke<void>("show_main_window"),
   showSettings: () => invoke<void>("show_settings_window"),
   hideMenu: () => invoke<void>("hide_menu_bar_window"),

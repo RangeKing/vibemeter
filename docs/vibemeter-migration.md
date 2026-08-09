@@ -33,10 +33,11 @@ The copy uses SQLite online backup, followed by integrity and schema checks. The
 
 - Schema 7: derived `phrase_usage` for user and Agent catchphrases.
 - Schema 8: 90-day `live_events` plus long-term `live_session_metrics`.
+- Schema 18: clears legacy raw `live_events.payload_json`, keeps canonical and derived evidence intact, and adds encrypted seven-day `diagnostic_live_envelopes` for explicit diagnostic consent.
 - Parser 6.1.0: scans complete local user/agent text, filters code, paths, secrets, and punctuation-only noise, then retains only ranked derived phrase counts without storing source text.
 - VCTI algorithm 1.3.0: incorporates bounded waiting/error/completion signals from long-term live metrics.
 
-Raw live events are purged after 90 days. Derived phrase and live metrics remain until local data or their project scope is explicitly cleared.
+Normal mode discards raw live envelopes after canonical normalization. Diagnostic mode is off by default; when explicitly enabled, encrypted envelopes expire after seven days and can be cleared early. Derived phrase, canonical live, and long-term metrics remain until local data or their project scope is explicitly cleared.
 
 ## Hook boundary
 

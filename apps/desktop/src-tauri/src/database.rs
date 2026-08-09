@@ -458,7 +458,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 17;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 17;
+const DATABASE_SCHEMA_VERSION: i64 = 18;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -677,6 +677,46 @@ CREATE TABLE IF NOT EXISTS history_record_ids (
     PRIMARY KEY(history_source_file_hash, record_identity)
 );
 PRAGMA user_version = 17;
+"#;
+
+const MIGRATION_V18: &str = r#"
+DELETE FROM live_session_metrics
+WHERE (agent='claude-code' AND source_session_id IN(
+        SELECT source_session_id FROM live_events
+        WHERE agent='claude-code' AND instr(payload_json,'"cursor_version"')>0
+    ))
+   OR (agent='codex' AND source_session_id IN(
+        SELECT source_session_id FROM live_events
+        WHERE agent='codex' AND project_label='memories'
+          AND instr(payload_json,'/.codex/memories')>0
+    ));
+DELETE FROM canonical_events
+WHERE id IN(
+    SELECT canonical_event_id FROM live_events
+    WHERE canonical_event_id IS NOT NULL
+      AND ((agent='claude-code' AND instr(payload_json,'"cursor_version"')>0)
+        OR (agent='codex' AND project_label='memories'
+            AND instr(payload_json,'/.codex/memories')>0))
+);
+DELETE FROM live_events
+WHERE (agent='claude-code' AND instr(payload_json,'"cursor_version"')>0)
+   OR (agent='codex' AND project_label='memories'
+       AND instr(payload_json,'/.codex/memories')>0);
+DELETE FROM activity_cycles
+WHERE id NOT IN(
+    SELECT activity_cycle_id FROM canonical_events WHERE activity_cycle_id IS NOT NULL
+);
+CREATE TABLE IF NOT EXISTS diagnostic_live_envelopes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    nonce BLOB NOT NULL CHECK(length(nonce)=12),
+    ciphertext BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS diagnostic_live_envelopes_expiry_idx
+    ON diagnostic_live_envelopes(expires_at);
+UPDATE live_events SET payload_json='{}' WHERE payload_json<>'{}';
+PRAGMA user_version = 18;
 "#;
 
 #[derive(Clone)]
@@ -1589,6 +1629,7 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
         (15, MIGRATION_V15),
         (16, MIGRATION_V16),
         (17, MIGRATION_V17),
+        (18, MIGRATION_V18),
     ] {
         if version < target_version {
             connection.execute_batch(migration)?;
@@ -1599,6 +1640,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 17 {
         backfill_history_evidence(connection, &["kimi-code", "openclaw", "zcode"])?;
+    }
+    if (8..18).contains(&version) {
+        connection.execute_batch("PRAGMA secure_delete=ON; VACUUM;")?;
     }
     Ok(())
 }
@@ -1807,6 +1851,12 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let diagnostic_envelope_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('diagnostic_live_envelopes')
+         WHERE name IN ('id','captured_at','expires_at','nonce','ciphertext')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 13
@@ -1816,6 +1866,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || event_identity_columns != 2
         || nullable_time_columns != 2
         || history_record_columns != 2
+        || diagnostic_envelope_columns != 5
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -2496,6 +2547,139 @@ impl Database {
         Ok(())
     }
 
+    pub(crate) fn diagnostic_retention_window(&self) -> AppResult<Option<(String, String)>> {
+        let connection = self.connect()?;
+        let started_at = connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key='diagnosticRetentionStartedAt'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let expires_at = connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key='diagnosticRetentionExpiresAt'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(started_at.zip(expires_at))
+    }
+
+    pub(crate) fn start_diagnostic_retention_window(
+        &self,
+        started_at: &str,
+        expires_at: &str,
+    ) -> AppResult<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        transaction.execute("DELETE FROM diagnostic_live_envelopes", [])?;
+        transaction.execute(
+            "DELETE FROM app_settings WHERE key='diagnosticRetentionFailure'",
+            [],
+        )?;
+        for (key, value) in [
+            ("diagnosticRetentionStartedAt", started_at),
+            ("diagnosticRetentionExpiresAt", expires_at),
+        ] {
+            transaction.execute(
+                "INSERT INTO app_settings(key,value,updated_at) VALUES(?1,?2,?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,updated_at=excluded.updated_at",
+                params![key, value, Utc::now().to_rfc3339()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn diagnostic_retention_failed(&self) -> AppResult<bool> {
+        let connection = self.connect()?;
+        Ok(connection
+            .query_row(
+                "SELECT 1 FROM app_settings WHERE key='diagnosticRetentionFailure'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    pub(crate) fn mark_diagnostic_retention_failed(&self) -> AppResult<()> {
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO app_settings(key,value,updated_at) VALUES(?1,'unavailable',?2)
+             ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,updated_at=excluded.updated_at",
+            params!["diagnosticRetentionFailure", Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn retain_diagnostic_envelope(
+        &self,
+        captured_at: &str,
+        expires_at: &str,
+        nonce: &[u8; 12],
+        ciphertext: &[u8],
+    ) -> AppResult<()> {
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO diagnostic_live_envelopes(
+                captured_at,expires_at,nonce,ciphertext
+             ) VALUES(?1,?2,?3,?4)",
+            params![captured_at, expires_at, nonce.as_slice(), ciphertext],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn diagnostic_envelope_count(&self) -> AppResult<u64> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM diagnostic_live_envelopes",
+                [],
+                |row| read_u64(row, 0),
+            )
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostic_envelope_rows(&self) -> AppResult<Vec<(Vec<u8>, Vec<u8>)>> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare("SELECT nonce,ciphertext FROM diagnostic_live_envelopes ORDER BY id")?;
+        Ok(statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub(crate) fn clear_diagnostic_retention(&self) -> AppResult<u64> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let removed = transaction.execute("DELETE FROM diagnostic_live_envelopes", [])?;
+        transaction.execute(
+            "DELETE FROM app_settings
+             WHERE key IN(
+                'diagnosticRetentionStartedAt',
+                'diagnosticRetentionExpiresAt',
+                'diagnosticRetentionFailure'
+             )",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(removed as u64)
+    }
+
+    pub(crate) fn purge_expired_diagnostic_envelopes(&self, now: &str) -> AppResult<u64> {
+        let connection = self.connect()?;
+        let removed = connection.execute(
+            "DELETE FROM diagnostic_live_envelopes WHERE expires_at<=?1",
+            params![now],
+        )?;
+        Ok(removed as u64)
+    }
+
     pub fn set_source_selected(&self, agent: &str, selected: bool) -> AppResult<()> {
         if !source_capabilities()
             .iter()
@@ -2732,11 +2916,18 @@ impl Database {
                  DELETE FROM share_exports;
                  DELETE FROM vcti_profile_snapshots;
                  DELETE FROM live_events;
+                 DELETE FROM diagnostic_live_envelopes;
                  DELETE FROM activity_cycles;
                  DELETE FROM canonical_events;
                  DELETE FROM live_session_metrics;
                  DELETE FROM excluded_projects;
-                 DELETE FROM app_settings WHERE key LIKE 'databaseHistoryRevision:%';",
+                 DELETE FROM app_settings
+                 WHERE key LIKE 'databaseHistoryRevision:%'
+                    OR key IN(
+                        'diagnosticRetentionStartedAt',
+                        'diagnosticRetentionExpiresAt',
+                        'diagnosticRetentionFailure'
+                    );",
             )?;
             Ok(())
         })
@@ -2936,7 +3127,7 @@ impl Database {
                 event.source_session_id,
                 event.event_name,
                 visible_project_label,
-                event.payload_json,
+                "{}",
                 lifecycle_status,
                 canonical.as_ref().map(|value| value.id.as_str()),
             ],
@@ -7959,6 +8150,13 @@ mod concurrency_tests {
                 |row| row.get(0),
             )
             .expect("canonical columns should load");
+        let retained_raw_payloads: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM live_events WHERE payload_json<>'{}'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("normal-mode raw payload count should load");
         let metrics: (i64, i64) = connection
             .query_row(
                 "SELECT event_count, waiting_count
@@ -7984,6 +8182,7 @@ mod concurrency_tests {
         assert_eq!(canonical.11, "lifecycle.wait");
         assert_eq!(canonical.12, "PermissionRequest");
         assert_eq!(payload_columns, 0);
+        assert_eq!(retained_raw_payloads, 0);
         assert_eq!(metrics, (1, 1));
 
         let activity = database.live_activity().expect("live activity should load");
@@ -8664,6 +8863,171 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn v17_upgrade_discards_raw_live_envelopes_without_losing_canonical_evidence() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("v17-raw-retention.sqlite");
+        let private_marker = "PRIVATE_COMMAND_ABC123_";
+        let legacy_raw = format!(
+            r#"{{"prompt":"{}","command":"{}","path":"/private/source/path","apiKey":"sk-private"}}"#,
+            private_marker.repeat(8_192),
+            private_marker.repeat(8_192),
+        );
+        let database = Database::open(path.clone()).expect("database should open");
+        database
+            .record_live_event(
+                "2026-08-10T00:00:00Z",
+                "2026-11-08T00:00:00Z",
+                "codex",
+                "legacy-raw-session",
+                "PermissionRequest",
+                "project",
+                r#"{"prompt":"private prompt","command":"private command"}"#,
+                "waiting",
+            )
+            .expect("legacy event should persist");
+        {
+            let connection = database.connect().expect("database should connect");
+            connection
+                .execute(
+                    "UPDATE live_events SET payload_json=?1",
+                    params![legacy_raw],
+                )
+                .expect("legacy raw payload should be restored for the fixture");
+            connection
+                .execute_batch(
+                    "DROP TABLE diagnostic_live_envelopes;
+                     PRAGMA user_version=17;",
+                )
+                .expect("fixture should downgrade to v17");
+        }
+        drop(database);
+        let checkpoint = Connection::open(&path).expect("fixture should reopen");
+        checkpoint
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("fixture should checkpoint");
+        drop(checkpoint);
+        assert!(
+            std::fs::read(&path)
+                .expect("legacy database bytes should read")
+                .windows(private_marker.len())
+                .any(|window| window == private_marker.as_bytes()),
+            "fixture must contain the legacy raw marker before migration"
+        );
+
+        let upgraded = Database::open(path.clone()).expect("v17 database should upgrade");
+        let connection = upgraded.connect().expect("database should connect");
+        let summary: (String, i64, i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT payload_json FROM live_events LIMIT 1),
+                    (SELECT COUNT(*) FROM canonical_events),
+                    (SELECT COUNT(*) FROM live_session_metrics),
+                    (SELECT COUNT(*) FROM pragma_table_info('diagnostic_live_envelopes'))",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("upgraded retention state should load");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version should load");
+        assert_eq!(summary, ("{}".into(), 1, 1, 5));
+        assert_eq!(version, DATABASE_SCHEMA_VERSION);
+        drop(connection);
+        assert_eq!(
+            upgraded
+                .live_activity()
+                .expect("canonical activity should remain visible")
+                .timeline
+                .len(),
+            1
+        );
+        drop(upgraded);
+        let (staging, rollback, marker) = migration_paths(&path);
+        for candidate in [
+            path.clone(),
+            sqlite_sidecar(&path, "-wal"),
+            sqlite_sidecar(&path, "-shm"),
+        ]
+        .into_iter()
+        .chain([staging, rollback, marker])
+        {
+            if !candidate.exists() {
+                continue;
+            }
+            let bytes = std::fs::read(&candidate).expect("database artifact should read");
+            assert!(
+                !bytes
+                    .windows(private_marker.len())
+                    .any(|window| window == private_marker.as_bytes()),
+                "legacy raw marker remained in {}",
+                candidate.display()
+            );
+        }
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn failed_v18_migration_preserves_v17_raw_and_canonical_records() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("v18-retention-rollback.sqlite");
+        let database = Database::open(path.clone()).expect("database should open");
+        database
+            .record_live_event(
+                "2026-08-10T00:00:00Z",
+                "2026-11-08T00:00:00Z",
+                "codex",
+                "migration-failure-session",
+                "PermissionRequest",
+                "project",
+                "{}",
+                "waiting",
+            )
+            .expect("fixture event should persist");
+        {
+            let connection = database.connect().expect("database should connect");
+            connection
+                .execute(
+                    "UPDATE live_events SET payload_json='private legacy envelope'",
+                    [],
+                )
+                .expect("legacy raw payload should write");
+            connection
+                .execute_batch(
+                    "DROP TABLE diagnostic_live_envelopes;
+                     CREATE TABLE diagnostic_live_envelopes(id INTEGER PRIMARY KEY);
+                     PRAGMA user_version=17;",
+                )
+                .expect("incompatible v17 fixture should write");
+        }
+        drop(database);
+        let checkpoint = Connection::open(&path).expect("fixture should reopen");
+        checkpoint
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("fixture should checkpoint");
+        drop(checkpoint);
+        let before = std::fs::read(&path).expect("fixture bytes should read");
+
+        assert!(Database::open(path.clone()).is_err());
+        assert_eq!(
+            std::fs::read(&path).expect("failed migration bytes should read"),
+            before
+        );
+        let connection = Connection::open(&path).expect("v17 database should remain readable");
+        let preserved: (i64, String, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT user_version FROM pragma_user_version),
+                    (SELECT payload_json FROM live_events LIMIT 1),
+                    (SELECT COUNT(*) FROM canonical_events)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("preserved records should load");
+        assert_eq!(preserved, (17, "private legacy envelope".into(), 1));
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
     fn failed_v14_migration_rolls_back_without_damaging_v13_data() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let path = temporary.path().join("migration-rollback.sqlite");
@@ -9277,6 +9641,15 @@ mod concurrency_tests {
                 "idle",
             )
             .expect("real Claude event should persist");
+        database
+            .connect()
+            .expect("database connection")
+            .execute(
+                "UPDATE live_events
+                 SET payload_json=?1 WHERE source_session_id='cursor-session'",
+                params![r#"{"cursor_version":"3.12.30"}"#],
+            )
+            .expect("legacy Cursor payload should be restored for cleanup");
 
         assert_eq!(
             database
@@ -9526,6 +9899,15 @@ mod concurrency_tests {
                 "running",
             )
             .expect("real session should persist");
+        database
+            .connect()
+            .expect("database connection")
+            .execute(
+                "UPDATE live_events
+                 SET payload_json=?1 WHERE source_session_id='memory-child'",
+                params![r#"{"payload":{"cwd":"/Users/test/.codex/memories"}}"#],
+            )
+            .expect("legacy memory payload should be restored for cleanup");
 
         assert_eq!(
             database

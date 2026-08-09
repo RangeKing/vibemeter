@@ -143,7 +143,7 @@ Historical source text is scanned transiently in local memory. VibeMeter stores 
 - font size represents frequency;
 - Agent phrase backgrounds identify the dominant source; attribution prefers the recorded model and falls back to the Agent.
 
-Raw live-hook envelopes are retained for at most 90 days. Long-term VCTI and activity features use derived metrics.
+Raw live-hook envelopes are discarded after canonical normalization by default. If the user explicitly enables diagnostic mode, they are encrypted locally with a macOS Keychain-protected key, expire after seven days, and can be cleared early. Long-term VCTI and activity features use canonical and derived metrics rather than raw envelopes.
 
 ## 🔐 Privacy boundaries
 

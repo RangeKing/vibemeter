@@ -40,7 +40,7 @@ Historical agent records                  Claude Code / Codex Hook events
 
 ## Data boundaries
 
-Source records and repositories remain read-only. Historical text used for catchphrases is processed transiently and is not stored as phrase source text. Raw Hook envelopes expire after 90 days; long-term features use derived counters and evidence references.
+Source records and repositories remain read-only. Historical text used for catchphrases is processed transiently and is not stored as phrase source text. Raw Hook envelopes are discarded after normalization by default. An explicitly enabled diagnostic mode encrypts them with a macOS Keychain-protected key for at most seven days; long-term features use canonical events, derived counters, and evidence references.
 
 Provider-specific fields must not leak into shared UI or query contracts. A provider is considered supported only when its data is represented end-to-end in analytics, VCTI, replay, sharing, source status, and attribution. Exact live monitoring is currently limited to Claude Code and Codex.
 

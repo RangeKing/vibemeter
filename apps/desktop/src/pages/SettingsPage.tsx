@@ -8,7 +8,59 @@ import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
 import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
-import type { AppSettings, Locale, Theme } from "../types";
+import type { AppSettings, DiagnosticRetentionStatus, Locale, Theme } from "../types";
+
+export function DiagnosticRetentionControl({
+  status,
+  locale,
+  pending,
+  loading,
+  hasError,
+  clearCount,
+  onToggle,
+  onClear,
+}: {
+  status?: DiagnosticRetentionStatus;
+  locale: Locale;
+  pending: boolean;
+  loading: boolean;
+  hasError: boolean;
+  clearCount: number | null;
+  onToggle: (enabled: boolean) => void;
+  onClear: () => void;
+}) {
+  const { t } = useTranslation();
+  const formatTime = (value?: string) => value
+    ? new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))
+    : t("settings.diagnosticNotStarted");
+  return (
+    <div className="setting-row multiline diagnostic-retention-row">
+      <div>
+        <strong>{t("settings.diagnosticMode")}</strong>
+        <p>{t("settings.diagnosticModeBody")}</p>
+        {status ? (
+          <dl className="diagnostic-retention-details">
+            <div><dt>{t("settings.diagnosticState")}</dt><dd>{t(`settings.diagnosticStates.${status.state}`)}</dd></div>
+            <div><dt>{t("settings.diagnosticLocation")}</dt><dd>{status.storageLocation}</dd></div>
+            <div><dt>{t("settings.diagnosticStarted")}</dt><dd>{formatTime(status.startedAt)}</dd></div>
+            <div><dt>{t("settings.diagnosticExpires")}</dt><dd>{formatTime(status.expiresAt)}</dd></div>
+            <div><dt>{t("settings.diagnosticCount")}</dt><dd>{status.retainedEnvelopes}</dd></div>
+          </dl>
+        ) : null}
+        {hasError ? <p className="setting-error" role="alert">{t("settings.diagnosticUnavailable")}</p> : null}
+        {clearCount !== null ? <p className="setting-success" role="status">{t("settings.diagnosticCleared", { count: clearCount })}</p> : null}
+      </div>
+      <div className="diagnostic-retention-actions">
+        <Toggle checked={status?.enabled === true} disabled={pending || loading} onCheckedChange={onToggle} label={t("settings.diagnosticMode")} />
+        {(status?.enabled || status?.retainedEnvelopes || status?.state === "unavailable") ? (
+          <button className="button secondary" disabled={pending} onClick={onClear}>
+            <Trash2 size={13} />{t("settings.diagnosticClear")}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 export function SettingsPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
@@ -19,9 +71,11 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 3_000 });
+  const diagnostics = useQuery({ queryKey: ["diagnostic-retention"], queryFn: api.diagnosticRetention, refetchInterval: 60_000 });
   const [loginEnabled, setLoginEnabled] = useState(false);
   const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
   const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
+  const [diagnosticClearCount, setDiagnosticClearCount] = useState<number | null>(null);
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
   const setSetting = async (key: keyof AppSettings, value: string) => {
@@ -84,11 +138,36 @@ export function SettingsPage({ locale }: { locale: Locale }) {
       ]);
     },
   });
+  const setDiagnostics = useMutation({
+    mutationFn: api.setDiagnosticRetention,
+    onSuccess: (status) => {
+      client.setQueryData(["diagnostic-retention"], status);
+      setDiagnosticClearCount(null);
+    },
+    onError: () => { void diagnostics.refetch(); },
+  });
+  const clearDiagnostics = useMutation({
+    mutationFn: api.clearDiagnosticRetention,
+    onSuccess: (result) => {
+      client.setQueryData(["diagnostic-retention"], result.status);
+      setDiagnosticClearCount(result.removed);
+    },
+    onError: () => { void diagnostics.refetch(); },
+  });
 
   if (settings.isLoading || projects.isLoading) return <LoadingState />;
   if (settings.isError || !settings.data || projects.isError) return <ErrorState retry={() => void Promise.all([settings.refetch(), projects.refetch()])} />;
   const data = settings.data;
   const theme = data.theme as Theme;
+  const diagnosticStatus = diagnostics.data;
+  const diagnosticPending = setDiagnostics.isPending || clearDiagnostics.isPending;
+  const toggleDiagnostics = (enabled: boolean) => {
+    if (enabled) {
+      if (window.confirm(t("settings.diagnosticEnableConfirm"))) setDiagnostics.mutate(true);
+      return;
+    }
+    if (window.confirm(t("settings.diagnosticClearConfirm"))) clearDiagnostics.mutate();
+  };
   return (
     <div className="page settings-page">
       <PageHeader title={t("settings.title")} description={t("settings.description")} />
@@ -138,6 +217,19 @@ export function SettingsPage({ locale }: { locale: Locale }) {
         <section className="settings-section">
           <header><HardDrive size={17} /><div><h2>{t("settings.retention")}</h2><p>{t("settings.retentionBody")}</p></div></header>
           <div className="setting-row"><div><strong>{t("settings.retention")}</strong></div><select value={data.retentionDays} onChange={(event) => void setSetting("retentionDays", event.target.value)}>{[30, 90, 180, 365, 730].map((days) => <option key={days} value={days}>{t("settings.days", { count: days })}</option>)}</select></div>
+          <DiagnosticRetentionControl
+            status={diagnosticStatus}
+            locale={locale}
+            pending={diagnosticPending}
+            loading={diagnostics.isLoading}
+            hasError={diagnostics.isError
+              || setDiagnostics.isError
+              || clearDiagnostics.isError
+              || diagnosticStatus?.state === "unavailable"}
+            clearCount={diagnosticClearCount}
+            onToggle={toggleDiagnostics}
+            onClear={() => { if (window.confirm(t("settings.diagnosticClearConfirm"))) clearDiagnostics.mutate(); }}
+          />
         </section>
 
         <section className="settings-section project-settings">
