@@ -602,12 +602,10 @@ mod tests {
         database
             .record_live_event(
                 &started.to_rfc3339(),
-                &(started + Duration::days(90)).to_rfc3339(),
                 "codex",
                 "diagnostic-failure-session",
                 "PermissionRequest",
                 "project",
-                "{}",
                 "waiting",
             )
             .expect("canonical event should persist first");

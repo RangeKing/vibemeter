@@ -23,7 +23,6 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration as StdDuration, Instant, SystemTime};
 use tauri::{AppHandle, Emitter};
 
-const RAW_RETENTION_DAYS: i64 = 90;
 const MAX_HOOK_BYTES: u64 = 768 * 1024;
 const MAX_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
 const MAX_TRANSCRIPT_READ_BYTES: u64 = MAX_TRANSCRIPT_TAIL_BYTES;
@@ -323,10 +322,6 @@ impl LiveMonitor {
         app: AppHandle,
         diagnostics: crate::diagnostics::DiagnosticRetention,
     ) -> AppResult<Self> {
-        database.purge_misattributed_cursor_live_events()?;
-        database.purge_codex_memory_live_events()?;
-        database.purge_known_live_validation_events()?;
-        database.purge_expired_live_events()?;
         let sessions = Arc::new(RwLock::new(HashMap::new()));
         let auxiliary_sessions = Arc::new(RwLock::new(HashMap::new()));
         let socket_ready = Arc::new(AtomicBool::new(false));
@@ -475,26 +470,12 @@ impl LiveMonitor {
                     }
                     if should_record {
                         recorded.insert(id, fingerprint);
-                        let received = session.updated_at.clone();
-                        let expires =
-                            (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339();
-                        let raw = json!({
-                            "source": "local-runtime-observer",
-                            "provider": session.agent,
-                            "session_id": session.source_session_id,
-                            "received_at": received,
-                            "status": session.status,
-                            "phase": session.phase,
-                        })
-                        .to_string();
                         let _ = external_database.record_live_event(
                             &session.updated_at,
-                            &expires,
                             &session.agent,
                             &session.source_session_id,
                             "runtime.activity",
                             &session.project_label,
-                            &raw,
                             &session.status,
                         );
                         changed = true;
@@ -1751,14 +1732,9 @@ fn observed_live_event_from_envelope(
             safe_tool,
         ))
     });
-    let expires_at = DateTime::parse_from_rfc3339(&observed_at)
-        .map(|value| (value.with_timezone(&Utc) + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339())
-        .unwrap_or_else(|_| (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339());
-
     ObservedLiveEvent {
         occurred_at,
         observed_at,
-        expires_at,
         agent: session.agent.clone(),
         source_session_id: session.source_session_id.clone(),
         source_event_id,
@@ -1797,9 +1773,6 @@ fn observed_live_event_from_codex_metadata(
         signal.status,
         signal.phase,
     ));
-    let expires_at = DateTime::parse_from_rfc3339(&observed_at)
-        .map(|value| (value.with_timezone(&Utc) + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339())
-        .unwrap_or_else(|_| (Utc::now() + Duration::days(RAW_RETENTION_DAYS)).to_rfc3339());
     let payload_json = json!({
         "source": "codex-metadata",
         "event": event_name,
@@ -1811,7 +1784,6 @@ fn observed_live_event_from_codex_metadata(
     ObservedLiveEvent {
         occurred_at: signal.occurred_at.clone(),
         observed_at,
-        expires_at,
         agent: session.agent.clone(),
         source_session_id: session.source_session_id.clone(),
         source_event_id: Some(format!("metadata-{identity}")),

@@ -33,11 +33,19 @@ The copy uses SQLite online backup, followed by integrity and schema checks. The
 
 - Schema 7: derived `phrase_usage` for user and Agent catchphrases.
 - Schema 8: 90-day `live_events` plus long-term `live_session_metrics`.
+- Schema 14–17: canonical live and historical evidence, activity cycles, partial-history coverage, and private source-record receipts.
 - Schema 18: clears legacy raw `live_events.payload_json`, keeps canonical and derived evidence intact, and adds encrypted seven-day `diagnostic_live_envelopes` for explicit diagnostic consent.
+- Schema 19: verifies canonical coverage, preserves duration and stable source fingerprints, then removes the legacy `events` and `live_events` tables. It also establishes durable user-confirmed attention feedback.
 - Parser 6.1.0: scans complete local user/agent text, filters code, paths, secrets, and punctuation-only noise, then retains only ranked derived phrase counts without storing source text.
 - VCTI algorithm 1.3.0: incorporates bounded waiting/error/completion signals from long-term live metrics.
 
 Normal mode discards raw live envelopes after canonical normalization. Diagnostic mode is off by default; when explicitly enabled, encrypted envelopes expire after seven days and can be cleared early. Derived phrase, canonical live, and long-term metrics remain until local data or their project scope is explicitly cleared.
+
+## Canonical contraction and reindexing
+
+Schema 19 uses an expand, verify, contract migration on a staged database copy. The migration first adds any canonical fields required by visible queries, backfills legacy historical and live evidence, and rejects contraction if any legacy row lacks an active canonical counterpart. Only then are the two legacy evidence tables dropped and the staged copy installed.
+
+Historical reindexing publishes one transaction at a time. Existing canonical facts are marked, the new generation is rebuilt by stable source identity, and matching facts are reactivated before commit. A parse, write, or confirmation failure rolls the whole transaction back, so the previously visible generation remains usable. Removed source records stay as tombstones and recover the same canonical identity if they reappear. User-edited reviews, manual work-unit membership, attention feedback, and VCTI snapshots are outside the replaceable source generation and are not overwritten by reindexing.
 
 ## Hook boundary
 

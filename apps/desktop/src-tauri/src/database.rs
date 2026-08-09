@@ -455,10 +455,10 @@ PRAGMA user_version = 13;
 "#;
 
 const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
-const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 17;
+const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 19;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 18;
+const DATABASE_SCHEMA_VERSION: i64 = 19;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -719,6 +719,43 @@ UPDATE live_events SET payload_json='{}' WHERE payload_json<>'{}';
 PRAGMA user_version = 18;
 "#;
 
+const MIGRATION_V19_EXPAND: &str = r#"
+ALTER TABLE canonical_events ADD COLUMN event_duration_ms INTEGER;
+ALTER TABLE canonical_events ADD COLUMN source_event_fingerprint TEXT;
+CREATE INDEX canonical_events_legacy_coverage_idx
+    ON canonical_events(history_session_id, source_sequence)
+    WHERE source='history-index' AND deleted_at IS NULL;
+CREATE TABLE attention_feedback (
+    canonical_event_id TEXT PRIMARY KEY,
+    feedback TEXT NOT NULL CHECK(feedback IN(
+        'handled','not-relevant','not-stuck','snoozed'
+    )),
+    evidence_level TEXT NOT NULL DEFAULT 'user-confirmed'
+        CHECK(evidence_level='user-confirmed'),
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(canonical_event_id) REFERENCES canonical_events(id)
+);
+UPDATE canonical_events SET schema_version=19;
+UPDATE canonical_events
+SET event_duration_ms=(SELECT e.duration_ms FROM events e
+                       WHERE e.session_id=canonical_events.history_session_id
+                         AND e.sequence=canonical_events.source_sequence LIMIT 1),
+    source_event_fingerprint=(SELECT e.source_event_fingerprint FROM events e
+                              WHERE e.session_id=canonical_events.history_session_id
+                                AND e.sequence=canonical_events.source_sequence LIMIT 1)
+WHERE source='history-index' AND event_type<>'file.change';
+"#;
+
+const MIGRATION_V19_CONTRACT: &str = r#"
+DROP INDEX canonical_events_legacy_coverage_idx;
+DROP TABLE events;
+DROP TABLE live_events;
+CREATE INDEX canonical_events_live_project_idx
+    ON canonical_events(source, agent, occurred_at, project_label)
+    WHERE deleted_at IS NULL;
+PRAGMA user_version = 19;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -749,6 +786,9 @@ struct CanonicalLiveEvent {
     event_type: String,
     source_event_name: String,
     project_label: String,
+    source: &'static str,
+    source_coverage: &'static str,
+    exact_lifecycle: bool,
 }
 
 fn canonical_event_kind(event: &ObservedLiveEvent) -> (&'static str, &'static str, &'static str) {
@@ -831,12 +871,14 @@ fn canonical_live_phase(event: &ObservedLiveEvent, event_type: &str, status: &st
 }
 
 fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent> {
-    let exact_source = source_capabilities().iter().any(|capability| {
-        capability.agent == event.agent && capability.live_capability == SourceLiveCapability::Exact
-    });
-    if !exact_source {
-        return None;
-    }
+    let capability = source_capabilities()
+        .iter()
+        .find(|capability| capability.agent == event.agent)?;
+    let (source, source_coverage, exact_lifecycle) = match capability.live_capability {
+        SourceLiveCapability::Exact => ("live-hook", "exact-lifecycle", true),
+        SourceLiveCapability::Experimental => ("live-observer", "recent-activity", false),
+        SourceLiveCapability::None => return None,
+    };
     let occurred_at = DateTime::parse_from_rfc3339(&event.occurred_at)
         .ok()?
         .with_timezone(&Utc)
@@ -846,7 +888,11 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         .with_timezone(&Utc)
         .to_rfc3339_opts(SecondsFormat::AutoSi, true);
 
-    let (event_type, source_event_name, lifecycle_status) = canonical_event_kind(event);
+    let (event_type, source_event_name, lifecycle_status) = if exact_lifecycle {
+        canonical_event_kind(event)
+    } else {
+        ("activity.observed", "Activity", "running")
+    };
     let live_phase = canonical_live_phase(event, event_type, lifecycle_status);
     let project_label = if event.project_label.contains(['/', '\\']) {
         format!(
@@ -901,6 +947,9 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         event_type: event_type.into(),
         source_event_name: source_event_name.into(),
         project_label,
+        source,
+        source_coverage,
+        exact_lifecycle,
     })
 }
 
@@ -1017,6 +1066,8 @@ fn insert_history_canonical_event(
     lifecycle_status: &str,
     process_phase: &str,
     event_result: Option<&str>,
+    event_duration_ms: Option<u64>,
+    source_event_fingerprint: &str,
     fingerprint_material: &str,
 ) -> AppResult<()> {
     let source_event_id = crate::privacy::stable_hash(source_event_reference);
@@ -1032,11 +1083,12 @@ fn insert_history_canonical_event(
             history_session_id, history_source_file_hash,
             lifecycle_status, live_phase, event_type, source_event_name,
             process_phase, evidence_level, source_coverage, privacy_level,
-            project_label, event_result, deleted_at
+            project_label, event_result, event_duration_ms,
+            source_event_fingerprint, deleted_at
          ) VALUES(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'history-index',
             ?11, ?12, ?13, ?14, ?15, NULL, ?16, ?17, ?18,
-            'observed', ?19, 'normalized-local', ?20, ?21, NULL
+            'observed', ?19, 'normalized-local', ?20, ?21, ?22, ?23, NULL
          )
          ON CONFLICT(dedup_key) DO UPDATE SET
             source_event_id=excluded.source_event_id,
@@ -1059,6 +1111,8 @@ fn insert_history_canonical_event(
             privacy_level=excluded.privacy_level,
             project_label=excluded.project_label,
             event_result=excluded.event_result,
+            event_duration_ms=excluded.event_duration_ms,
+            source_event_fingerprint=excluded.source_event_fingerprint,
             deleted_at=NULL",
         params![
             id,
@@ -1082,6 +1136,8 @@ fn insert_history_canonical_event(
             source_coverage,
             project_label,
             event_result,
+            event_duration_ms.map(sql_i64),
+            source_event_fingerprint,
         ],
     )?;
     Ok(())
@@ -1161,6 +1217,8 @@ fn sync_history_evidence(
             history_lifecycle_status(event),
             history_process_phase(&event.category),
             result,
+            event.duration_ms,
+            source_fingerprint,
             &format!(
                 "{}|{}|{}|{}|{}|{}|{}",
                 event.event_type,
@@ -1203,6 +1261,8 @@ fn sync_history_evidence(
             "running",
             "edit",
             None,
+            None,
+            &path_hash,
             &format!(
                 "{}|{}|{}|{}|{}|{}",
                 change.change_kind,
@@ -1255,7 +1315,7 @@ fn backfill_history_evidence(connection: &Connection, agents: &[&str]) -> AppRes
         let Some(source_coverage) = history_evidence_coverage(&agent) else {
             continue;
         };
-        let events = query_events(&transaction, &session_id)?;
+        let events = query_legacy_events(&transaction, &session_id)?;
         let file_changes = {
             let mut statement = transaction.prepare(
                 "SELECT path, change_kind, lines_added, lines_deleted,
@@ -1305,38 +1365,163 @@ fn backfill_history_evidence(connection: &Connection, agents: &[&str]) -> AppRes
     Ok(())
 }
 
+fn backfill_legacy_live_evidence(connection: &Connection) -> AppResult<()> {
+    let transaction = connection.unchecked_transaction()?;
+    let rows = {
+        let mut statement = transaction.prepare(
+            "SELECT id, received_at, agent, source_session_id,
+                    event_name, project_label, status
+             FROM live_events
+             WHERE canonical_event_id IS NULL
+             ORDER BY received_at, id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (legacy_id, observed_at, agent, source_session_id, event_name, project_label, status) in
+        rows
+    {
+        let fingerprint = crate::privacy::stable_hash(&format!(
+            "legacy-live|{legacy_id}|{agent}|{source_session_id}|{event_name}|{observed_at}"
+        ));
+        let observed = ObservedLiveEvent {
+            occurred_at: observed_at.clone(),
+            observed_at: observed_at.clone(),
+            agent: agent.clone(),
+            source_session_id: source_session_id.clone(),
+            source_event_id: Some(format!("legacy-live-{legacy_id}")),
+            source_sequence: Some(legacy_id),
+            source_event_fingerprint: Some(fingerprint.clone()),
+            event_name,
+            project_label: project_label.clone(),
+            payload_json: "{}".into(),
+            status,
+            phase: None,
+        };
+        let canonical_id = if let Some(mut canonical) = canonical_live_event(&observed) {
+            resolve_live_episode(&transaction, &observed, &mut canonical)?;
+            let inserted = insert_canonical_live_event(&transaction, &canonical)?;
+            if inserted && canonical.exact_lifecycle {
+                update_activity_cycles(&transaction, &canonical)?;
+            }
+            canonical.id
+        } else {
+            let dedup_key = crate::privacy::stable_hash(&format!("legacy-live|{legacy_id}"));
+            let id = format!("legacy-live-event-{dedup_key}");
+            transaction.execute(
+                "INSERT INTO canonical_events(
+                    id, source_event_id, source_sequence, event_fingerprint, dedup_key,
+                    protocol_version, schema_version, algorithm_version,
+                    occurred_at, observed_at, source, agent, source_session_id,
+                    lifecycle_status, event_type, source_event_name, process_phase,
+                    evidence_level, source_coverage, privacy_level, project_label,
+                    event_duration_ms
+                 ) VALUES(
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, 'legacy-live',
+                    ?10, ?11, 'running', 'activity.observed', 'Activity', 'execute',
+                    'observed', 'unavailable', 'normalized-local', ?12, NULL
+                 ) ON CONFLICT(dedup_key) DO NOTHING",
+                params![
+                    id,
+                    crate::privacy::stable_hash(&format!("legacy-live-{legacy_id}")),
+                    legacy_id,
+                    fingerprint,
+                    dedup_key,
+                    CANONICAL_EVENT_PROTOCOL_VERSION,
+                    CANONICAL_EVENT_SCHEMA_VERSION,
+                    LIVE_NORMALIZER_VERSION,
+                    observed_at,
+                    crate::privacy::sanitize_tool_name(&agent),
+                    crate::privacy::safe_opaque_identifier(&source_session_id),
+                    history_project_label(Some(&project_label)),
+                ],
+            )?;
+            id
+        };
+        transaction.execute(
+            "UPDATE live_events SET canonical_event_id=?1 WHERE id=?2",
+            params![canonical_id, legacy_id],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn verify_legacy_evidence_covered(connection: &Connection) -> AppResult<()> {
+    let uncovered_history: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM events e
+         WHERE NOT EXISTS(
+            SELECT 1 FROM canonical_events ce
+            WHERE ce.source='history-index'
+              AND ce.history_session_id=e.session_id
+              AND ce.source_sequence=e.sequence
+              AND ce.event_type<>'file.change'
+              AND ce.deleted_at IS NULL
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let uncovered_live: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM live_events le
+         WHERE le.canonical_event_id IS NULL
+            OR NOT EXISTS(
+                SELECT 1 FROM canonical_events ce WHERE ce.id=le.canonical_event_id
+            )",
+        [],
+        |row| row.get(0),
+    )?;
+    if uncovered_history > 0 || uncovered_live > 0 {
+        return Err(AppError::InvalidRequest(
+            "legacy evidence contraction was blocked because canonical coverage is incomplete"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_live_episode(
     transaction: &Transaction<'_>,
     event: &ObservedLiveEvent,
     canonical: &mut CanonicalLiveEvent,
 ) -> AppResult<()> {
-    if event.source_event_id.is_some() {
+    if event.source_event_id.is_some() || !canonical.exact_lifecycle {
         return Ok(());
     }
     let latest = transaction
         .query_row(
-            "SELECT le.id, le.status, le.received_at,
-                    ce.id, ce.dedup_key, ce.event_fingerprint
-             FROM live_events le
-             LEFT JOIN canonical_events ce ON ce.id=le.canonical_event_id
-             WHERE le.agent=?1 AND le.source_session_id=?2
-             ORDER BY le.id DESC
+            "SELECT id, lifecycle_status, observed_at, dedup_key, event_fingerprint
+             FROM canonical_events
+             WHERE source='live-hook' AND agent=?1 AND source_session_id=?2
+               AND deleted_at IS NULL
+             ORDER BY observed_at DESC, id DESC
              LIMIT 1",
             params![event.agent, event.source_session_id],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )
         .optional()?;
 
-    if let Some((_, status, received_at, Some(id), Some(dedup_key), Some(fingerprint))) = &latest
+    if let Some((id, status, received_at, dedup_key, fingerprint)) = &latest
         && status == &canonical.lifecycle_status
         && fingerprint == &canonical.event_fingerprint
         && DateTime::parse_from_rfc3339(&canonical.observed_at)
@@ -1355,13 +1540,57 @@ fn resolve_live_episode(
         return Ok(());
     }
 
-    let previous_raw_id = latest.map(|value| value.0).unwrap_or_default();
+    let previous_event_id = latest.map(|value| value.0).unwrap_or_default();
     canonical.dedup_key = crate::privacy::stable_hash(&format!(
-        "episode|{}|{}|{previous_raw_id}",
+        "episode|{}|{}|{previous_event_id}",
         canonical.event_fingerprint, canonical.observed_at,
     ));
     canonical.id = format!("event-{}", canonical.dedup_key);
     Ok(())
+}
+
+fn insert_canonical_live_event(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<bool> {
+    Ok(transaction.execute(
+        "INSERT INTO canonical_events(
+            id, source_event_id, event_fingerprint, dedup_key,
+            protocol_version, schema_version, algorithm_version,
+            occurred_at, observed_at, source, agent, source_session_id,
+            source_sequence,
+            lifecycle_status, live_phase, event_type, source_event_name,
+            process_phase, evidence_level, source_coverage, privacy_level, project_label,
+            event_duration_ms
+         ) VALUES(
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL
+         ) ON CONFLICT(dedup_key) DO NOTHING",
+        params![
+            canonical.id,
+            canonical.source_event_id,
+            canonical.event_fingerprint,
+            canonical.dedup_key,
+            CANONICAL_EVENT_PROTOCOL_VERSION,
+            CANONICAL_EVENT_SCHEMA_VERSION,
+            LIVE_NORMALIZER_VERSION,
+            canonical.occurred_at,
+            canonical.observed_at,
+            canonical.source,
+            canonical.agent,
+            canonical.source_session_id,
+            canonical.source_sequence,
+            canonical.lifecycle_status,
+            canonical.live_phase,
+            canonical.event_type,
+            canonical.source_event_name,
+            canonical.live_phase,
+            "observed",
+            canonical.source_coverage,
+            "normalized-local",
+            canonical.project_label,
+        ],
+    )? == 1)
 }
 
 #[derive(Debug)]
@@ -1635,14 +1864,23 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
             connection.execute_batch(migration)?;
         }
     }
-    if version < 16 {
-        backfill_history_evidence(connection, &["claude-code", "codex"])?;
-    }
-    if version < 17 {
-        backfill_history_evidence(connection, &["kimi-code", "openclaw", "zcode"])?;
-    }
     if (8..18).contains(&version) {
         connection.execute_batch("PRAGMA secure_delete=ON; VACUUM;")?;
+    }
+    if version < 19 {
+        connection.execute_batch(MIGRATION_V19_EXPAND)?;
+        if version < 16 {
+            backfill_history_evidence(connection, &["claude-code", "codex"])?;
+        }
+        if version < 17 {
+            backfill_history_evidence(
+                connection,
+                &["kimi-code", "cursor", "openclaw", "hermes", "zcode"],
+            )?;
+        }
+        backfill_legacy_live_evidence(connection)?;
+        verify_legacy_evidence_covered(connection)?;
+        connection.execute_batch(MIGRATION_V19_CONTRACT)?;
     }
     Ok(())
 }
@@ -1804,14 +2042,15 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
             'id', 'dedup_key', 'protocol_version', 'schema_version',
             'occurred_at', 'observed_at', 'evidence_level',
             'source_coverage', 'privacy_level', 'source_sequence',
-            'history_session_id', 'history_source_file_hash', 'event_result'
+            'history_session_id', 'history_source_file_hash', 'event_result',
+            'event_duration_ms', 'source_event_fingerprint'
          )",
         [],
         |row| row.get(0),
     )?;
-    let live_link_columns: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('live_events')
-         WHERE name='canonical_event_id'",
+    let legacy_evidence_tables: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type='table' AND name IN ('events','live_events')",
         [],
         |row| row.get(0),
     )?;
@@ -1827,12 +2066,6 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
     let file_change_evidence_columns: i64 = connection.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('file_changes')
          WHERE name IN ('agent', 'evidence_level', 'source_coverage', 'algorithm_version')",
-        [],
-        |row| row.get(0),
-    )?;
-    let event_identity_columns: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('events')
-         WHERE name IN ('source_event_id', 'source_event_fingerprint')",
         [],
         |row| row.get(0),
     )?;
@@ -1857,16 +2090,22 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let attention_feedback_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('attention_feedback')
+         WHERE name IN('canonical_event_id','feedback','evidence_level','updated_at')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
-        || canonical_columns != 13
-        || live_link_columns != 1
+        || canonical_columns != 15
+        || legacy_evidence_tables != 0
         || activity_cycle_columns != 8
         || file_change_evidence_columns != 4
-        || event_identity_columns != 2
         || nullable_time_columns != 2
         || history_record_columns != 2
         || diagnostic_envelope_columns != 5
+        || attention_feedback_columns != 4
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -2001,6 +2240,23 @@ fn recover_schema_migration_state(path: &Path) -> AppResult<()> {
     cleanup_migration_artifacts(&staging, &rollback, &marker)
 }
 
+fn recover_new_database_initialization_state(path: &Path) -> AppResult<()> {
+    let (staging, rollback, marker) = migration_paths(path);
+    if path.exists() {
+        validate_current_database(path)?;
+        return cleanup_migration_artifacts(&staging, &rollback, &marker);
+    }
+    if staging.exists() && validate_current_database(&staging).is_ok() {
+        std::fs::File::open(&staging)?.sync_all()?;
+        std::fs::rename(&staging, path)?;
+        if let Some(parent) = path.parent() {
+            sync_parent_directory(parent)?;
+        }
+        validate_current_database(path)?;
+    }
+    cleanup_migration_artifacts(&staging, &rollback, &marker)
+}
+
 fn recover_interrupted_schema_migration(path: &Path) -> AppResult<()> {
     let (_, _, marker) = migration_paths(path);
     if !marker.exists() {
@@ -2013,10 +2269,17 @@ fn recover_interrupted_schema_migration(path: &Path) -> AppResult<()> {
     marker_lock.try_lock().map_err(|_| {
         AppError::InvalidRequest("database migration is already in progress".into())
     })?;
-    recover_schema_migration_state(path)
+    let initializes_new_database = std::fs::read_to_string(&marker)?
+        .trim()
+        .starts_with("initialize-");
+    if initializes_new_database {
+        recover_new_database_initialization_state(path)
+    } else {
+        recover_schema_migration_state(path)
+    }
 }
 
-fn create_migration_marker(marker: &Path) -> AppResult<std::fs::File> {
+fn create_schema_marker(marker: &Path, operation: &str) -> AppResult<std::fs::File> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -2024,9 +2287,49 @@ fn create_migration_marker(marker: &Path) -> AppResult<std::fs::File> {
     file.try_lock().map_err(|_| {
         AppError::InvalidRequest("database migration marker could not be locked".into())
     })?;
-    file.write_all(format!("v{DATABASE_SCHEMA_VERSION}\n").as_bytes())?;
+    file.write_all(format!("{operation}-v{DATABASE_SCHEMA_VERSION}\n").as_bytes())?;
     file.sync_all()?;
     Ok(file)
+}
+
+fn create_migration_marker(marker: &Path) -> AppResult<std::fs::File> {
+    create_schema_marker(marker, "upgrade")
+}
+
+fn initialize_schema_on_copy(path: &Path) -> AppResult<()> {
+    let (staging, rollback, marker) = migration_paths(path);
+    if path.exists() || staging.exists() || rollback.exists() || marker.exists() {
+        return Err(AppError::InvalidRequest(
+            "database initialization artifacts require recovery".into(),
+        ));
+    }
+    let _marker_lock = create_schema_marker(&marker, "initialize")?;
+    if let Some(parent) = path.parent() {
+        sync_parent_directory(parent)?;
+    }
+    let mut installed_validated = false;
+    let initialization_result = (|| -> AppResult<()> {
+        let staged = Connection::open(&staging)?;
+        staged.busy_timeout(std::time::Duration::from_secs(10))?;
+        apply_schema_migrations(&staged, 0)?;
+        staged.pragma_update(None, "journal_mode", "DELETE")?;
+        validate_current_connection(&staged)?;
+        drop(staged);
+
+        std::fs::File::open(&staging)?.sync_all()?;
+        std::fs::rename(&staging, path)?;
+        if let Some(parent) = path.parent() {
+            sync_parent_directory(parent)?;
+        }
+        validate_current_database(path)?;
+        installed_validated = true;
+        cleanup_migration_artifacts(&staging, &rollback, &marker)
+    })();
+
+    if initialization_result.is_err() && !installed_validated {
+        recover_new_database_initialization_state(path)?;
+    }
+    initialization_result
 }
 
 fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
@@ -2087,6 +2390,9 @@ impl Database {
         recover_interrupted_schema_migration(&path)?;
         if path.is_file() && database_version(&path)? < DATABASE_SCHEMA_VERSION {
             migrate_schema_on_copy(&path)?;
+        }
+        if !path.exists() {
+            initialize_schema_on_copy(&path)?;
         }
         let source_record_receipt_key = load_or_create_source_record_receipt_key(&path)?;
         let connection = Connection::open(path)?;
@@ -2726,14 +3032,6 @@ impl Database {
             params![cutoff, Utc::now().to_rfc3339()],
         )?;
         connection.execute(
-            "DELETE FROM events WHERE (occurred_at IS NOT NULL AND occurred_at<?1)
-             OR session_id IN(
-                SELECT id FROM sessions
-                WHERE COALESCE(ended_at,started_at,updated_at)<?1
-             )",
-            params![cutoff],
-        )?;
-        connection.execute(
             "DELETE FROM file_changes WHERE session_id IN(
                 SELECT id FROM sessions
                 WHERE COALESCE(ended_at,started_at,updated_at)<?1
@@ -2915,9 +3213,9 @@ impl Database {
                  DELETE FROM sources;
                  DELETE FROM share_exports;
                  DELETE FROM vcti_profile_snapshots;
-                 DELETE FROM live_events;
                  DELETE FROM diagnostic_live_envelopes;
                  DELETE FROM activity_cycles;
+                 DELETE FROM attention_feedback;
                  DELETE FROM canonical_events;
                  DELETE FROM live_session_metrics;
                  DELETE FROM excluded_projects;
@@ -3032,18 +3330,15 @@ impl Database {
     pub fn record_live_event(
         &self,
         received_at: &str,
-        expires_at: &str,
         agent: &str,
         source_session_id: &str,
         event_name: &str,
         project_label: &str,
-        payload_json: &str,
         status: &str,
     ) -> AppResult<()> {
         self.record_observed_live_event(&ObservedLiveEvent {
             occurred_at: received_at.into(),
             observed_at: received_at.into(),
-            expires_at: expires_at.into(),
             agent: agent.into(),
             source_session_id: source_session_id.into(),
             source_event_id: None,
@@ -3053,7 +3348,7 @@ impl Database {
             ))),
             event_name: event_name.into(),
             project_label: project_label.into(),
-            payload_json: payload_json.into(),
+            payload_json: "{}".into(),
             status: status.into(),
             phase: (status == "waiting").then(|| "needs-you".into()),
         })
@@ -3067,75 +3362,21 @@ impl Database {
             resolve_live_episode(&transaction, event, canonical)?;
         }
         let canonical_inserted = if let Some(canonical) = &canonical {
-            transaction.execute(
-                "INSERT INTO canonical_events(
-                    id, source_event_id, event_fingerprint, dedup_key,
-                    protocol_version, schema_version, algorithm_version,
-                    occurred_at, observed_at, source, agent, source_session_id,
-                    source_sequence,
-                    lifecycle_status, live_phase, event_type, source_event_name,
-                    process_phase, evidence_level, source_coverage, privacy_level, project_label
-                 ) VALUES(
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                    ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
-                 ) ON CONFLICT(dedup_key) DO NOTHING",
-                params![
-                    canonical.id,
-                    canonical.source_event_id,
-                    canonical.event_fingerprint,
-                    canonical.dedup_key,
-                    CANONICAL_EVENT_PROTOCOL_VERSION,
-                    CANONICAL_EVENT_SCHEMA_VERSION,
-                    LIVE_NORMALIZER_VERSION,
-                    canonical.occurred_at,
-                    canonical.observed_at,
-                    "live-hook",
-                    canonical.agent,
-                    canonical.source_session_id,
-                    canonical.source_sequence,
-                    canonical.lifecycle_status,
-                    canonical.live_phase,
-                    canonical.event_type,
-                    canonical.source_event_name,
-                    canonical.live_phase,
-                    "observed",
-                    "exact-lifecycle",
-                    "normalized-local",
-                    canonical.project_label,
-                ],
-            )? == 1
+            insert_canonical_live_event(&transaction, canonical)?
         } else {
             false
         };
-        let visible_project_label = canonical
-            .as_ref()
-            .map(|value| value.project_label.as_str())
-            .unwrap_or(&event.project_label);
         let lifecycle_status = canonical
             .as_ref()
             .map(|value| value.lifecycle_status.as_str())
             .unwrap_or(&event.status);
-        transaction.execute(
-            "INSERT INTO live_events(
-                received_at, expires_at, agent, source_session_id,
-                event_name, project_label, payload_json, status, canonical_event_id
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                event.observed_at,
-                event.expires_at,
-                event.agent,
-                event.source_session_id,
-                event.event_name,
-                visible_project_label,
-                "{}",
-                lifecycle_status,
-                canonical.as_ref().map(|value| value.id.as_str()),
-            ],
-        )?;
-        if canonical_inserted && let Some(canonical) = &canonical {
+        if canonical_inserted
+            && let Some(canonical) = &canonical
+            && canonical.exact_lifecycle
+        {
             update_activity_cycles(&transaction, canonical)?;
         }
-        if canonical.is_none() || canonical_inserted {
+        if canonical_inserted {
             transaction.execute(
                 "INSERT INTO live_session_metrics(
                     agent, source_session_id, started_at, last_seen_at,
@@ -3157,10 +3398,6 @@ impl Database {
                 ],
             )?;
         }
-        transaction.execute(
-            "DELETE FROM live_events WHERE expires_at<?1",
-            params![event.observed_at],
-        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -3383,162 +3620,6 @@ impl Database {
         Ok(restored as u64)
     }
 
-    pub fn purge_expired_live_events(&self) -> AppResult<u64> {
-        let connection = self.connect()?;
-        let removed = connection.execute(
-            "DELETE FROM live_events WHERE expires_at<?1",
-            params![Utc::now().to_rfc3339()],
-        )?;
-        Ok(removed as u64)
-    }
-
-    pub fn purge_misattributed_cursor_live_events(&self) -> AppResult<u64> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction()?;
-        let cursor_marker = "\"cursor_version\"";
-        transaction.execute(
-            "DELETE FROM live_session_metrics
-             WHERE agent='claude-code'
-               AND source_session_id IN (
-                   SELECT DISTINCT source_session_id
-                   FROM live_events
-                   WHERE agent='claude-code'
-                     AND instr(payload_json, ?1)>0
-               )",
-            params![cursor_marker],
-        )?;
-        transaction.execute(
-            "DELETE FROM canonical_events
-             WHERE id IN (
-                SELECT canonical_event_id
-                FROM live_events
-                WHERE agent='claude-code'
-                  AND instr(payload_json, ?1)>0
-                  AND canonical_event_id IS NOT NULL
-             )",
-            params![cursor_marker],
-        )?;
-        transaction.execute(
-            "DELETE FROM activity_cycles
-             WHERE id NOT IN (
-                SELECT activity_cycle_id FROM canonical_events
-                WHERE activity_cycle_id IS NOT NULL
-             )",
-            [],
-        )?;
-        let removed = transaction.execute(
-            "DELETE FROM live_events
-             WHERE agent='claude-code'
-               AND instr(payload_json, ?1)>0",
-            params![cursor_marker],
-        )?;
-        transaction.commit()?;
-        Ok(removed as u64)
-    }
-
-    pub fn purge_codex_memory_live_events(&self) -> AppResult<u64> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction()?;
-        let memory_marker = "/.codex/memories";
-        transaction.execute(
-            "DELETE FROM live_session_metrics
-             WHERE agent='codex'
-               AND source_session_id IN (
-                   SELECT DISTINCT source_session_id
-                   FROM live_events
-                   WHERE agent='codex'
-                     AND project_label='memories'
-                     AND instr(payload_json, ?1)>0
-               )",
-            params![memory_marker],
-        )?;
-        transaction.execute(
-            "DELETE FROM canonical_events
-             WHERE id IN (
-                SELECT canonical_event_id
-                FROM live_events
-                WHERE agent='codex'
-                  AND project_label='memories'
-                  AND instr(payload_json, ?1)>0
-                  AND canonical_event_id IS NOT NULL
-             )",
-            params![memory_marker],
-        )?;
-        transaction.execute(
-            "DELETE FROM activity_cycles
-             WHERE id NOT IN (
-                SELECT activity_cycle_id FROM canonical_events
-                WHERE activity_cycle_id IS NOT NULL
-             )",
-            [],
-        )?;
-        let removed = transaction.execute(
-            "DELETE FROM live_events
-             WHERE agent='codex'
-               AND project_label='memories'
-               AND instr(payload_json, ?1)>0",
-            params![memory_marker],
-        )?;
-        transaction.commit()?;
-        Ok(removed as u64)
-    }
-
-    pub fn purge_known_live_validation_events(&self) -> AppResult<u64> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction()?;
-        let session_ids = [
-            "claude-expanded-check",
-            "codex-expanded-check",
-            "vibemeter-direct-check",
-            "vibemeter-visual-check",
-        ];
-        transaction.execute(
-            "DELETE FROM live_session_metrics
-             WHERE source_session_id IN (?1, ?2, ?3, ?4)",
-            params![
-                session_ids[0],
-                session_ids[1],
-                session_ids[2],
-                session_ids[3]
-            ],
-        )?;
-        transaction.execute(
-            "DELETE FROM canonical_events
-             WHERE id IN (
-                SELECT canonical_event_id
-                FROM live_events
-                WHERE source_session_id IN (?1, ?2, ?3, ?4)
-                  AND canonical_event_id IS NOT NULL
-             )",
-            params![
-                session_ids[0],
-                session_ids[1],
-                session_ids[2],
-                session_ids[3]
-            ],
-        )?;
-        transaction.execute(
-            "DELETE FROM activity_cycles
-             WHERE id NOT IN (
-                SELECT activity_cycle_id FROM canonical_events
-                WHERE activity_cycle_id IS NOT NULL
-             )",
-            [],
-        )?;
-        let removed = transaction.execute(
-            "DELETE FROM live_events
-             WHERE source_session_id IN (?1, ?2, ?3, ?4)",
-            params![
-                session_ids[0],
-                session_ids[1],
-                session_ids[2],
-                session_ids[3]
-            ],
-        )?;
-        transaction.commit()?;
-        Ok(removed as u64)
-    }
-
     pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
         let connection = self.connect()?;
         let now = Utc::now();
@@ -3555,23 +3636,12 @@ impl Database {
             .unwrap_or_else(|| format!("{}T00:00:00Z", Local::now().date_naive()));
         let history_start = (now - Duration::days(7)).to_rfc3339();
         let mut timeline_statement = connection.prepare(
-            "WITH activity_events AS (
-                SELECT id, occurred_at, observed_at, agent, project_label,
-                       source_event_name AS event_name,
-                       lifecycle_status AS status, source_session_id
-                FROM canonical_events
-                WHERE deleted_at IS NULL AND source='live-hook'
-                UNION ALL
-                SELECT printf('legacy:%d:%s:%s', id, agent, source_session_id),
-                       received_at, NULL, agent, project_label, event_name,
-                       COALESCE(NULLIF(status, ''), 'running'), source_session_id
-                FROM live_events
-                WHERE canonical_event_id IS NULL
-             )
-             SELECT id, occurred_at, observed_at, agent, project_label, event_name,
-                    status, source_session_id
-             FROM activity_events
-             WHERE occurred_at>=?1
+            "SELECT id, occurred_at, observed_at, agent, project_label,
+                    source_event_name AS event_name,
+                    lifecycle_status AS status, source_session_id
+             FROM canonical_events
+             WHERE deleted_at IS NULL AND source IN('live-hook','live-observer')
+               AND occurred_at>=?1
              ORDER BY occurred_at DESC, id ASC
              LIMIT 200",
         )?;
@@ -3592,21 +3662,8 @@ impl Database {
         drop(timeline_statement);
 
         let mut history_statement = connection.prepare(
-            "WITH activity_events AS (
-                SELECT id, occurred_at, observed_at, agent, project_label,
-                       source_event_name AS event_name,
-                       lifecycle_status AS status, source_session_id
-                FROM canonical_events
-                WHERE deleted_at IS NULL AND source='live-hook'
-                UNION ALL
-                SELECT printf('legacy:%d:%s:%s', id, agent, source_session_id),
-                       received_at, NULL, agent, project_label, event_name,
-                       COALESCE(NULLIF(status, ''), 'running'), source_session_id
-                FROM live_events
-                WHERE canonical_event_id IS NULL
-             )
-             SELECT le.id, le.occurred_at, le.observed_at, le.agent, le.project_label,
-                    le.event_name, le.status, le.source_session_id,
+            "SELECT le.id, le.occurred_at, le.observed_at, le.agent, le.project_label,
+                    le.source_event_name, le.lifecycle_status, le.source_session_id,
                     (
                         SELECT s.id
                         FROM sessions s
@@ -3615,11 +3672,13 @@ impl Database {
                         ORDER BY COALESCE(s.ended_at, s.started_at) DESC
                         LIMIT 1
                     )
-             FROM activity_events le
+             FROM canonical_events le
              WHERE le.occurred_at>=?1
+               AND le.deleted_at IS NULL
+               AND le.source='live-hook'
                AND (
-                    le.status IN ('waiting', 'error')
-                    OR le.event_name='PermissionRequest'
+                    le.lifecycle_status IN ('waiting', 'error')
+                    OR le.source_event_name='PermissionRequest'
                )
              ORDER BY le.occurred_at DESC, le.id ASC
              LIMIT 60",
@@ -3678,8 +3737,10 @@ impl Database {
         for lane in &mut lanes {
             let mut project_statement = connection.prepare(
                 "SELECT DISTINCT project_label
-                 FROM live_events
-                 WHERE agent=?1 AND received_at>=?2 AND project_label!=''
+                 FROM canonical_events
+                 WHERE source IN('live-hook','live-observer')
+                   AND deleted_at IS NULL
+                   AND agent=?1 AND occurred_at>=?2 AND project_label!=''
                  ORDER BY project_label
                  LIMIT 6",
             )?;
@@ -3849,6 +3910,10 @@ impl Database {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         let target = task_ids[0].clone();
+        transaction.execute(
+            "UPDATE task_sessions SET user_assigned=1 WHERE task_id=?1",
+            params![target],
+        )?;
         for source in task_ids.iter().skip(1) {
             let mut statement = transaction.prepare(
                 "SELECT session_id FROM task_sessions WHERE task_id=?1 ORDER BY position",
@@ -4349,11 +4414,7 @@ impl Database {
                 value: Some(summary.cost_coverage),
             });
         }
-        let mut events = query_events(&connection, id)?;
-        for event in &mut events {
-            event.source_event_id = None;
-            event.source_event_fingerprint = None;
-        }
+        let events = query_session_events(&connection, id)?;
         let phases = derive_process_phases(events);
         let file_changes = query_file_changes(&connection, id)?;
         let git_evidence = query_git_evidence(&connection, id)?;
@@ -4534,10 +4595,6 @@ fn replace_session_children(
         params![session_id],
     )?;
     transaction.execute(
-        "DELETE FROM events WHERE session_id=?1",
-        params![session_id],
-    )?;
-    transaction.execute(
         "DELETE FROM phrase_usage WHERE session_id=?1",
         params![session_id],
     )?;
@@ -4624,27 +4681,6 @@ fn replace_session_children(
         transaction.execute(
             "INSERT INTO session_files(session_id, file_hash) VALUES(?1, ?2)",
             params![session_id, file_hash],
-        )?;
-    }
-    for event in &state.events {
-        transaction.execute(
-            "INSERT INTO events(
-                session_id, sequence, occurred_at, event_type, category, name,
-                success, duration_ms, provenance, source_event_id, source_event_fingerprint
-             ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                session_id,
-                sql_i64(event.sequence),
-                event.occurred_at,
-                event.event_type,
-                event.category,
-                event.name,
-                event.success.map(i64::from),
-                event.duration_ms.map(sql_i64),
-                event.provenance,
-                event.source_event_id,
-                event.source_event_fingerprint,
-            ],
         )?;
     }
     for phrase in state.phrase_counts.values() {
@@ -5843,7 +5879,10 @@ fn query_daily_for_session(connection: &Connection, id: &str) -> AppResult<Vec<D
         .collect::<Result<Vec<_>, _>>()?)
 }
 
-fn query_events(connection: &Connection, session_id: &str) -> AppResult<Vec<CanonicalEvent>> {
+fn query_legacy_events(
+    connection: &Connection,
+    session_id: &str,
+) -> AppResult<Vec<CanonicalEvent>> {
     let mut statement = connection.prepare(
         "SELECT sequence, occurred_at, event_type, category, name, success,
                 duration_ms, provenance, source_event_id, source_event_fingerprint
@@ -5869,11 +5908,57 @@ fn query_events(connection: &Connection, session_id: &str) -> AppResult<Vec<Cano
         .collect::<Result<Vec<_>, _>>()?)
 }
 
+fn query_session_events(
+    connection: &Connection,
+    session_id: &str,
+) -> AppResult<Vec<CanonicalEvent>> {
+    let mut statement = connection.prepare(
+        "SELECT COALESCE(source_sequence, 0), occurred_at, event_type,
+                COALESCE(process_phase, 'execute'), source_event_name,
+                CASE event_result
+                    WHEN 'succeeded' THEN 1
+                    WHEN 'failed' THEN 0
+                    ELSE NULL
+                END,
+                event_duration_ms, evidence_level
+         FROM canonical_events
+         WHERE source='history-index' AND history_session_id=?1
+           AND deleted_at IS NULL AND event_type<>'file.change'
+         ORDER BY CASE WHEN occurred_at IS NULL THEN 1 ELSE 0 END,
+                  occurred_at,
+                  CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END,
+                  source_sequence, id",
+    )?;
+    Ok(statement
+        .query_map(params![session_id], |row| {
+            Ok(CanonicalEvent {
+                sequence: read_u64(row, 0)?,
+                source_event_id: None,
+                source_event_fingerprint: None,
+                occurred_at: row.get(1)?,
+                event_type: row.get(2)?,
+                category: row.get(3)?,
+                name: row.get(4)?,
+                success: row.get::<_, Option<i64>>(5)?.map(|value| value != 0),
+                duration_ms: row
+                    .get::<_, Option<i64>>(6)?
+                    .map(|value| value.max(0) as u64),
+                provenance: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
 fn phase_for_event(event: &CanonicalEvent) -> &'static str {
     match event.category.as_str() {
         "understand" => "understand",
-        "read" | "search" | "web" => "inspect",
+        "inspect" => "inspect",
         "edit" => "edit",
+        "verify" => "verify",
+        "fix" => "fix",
+        "plan" => "plan",
+        "execute" => "execute",
+        "read" | "search" | "web" => "inspect",
         "test" | "build" | "lint" | "typecheck" | "git-review" => "verify",
         "error" => "fix",
         "subagent" => "plan",
@@ -6806,6 +6891,108 @@ mod concurrency_tests {
     use std::path::Path;
     use std::sync::{Arc, Barrier};
 
+    fn restore_legacy_evidence_tables(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE events (
+                    session_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    occurred_at TEXT,
+                    event_type TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    success INTEGER,
+                    duration_ms INTEGER,
+                    provenance TEXT NOT NULL,
+                    source_event_id TEXT,
+                    source_event_fingerprint TEXT,
+                    PRIMARY KEY(session_id, sequence),
+                    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+                 );
+                 CREATE INDEX events_session_time_idx
+                    ON events(session_id, occurred_at, sequence);
+                 CREATE INDEX events_type_time_idx ON events(event_type, occurred_at);
+                 INSERT INTO events(
+                    session_id, sequence, occurred_at, event_type, category, name,
+                    success, duration_ms, provenance, source_event_id,
+                    source_event_fingerprint
+                 )
+                 SELECT
+                    history_session_id, source_sequence, occurred_at,
+                    CASE event_type
+                        WHEN 'prompt.observed' THEN 'prompt'
+                        WHEN 'lifecycle.start' THEN 'task-start'
+                        WHEN 'lifecycle.complete' THEN 'task-complete'
+                        WHEN 'lifecycle.error' THEN 'error'
+                        WHEN 'goal.changed' THEN 'goal-change'
+                        WHEN 'context.compact' THEN 'context-compaction'
+                        WHEN 'work.rollback' THEN 'rollback'
+                        WHEN 'agent.activity' THEN 'subagent'
+                        WHEN 'tool.observed' THEN 'tool'
+                        WHEN 'verification.observed' THEN 'tool'
+                        ELSE 'activity'
+                    END,
+                    CASE
+                        WHEN source_event_name='other' THEN 'other'
+                        ELSE CASE COALESCE(process_phase, 'execute')
+                        WHEN 'inspect' THEN 'read'
+                        WHEN 'verify' THEN 'test'
+                        WHEN 'fix' THEN 'error'
+                        WHEN 'plan' THEN 'subagent'
+                        ELSE COALESCE(process_phase, 'execute')
+                        END
+                    END,
+                    source_event_name,
+                    CASE event_result WHEN 'succeeded' THEN 1 WHEN 'failed' THEN 0 END,
+                    event_duration_ms, evidence_level, source_event_id,
+                    source_event_fingerprint
+                 FROM canonical_events
+                 WHERE source='history-index'
+                   AND event_type<>'file.change'
+                   AND deleted_at IS NULL;
+
+                 CREATE TABLE live_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    received_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    source_session_id TEXT NOT NULL,
+                    event_name TEXT NOT NULL,
+                    project_label TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    canonical_event_id TEXT
+                 );
+                 CREATE INDEX live_events_expiry_idx ON live_events(expires_at);
+                 CREATE INDEX live_events_session_idx
+                    ON live_events(agent, source_session_id, received_at);
+                 CREATE INDEX live_events_status_idx ON live_events(status, received_at);
+                 CREATE INDEX live_events_canonical_idx ON live_events(canonical_event_id);
+                 INSERT INTO live_events(
+                    received_at, expires_at, agent, source_session_id, event_name,
+                    project_label, payload_json, status, canonical_event_id
+                 )
+                 SELECT
+                    observed_at, '2099-01-01T00:00:00Z', agent, source_session_id,
+                    source_event_name, project_label, '{}', lifecycle_status, id
+                 FROM canonical_events
+                 WHERE source IN('live-hook','live-observer') AND deleted_at IS NULL;",
+            )
+            .expect("legacy evidence tables should be restored");
+    }
+
+    fn downgrade_current_evidence_to_v18(connection: &Connection) {
+        restore_legacy_evidence_tables(connection);
+        connection
+            .execute_batch(
+                "DROP INDEX canonical_events_live_project_idx;
+                 DROP TABLE attention_feedback;
+                 ALTER TABLE canonical_events DROP COLUMN source_event_fingerprint;
+                 ALTER TABLE canonical_events DROP COLUMN event_duration_ms;",
+            )
+            .expect("v18 canonical schema should be restored");
+    }
+
     fn create_v13_live_database(path: &Path, incompatible_canonical_view: bool) {
         let database = Database::open(path.to_path_buf()).expect("fixture database should open");
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
@@ -6832,18 +7019,17 @@ mod concurrency_tests {
         database
             .record_live_event(
                 &now,
-                &(Utc::now() + Duration::hours(1)).to_rfc3339_opts(SecondsFormat::AutoSi, true),
                 "codex",
                 "legacy-session",
                 "PermissionRequest",
                 "legacy-project",
-                "{}",
                 "waiting",
             )
             .expect("legacy live event should persist");
         drop(database);
 
         let connection = Connection::open(path).expect("legacy database should reopen");
+        restore_legacy_evidence_tables(&connection);
         connection
             .execute_batch(
                 "ALTER TABLE live_events RENAME TO live_events_v14;
@@ -6869,6 +7055,7 @@ mod concurrency_tests {
                    FROM live_events_v14;
                  DROP TABLE live_events_v14;
                  DROP TABLE activity_cycles;
+                 DROP TABLE attention_feedback;
                  DROP TABLE canonical_events;
                  ALTER TABLE file_changes DROP COLUMN agent;
                  ALTER TABLE file_changes DROP COLUMN evidence_level;
@@ -6895,18 +7082,17 @@ mod concurrency_tests {
         database
             .record_live_event(
                 "2026-08-10T00:00:00Z",
-                "2026-08-17T00:00:00Z",
                 "codex",
                 "v14-session",
                 "PermissionRequest",
                 "project",
-                "{}",
                 "waiting",
             )
             .expect("v14 waiting event should persist");
         drop(database);
 
         let connection = Connection::open(path).expect("v14 database should reopen");
+        downgrade_current_evidence_to_v18(&connection);
         connection
             .execute_batch(
                 "UPDATE canonical_events SET schema_version=14;
@@ -6930,6 +7116,7 @@ mod concurrency_tests {
 
     fn downgrade_v16_to_v15(path: &Path) {
         let connection = Connection::open(path).expect("v16 database should reopen");
+        downgrade_current_evidence_to_v18(&connection);
         connection
             .execute_batch(
                 "DELETE FROM canonical_events WHERE source='history-index';
@@ -6951,17 +7138,18 @@ mod concurrency_tests {
 
     fn downgrade_v17_to_v16(path: &Path) {
         let connection = Connection::open(path).expect("v17 database should reopen");
+        downgrade_current_evidence_to_v18(&connection);
         connection
             .execute_batch(
                 "DELETE FROM canonical_events
                  WHERE source='history-index'
-                   AND agent IN('kimi-code','openclaw','zcode');
+                   AND agent IN('kimi-code','cursor','openclaw','hermes','zcode');
                  UPDATE file_changes
                  SET agent=NULL, evidence_level=NULL, source_coverage=NULL,
                      algorithm_version=NULL
                  WHERE session_id IN(
                     SELECT id FROM sessions
-                    WHERE agent IN('kimi-code','openclaw','zcode')
+                    WHERE agent IN('kimi-code','cursor','openclaw','hermes','zcode')
                  );
                  PRAGMA user_version = 16;",
             )
@@ -7509,6 +7697,327 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn session_detail_orders_history_by_occurrence_then_source_sequence() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("history-order.sqlite"))
+            .expect("database should open");
+        let mut state = ParseState::new(AgentKind::Codex, "history-order-session".into());
+        state.started_at = Some("2026-08-10T04:00:00Z".into());
+        state.ended_at = Some("2026-08-10T04:00:04Z".into());
+        state.project_hash = Some("history-order-project".into());
+        state.project_label = Some("history-order-project".into());
+        state.title = Some("History ordering".into());
+        let session_id = database
+            .persist_parse_state("history-order-file", 1, 1, 1, &state)
+            .expect("session should persist");
+
+        let cases = [
+            (1, Some("2026-08-10T04:00:02Z"), "Later"),
+            (9, Some("2026-08-10T04:00:01Z"), "Earlier"),
+            (4, Some("2026-08-10T04:00:03Z"), "SameSecond"),
+            (3, Some("2026-08-10T04:00:03Z"), "SameFirst"),
+            (2, None, "Untimed"),
+        ];
+        let connection = database.connect().expect("database should connect");
+        for (sequence, occurred_at, name) in cases {
+            insert_history_canonical_event(
+                &connection,
+                &session_id,
+                "history-order-file",
+                "codex",
+                "history-order-session",
+                "history-order-project",
+                "full-history",
+                "history-order-test",
+                "2026-08-10T04:00:04Z",
+                name,
+                name,
+                Some(sequence),
+                occurred_at,
+                "tool.observed",
+                name,
+                "running",
+                "execute",
+                Some("succeeded"),
+                None,
+                name,
+                name,
+            )
+            .expect("history fact should persist");
+        }
+        drop(connection);
+
+        let detail = database
+            .session_detail(&session_id)
+            .expect("session detail should load");
+        let names = detail
+            .phases
+            .iter()
+            .flat_map(|phase| phase.events.iter())
+            .map(|event| event.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["Earlier", "Later", "SameFirst", "SameSecond", "Untimed"]
+        );
+    }
+
+    #[test]
+    fn reindex_failure_and_source_disappearance_preserve_user_owned_state() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("protected-reindex.sqlite"))
+            .expect("database should open");
+        let state = |source_session_id: &str, title: &str, occurred_at: &str, event_name: &str| {
+            let mut state = ParseState::new(AgentKind::Codex, source_session_id.into());
+            state.started_at = Some(occurred_at.into());
+            state.ended_at = Some(occurred_at.into());
+            state.project_hash = Some("protected-project-hash".into());
+            state.project_label = Some("protected-project".into());
+            state.title = Some(title.into());
+            state.prompt_excerpt = Some(title.into());
+            state.events.push(CanonicalEvent {
+                sequence: 1,
+                source_event_id: Some(crate::privacy::stable_hash(&format!(
+                    "{source_session_id}:{event_name}"
+                ))),
+                source_event_fingerprint: Some(
+                    crate::adapters::common::source_event_fingerprint_base(
+                        "tool",
+                        "edit",
+                        event_name,
+                        Some(true),
+                        Some(250),
+                        Some(occurred_at),
+                        "observed",
+                    ),
+                ),
+                occurred_at: Some(occurred_at.into()),
+                event_type: "tool".into(),
+                category: "edit".into(),
+                name: event_name.into(),
+                success: Some(true),
+                duration_ms: Some(250),
+                provenance: "observed".into(),
+            });
+            state.event_count = 1;
+            state
+        };
+        let first = state(
+            "protected-session-one",
+            "Build release package",
+            "2026-08-10T04:00:00Z",
+            "Edit",
+        );
+        let second = state(
+            "protected-session-two",
+            "Investigate parser failure",
+            "2026-08-10T05:00:00Z",
+            "Search",
+        );
+        let first_session = database
+            .persist_parse_state("protected-file-one", 10, 1, 10, &first)
+            .expect("first source should persist");
+        let second_session = database
+            .persist_parse_state("protected-file-two", 10, 1, 10, &second)
+            .expect("second source should persist");
+        let second_manual_task = database
+            .split_session(&second_session)
+            .expect("second session should become a manual work unit");
+        let first_task: String = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT task_id FROM task_sessions WHERE session_id=?1",
+                params![first_session],
+                |row| row.get(0),
+            )
+            .expect("first task should load");
+        let merged_task = database
+            .merge_tasks(
+                &[first_task, second_manual_task],
+                Some("User merged work unit"),
+            )
+            .expect("manual work units should merge");
+
+        let original_event_id: String = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT id FROM canonical_events
+                 WHERE history_source_file_hash='protected-file-one'
+                   AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original canonical event should load");
+        let connection = database.connect().expect("database should connect");
+        connection
+            .execute(
+                "INSERT INTO reviews(
+                    id,review_type,target_id,locale,version,status,title,outcome,
+                    what_happened,what_worked,friction,lessons,next_run,user_edited,
+                    created_at,updated_at
+                 ) VALUES(
+                    'user-review','task',?1,'zh-CN',1,'confirmed','用户确认',
+                    'confirmed','','','','','',1,?2,?2
+                 )",
+                params![merged_task, "2026-08-10T06:00:00Z"],
+            )
+            .expect("user confirmation should persist");
+        connection
+            .execute(
+                "INSERT INTO review_findings(
+                    review_id,id,rule_id,tier,title,detail,evidence_json
+                 ) VALUES('user-review','finding','user-confirmed','fact',
+                    '用户确认','','[]')",
+                [],
+            )
+            .expect("confirmation evidence should persist");
+        connection
+            .execute(
+                "INSERT INTO attention_feedback(
+                    canonical_event_id,feedback,evidence_level,updated_at
+                 ) VALUES(?1,'handled','user-confirmed','2026-08-10T06:00:00Z')",
+                params![original_event_id],
+            )
+            .expect("attention feedback should persist");
+        connection
+            .execute(
+                "INSERT INTO vcti_profile_snapshots(
+                    period_end,algorithm_version,profile_json,created_at
+                 ) VALUES('2026-08-10','protected-v1','{}','2026-08-10T06:00:00Z')",
+                [],
+            )
+            .expect("long-term snapshot should persist");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_protected_reindex
+                 BEFORE INSERT ON canonical_events
+                 WHEN NEW.source_event_name='FailureProbe'
+                 BEGIN SELECT RAISE(FAIL, 'injected reindex failure'); END;",
+            )
+            .expect("failure trigger should install");
+        drop(connection);
+
+        let active_ids = |database: &Database| {
+            database
+                .connect()
+                .expect("database should connect")
+                .prepare(
+                    "SELECT id FROM canonical_events
+                     WHERE history_source_file_hash='protected-file-one'
+                       AND deleted_at IS NULL ORDER BY id",
+                )
+                .expect("canonical id query should prepare")
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("canonical ids should load")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("canonical ids should collect")
+        };
+        let protected_state = |database: &Database| {
+            database
+                .connect()
+                .expect("database should connect")
+                .query_row(
+                    "SELECT
+                        (SELECT title FROM tasks WHERE id=?1),
+                        (SELECT COUNT(*) FROM task_sessions
+                         WHERE task_id=?1 AND user_assigned=1),
+                        (SELECT COUNT(*) FROM reviews
+                         WHERE id='user-review' AND user_edited=1),
+                        (SELECT COUNT(*) FROM review_findings
+                         WHERE review_id='user-review'),
+                        (SELECT COUNT(*) FROM attention_feedback
+                         WHERE canonical_event_id=?2 AND feedback='handled'),
+                        (SELECT COUNT(*) FROM vcti_profile_snapshots
+                         WHERE algorithm_version='protected-v1')",
+                    params![merged_task, original_event_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, i64>(5)?,
+                        ))
+                    },
+                )
+                .expect("protected state should load")
+        };
+        let before_ids = active_ids(&database);
+        let before_protected = protected_state(&database);
+        assert_eq!(
+            before_protected,
+            ("User merged work unit".into(), 2, 1, 1, 1, 1)
+        );
+
+        let mut failing = first.clone();
+        failing.title = Some("This title must roll back".into());
+        failing.events.push(CanonicalEvent {
+            sequence: 2,
+            source_event_id: Some(crate::privacy::stable_hash("failure-probe-native")),
+            source_event_fingerprint: Some(crate::privacy::stable_hash("failure-probe")),
+            occurred_at: Some("2026-08-10T04:00:01Z".into()),
+            event_type: "tool".into(),
+            category: "verify".into(),
+            name: "FailureProbe".into(),
+            success: Some(true),
+            duration_ms: Some(1),
+            provenance: "observed".into(),
+        });
+        failing.event_count = 2;
+        assert!(
+            database
+                .persist_parse_state("protected-file-one", 20, 2, 20, &failing)
+                .is_err(),
+            "injected failure must roll back the complete reindex transaction"
+        );
+        assert_eq!(active_ids(&database), before_ids);
+        assert_eq!(protected_state(&database), before_protected);
+        let rolled_back_title: String = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT title FROM sessions WHERE id=?1",
+                params![first_session],
+                |row| row.get(0),
+            )
+            .expect("session should remain readable");
+        assert_eq!(rolled_back_title, "Build release package");
+
+        database
+            .connect()
+            .expect("database should connect")
+            .execute_batch("DROP TRIGGER fail_protected_reindex;")
+            .expect("failure trigger should be removed");
+        let mut disappeared = failing.clone();
+        disappeared.events.remove(0);
+        disappeared.events[0].sequence = 1;
+        disappeared.event_count = 1;
+        database
+            .persist_parse_state("protected-file-one", 20, 2, 20, &disappeared)
+            .expect("confirmed replacement should publish");
+        let old_deleted: i64 = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM canonical_events WHERE id=?1",
+                params![original_event_id],
+                |row| row.get(0),
+            )
+            .expect("tombstone should load");
+        assert_eq!(old_deleted, 1);
+        assert_eq!(protected_state(&database), before_protected);
+
+        database
+            .persist_parse_state("protected-file-one", 30, 3, 30, &first)
+            .expect("reappearing source record should recover its canonical identity");
+        assert_eq!(active_ids(&database), before_ids);
+        assert_eq!(protected_state(&database), before_protected);
+    }
+
+    #[test]
     fn unavailable_history_times_remain_null_and_outside_data_ranges() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("untimed-history.sqlite"))
@@ -7591,28 +8100,19 @@ mod concurrency_tests {
             .expect("retention should persist");
         database.prune_evidence().expect("retention should run");
         let connection = database.connect().expect("database should connect");
-        let retained: (i64, i64, i64, Option<String>, Option<String>) = connection
+        let retained: (i64, i64, Option<String>, Option<String>) = connection
             .query_row(
                 "SELECT
                     (SELECT COUNT(*) FROM canonical_events
                      WHERE history_session_id=?1 AND deleted_at IS NOT NULL),
-                    (SELECT COUNT(*) FROM events WHERE session_id=?1),
                     (SELECT COUNT(*) FROM file_changes WHERE session_id=?1),
                     (SELECT prompt_excerpt FROM sessions WHERE id=?1),
                     (SELECT result_excerpt FROM sessions WHERE id=?1)",
                 params![session_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .expect("retained evidence should load");
-        assert_eq!(retained, (2, 0, 0, None, None));
+        assert_eq!(retained, (2, 0, None, None));
     }
 
     #[test]
@@ -7734,7 +8234,13 @@ mod concurrency_tests {
 
     #[test]
     fn partial_text_history_uses_shared_evidence_without_claiming_full_replay() {
-        for agent in [AgentKind::KimiCode, AgentKind::OpenClaw, AgentKind::ZCode] {
+        for agent in [
+            AgentKind::KimiCode,
+            AgentKind::Cursor,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::ZCode,
+        ] {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let database = Database::open(
                 temporary
@@ -7972,7 +8478,13 @@ mod concurrency_tests {
 
     #[test]
     fn v16_text_history_backfill_is_idempotent_and_surface_compatible() {
-        for agent in [AgentKind::KimiCode, AgentKind::OpenClaw, AgentKind::ZCode] {
+        for agent in [
+            AgentKind::KimiCode,
+            AgentKind::Cursor,
+            AgentKind::OpenClaw,
+            AgentKind::Hermes,
+            AgentKind::ZCode,
+        ] {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let path = temporary
                 .path()
@@ -8053,7 +8565,7 @@ mod concurrency_tests {
                 "SELECT agent, source_coverage, COUNT(*), COUNT(DISTINCT dedup_key)
                  FROM canonical_events
                  WHERE source='history-index' AND deleted_at IS NULL
-                   AND agent IN('kimi-code','openclaw','zcode')
+                   AND agent IN('kimi-code','cursor','openclaw','hermes','zcode')
                  GROUP BY agent, source_coverage ORDER BY agent",
             )
             .expect("text history audit should prepare")
@@ -8089,11 +8601,9 @@ mod concurrency_tests {
         let first_observed_at =
             (Utc::now() - Duration::seconds(1)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let second_observed_at = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
         let waiting = |observed_at: &str| ObservedLiveEvent {
             occurred_at: occurred_at.clone(),
             observed_at: observed_at.into(),
-            expires_at: expires_at.clone(),
             agent: "codex".into(),
             source_session_id: "source-session".into(),
             source_event_id: Some("permission-1".into()),
@@ -8150,13 +8660,14 @@ mod concurrency_tests {
                 |row| row.get(0),
             )
             .expect("canonical columns should load");
-        let retained_raw_payloads: i64 = connection
+        let legacy_live_tables: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM live_events WHERE payload_json<>'{}'",
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='table' AND name='live_events'",
                 [],
                 |row| row.get(0),
             )
-            .expect("normal-mode raw payload count should load");
+            .expect("legacy live table count should load");
         let metrics: (i64, i64) = connection
             .query_row(
                 "SELECT event_count, waiting_count
@@ -8182,7 +8693,7 @@ mod concurrency_tests {
         assert_eq!(canonical.11, "lifecycle.wait");
         assert_eq!(canonical.12, "PermissionRequest");
         assert_eq!(payload_columns, 0);
-        assert_eq!(retained_raw_payloads, 0);
+        assert_eq!(legacy_live_tables, 0);
         assert_eq!(metrics, (1, 1));
 
         let activity = database.live_activity().expect("live activity should load");
@@ -8201,6 +8712,69 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn experimental_live_observers_publish_only_recent_canonical_activity() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("experimental-live.sqlite"))
+            .expect("database should open");
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        database
+            .record_observed_live_event(&ObservedLiveEvent {
+                occurred_at: now.clone(),
+                observed_at: now,
+                agent: "kimi-code".into(),
+                source_session_id: "experimental-session".into(),
+                source_event_id: Some("private-provider-event".into()),
+                source_sequence: Some(1),
+                source_event_fingerprint: Some(crate::privacy::stable_hash(
+                    "experimental-observation",
+                )),
+                event_name: "PermissionRequest".into(),
+                project_label: "project".into(),
+                payload_json: r#"{"prompt":"private","command":"private"}"#.into(),
+                status: "waiting".into(),
+                phase: Some("needs-you".into()),
+            })
+            .expect("experimental observation should persist");
+
+        let activity = database.live_activity().expect("live activity should load");
+        assert_eq!(activity.timeline.len(), 1);
+        assert_eq!(activity.timeline[0].event_name, "Activity");
+        assert_eq!(activity.timeline[0].status, "running");
+        assert!(activity.history.is_empty());
+        let connection = database.connect().expect("database should connect");
+        let contract: (i64, i64, String, String, String) = connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name IN('events','live_events')),
+                    (SELECT COUNT(*) FROM activity_cycles),
+                    source, source_coverage, event_type
+                 FROM canonical_events",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("canonical live contract should load");
+        assert_eq!(
+            contract,
+            (
+                0,
+                0,
+                "live-observer".into(),
+                "recent-activity".into(),
+                "activity.observed".into(),
+            )
+        );
+    }
+
+    #[test]
     fn stable_fingerprint_deduplicates_waiting_replays_without_source_id_or_time() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("fingerprint-waiting.sqlite"))
@@ -8210,7 +8784,6 @@ mod concurrency_tests {
         let event = |time: &str| ObservedLiveEvent {
             occurred_at: time.into(),
             observed_at: time.into(),
-            expires_at: "2026-08-09T11:00:00Z".into(),
             agent: "claude-code".into(),
             source_session_id: "fingerprint-session".into(),
             source_event_id: None,
@@ -8250,7 +8823,6 @@ mod concurrency_tests {
         let event = |time: &str, status: &str| ObservedLiveEvent {
             occurred_at: time.into(),
             observed_at: time.into(),
-            expires_at: "2026-08-09T11:00:00Z".into(),
             agent: "claude-code".into(),
             source_session_id: "resumed-session".into(),
             source_event_id: None,
@@ -8328,7 +8900,6 @@ mod concurrency_tests {
                 let event = ObservedLiveEvent {
                     occurred_at: occurred_at.clone(),
                     observed_at: occurred_at,
-                    expires_at: "2026-08-17T00:00:00Z".into(),
                     agent: agent.into(),
                     source_session_id: "lifecycle-session".into(),
                     source_event_id: Some(format!("{agent}-event-{index}")),
@@ -8453,7 +9024,6 @@ mod concurrency_tests {
                 .record_observed_live_event(&ObservedLiveEvent {
                     occurred_at: "2026-08-10T00:01:00Z".into(),
                     observed_at: "2026-08-10T00:01:01Z".into(),
-                    expires_at: "2026-08-17T00:00:00Z".into(),
                     agent: agent.into(),
                     source_session_id: "/Users/private/session".into(),
                     source_event_id: Some(format!("{agent}-private-event")),
@@ -8522,7 +9092,6 @@ mod concurrency_tests {
                 .record_observed_live_event(&ObservedLiveEvent {
                     occurred_at: format!("2026-08-10T00:02:0{sequence}Z"),
                     observed_at: format!("2026-08-10T00:02:0{sequence}Z"),
-                    expires_at: "2026-08-17T00:00:00Z".into(),
                     agent: "codex".into(),
                     source_session_id: "shared-tool-session".into(),
                     source_event_id: Some("tool-use-1".into()),
@@ -8564,7 +9133,6 @@ mod concurrency_tests {
                      occurred_at: &str| ObservedLiveEvent {
             occurred_at: occurred_at.into(),
             observed_at: occurred_at.into(),
-            expires_at: "2026-08-17T00:00:00Z".into(),
             agent: "claude-code".into(),
             source_session_id: "same-time-session".into(),
             source_event_id: Some(source_event_id.into()),
@@ -8619,6 +9187,8 @@ mod concurrency_tests {
                 "error",
                 "fix",
                 Some("failed"),
+                None,
+                "history-error-fingerprint",
                 "history-error-fingerprint",
             )
             .expect("history fact should persist without joining live cycles");
@@ -8658,7 +9228,6 @@ mod concurrency_tests {
         let event = |id: &str, sequence: i64, time: &str| ObservedLiveEvent {
             occurred_at: time.into(),
             observed_at: time.into(),
-            expires_at: "2026-08-17T00:00:00Z".into(),
             agent: "codex".into(),
             source_session_id: "incremental-session".into(),
             source_event_id: Some(id.into()),
@@ -8712,8 +9281,6 @@ mod concurrency_tests {
         let event = |source_event_id: &str, occurred_at: &str| ObservedLiveEvent {
             occurred_at: occurred_at.into(),
             observed_at: observed_at.clone(),
-            expires_at: (Utc::now() + Duration::hours(1))
-                .to_rfc3339_opts(SecondsFormat::AutoSi, true),
             agent: "codex".into(),
             source_session_id: "time-order-session".into(),
             source_event_id: Some(source_event_id.into()),
@@ -8775,7 +9342,7 @@ mod concurrency_tests {
             .expect("legacy session detail should load");
         assert_eq!(first.timeline.len(), 1);
         assert_eq!(first.timeline[0].status, "waiting");
-        assert_eq!(first.timeline[0].observed_at, None);
+        assert!(first.timeline[0].observed_at.is_some());
         assert_eq!(first_sessions.items[0].title, "Legacy indexed session");
         assert_eq!(first_detail.file_changes.len(), 1);
         drop(database);
@@ -8808,7 +9375,7 @@ mod concurrency_tests {
         assert_eq!(second.timeline.len(), 1);
         assert_eq!(second_sessions.items[0].title, "Legacy indexed session");
         assert_eq!(second_detail.file_changes.len(), 1);
-        assert_eq!(canonical_count, (0, 1));
+        assert_eq!(canonical_count, (1, 1));
         assert_eq!(version, DATABASE_SCHEMA_VERSION);
         assert_no_schema_migration_artifacts(temporary.path().join("legacy-live.sqlite").as_path());
     }
@@ -8876,17 +9443,16 @@ mod concurrency_tests {
         database
             .record_live_event(
                 "2026-08-10T00:00:00Z",
-                "2026-11-08T00:00:00Z",
                 "codex",
                 "legacy-raw-session",
                 "PermissionRequest",
                 "project",
-                r#"{"prompt":"private prompt","command":"private command"}"#,
                 "waiting",
             )
             .expect("legacy event should persist");
         {
             let connection = database.connect().expect("database should connect");
+            downgrade_current_evidence_to_v18(&connection);
             connection
                 .execute(
                     "UPDATE live_events SET payload_json=?1",
@@ -8916,10 +9482,11 @@ mod concurrency_tests {
 
         let upgraded = Database::open(path.clone()).expect("v17 database should upgrade");
         let connection = upgraded.connect().expect("database should connect");
-        let summary: (String, i64, i64, i64) = connection
+        let summary: (i64, i64, i64, i64) = connection
             .query_row(
                 "SELECT
-                    (SELECT payload_json FROM live_events LIMIT 1),
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name IN('events','live_events')),
                     (SELECT COUNT(*) FROM canonical_events),
                     (SELECT COUNT(*) FROM live_session_metrics),
                     (SELECT COUNT(*) FROM pragma_table_info('diagnostic_live_envelopes'))",
@@ -8930,7 +9497,7 @@ mod concurrency_tests {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("version should load");
-        assert_eq!(summary, ("{}".into(), 1, 1, 5));
+        assert_eq!(summary, (0, 1, 1, 5));
         assert_eq!(version, DATABASE_SCHEMA_VERSION);
         drop(connection);
         assert_eq!(
@@ -8974,17 +9541,16 @@ mod concurrency_tests {
         database
             .record_live_event(
                 "2026-08-10T00:00:00Z",
-                "2026-11-08T00:00:00Z",
                 "codex",
                 "migration-failure-session",
                 "PermissionRequest",
                 "project",
-                "{}",
                 "waiting",
             )
             .expect("fixture event should persist");
         {
             let connection = database.connect().expect("database should connect");
+            downgrade_current_evidence_to_v18(&connection);
             connection
                 .execute(
                     "UPDATE live_events SET payload_json='private legacy envelope'",
@@ -9069,6 +9635,45 @@ mod concurrency_tests {
         assert_no_schema_migration_artifacts(
             temporary.path().join("migration-rollback.sqlite").as_path(),
         );
+    }
+
+    #[test]
+    fn interrupted_initial_database_build_is_discarded_and_rebuilt() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("interrupted-initialization.sqlite");
+        let (staging, _, marker) = migration_paths(&path);
+        let staged = Connection::open(&staging).expect("staging database should open");
+        apply_schema_migrations(&staged, 0).expect("baseline schema should build");
+        downgrade_current_evidence_to_v18(&staged);
+        staged
+            .execute_batch(
+                "PRAGMA user_version=18;
+                 ALTER TABLE canonical_events ADD COLUMN event_duration_ms INTEGER;",
+            )
+            .expect("interrupted v19 expand should be simulated");
+        drop(staged);
+        drop(
+            create_schema_marker(&marker, "initialize")
+                .expect("initialization marker should persist"),
+        );
+
+        let recovered = Database::open(path.clone())
+            .expect("interrupted first build should recover with a clean schema");
+        let connection = recovered.connect().expect("database should connect");
+        let state: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT user_version FROM pragma_user_version),
+                    (SELECT COUNT(*) FROM pragma_table_info('canonical_events')
+                     WHERE name IN('event_duration_ms','source_event_fingerprint')),
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name IN('events','live_events'))",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("recovered schema should load");
+        assert_eq!(state, (DATABASE_SCHEMA_VERSION, 2, 0));
+        assert_no_schema_migration_artifacts(&path);
     }
 
     #[test]
@@ -9225,7 +9830,6 @@ mod concurrency_tests {
         let event = ObservedLiveEvent {
             occurred_at: now.clone(),
             observed_at: now,
-            expires_at: (Utc::now() + Duration::hours(1)).to_rfc3339(),
             agent: "codex".into(),
             source_session_id: "/Users/private/work/private-session".into(),
             source_event_id: Some("request-private-value".into()),
@@ -9610,187 +10214,11 @@ mod concurrency_tests {
     }
 
     #[test]
-    fn removes_cursor_events_previously_misattributed_to_claude_code() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let database = Database::open(temporary.path().join("live-cleanup.sqlite"))
-            .expect("database should open");
-        let received_at = Utc::now().to_rfc3339();
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
-
-        database
-            .record_live_event(
-                &received_at,
-                &expires_at,
-                "claude-code",
-                "cursor-session",
-                "sessionStart",
-                "CursorProject",
-                r#"{"cursor_version":"3.12.30","composer_mode":"agent"}"#,
-                "idle",
-            )
-            .expect("misattributed Cursor event should persist");
-        database
-            .record_live_event(
-                &received_at,
-                &expires_at,
-                "claude-code",
-                "real-claude-session",
-                "SessionStart",
-                "ClaudeProject",
-                r#"{"session_id":"real-claude-session"}"#,
-                "idle",
-            )
-            .expect("real Claude event should persist");
-        database
-            .connect()
-            .expect("database connection")
-            .execute(
-                "UPDATE live_events
-                 SET payload_json=?1 WHERE source_session_id='cursor-session'",
-                params![r#"{"cursor_version":"3.12.30"}"#],
-            )
-            .expect("legacy Cursor payload should be restored for cleanup");
-
-        assert_eq!(
-            database
-                .purge_misattributed_cursor_live_events()
-                .expect("cleanup should succeed"),
-            1
-        );
-        let connection = database.connect().expect("database connection");
-        let cursor_events: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_events WHERE source_session_id='cursor-session'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("Cursor event count");
-        let cursor_metrics: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_session_metrics
-                 WHERE source_session_id='cursor-session'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("Cursor metric count");
-        let real_claude_events: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_events
-                 WHERE source_session_id='real-claude-session'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("real Claude event count");
-        assert_eq!(cursor_events, 0);
-        assert_eq!(cursor_metrics, 0);
-        assert_eq!(real_claude_events, 1);
-    }
-
-    #[test]
-    fn removes_only_known_live_validation_sessions() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let database = Database::open(temporary.path().join("validation-cleanup.sqlite"))
-            .expect("database should open");
-        let received_at = Utc::now().to_rfc3339();
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
-        for (index, session_id) in [
-            "claude-expanded-check",
-            "codex-expanded-check",
-            "vibemeter-direct-check",
-            "vibemeter-visual-check",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            database
-                .record_live_event(
-                    &received_at,
-                    &expires_at,
-                    "codex",
-                    session_id,
-                    if index == 0 {
-                        "PermissionRequest"
-                    } else {
-                        "PreToolUse"
-                    },
-                    "validation",
-                    "{}",
-                    if index == 0 { "waiting" } else { "running" },
-                )
-                .expect("validation event should persist");
-        }
-        database
-            .record_live_event(
-                &received_at,
-                &expires_at,
-                "claude-code",
-                "real-claude-session",
-                "PermissionRequest",
-                "project",
-                "{}",
-                "waiting",
-            )
-            .expect("real Claude event should persist");
-
-        assert_eq!(
-            database
-                .purge_known_live_validation_events()
-                .expect("validation cleanup"),
-            4
-        );
-        let connection = database.connect().expect("database connection");
-        let validation_events: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_events
-                 WHERE source_session_id IN (
-                    'claude-expanded-check',
-                    'codex-expanded-check',
-                    'vibemeter-direct-check',
-                    'vibemeter-visual-check'
-                 )",
-                [],
-                |row| row.get(0),
-            )
-            .expect("validation event count");
-        let validation_metrics: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_session_metrics
-                 WHERE source_session_id IN (
-                    'claude-expanded-check',
-                    'codex-expanded-check',
-                    'vibemeter-direct-check',
-                    'vibemeter-visual-check'
-                 )",
-                [],
-                |row| row.get(0),
-            )
-            .expect("validation metric count");
-        let real_events: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_events
-                 WHERE source_session_id='real-claude-session'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("real event count");
-        let canonical_events: i64 = connection
-            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
-                row.get(0)
-            })
-            .expect("canonical event count");
-        assert_eq!(validation_events, 0);
-        assert_eq!(validation_metrics, 0);
-        assert_eq!(real_events, 1);
-        assert_eq!(canonical_events, 1);
-    }
-
-    #[test]
     fn live_history_links_to_the_matching_indexed_session() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("live-history-link.sqlite"))
             .expect("database should open");
         let received_at = Utc::now().to_rfc3339();
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
         let connection = database.connect().expect("database connection");
         connection
             .execute(
@@ -9808,12 +10236,10 @@ mod concurrency_tests {
         database
             .record_live_event(
                 &received_at,
-                &expires_at,
                 "claude-code",
                 "source-session",
                 "PermissionRequest",
                 "project",
-                "{}",
                 "waiting",
             )
             .expect("waiting event should persist");
@@ -9833,29 +10259,24 @@ mod concurrency_tests {
             .expect("database should open");
         let earlier = (Utc::now() - Duration::minutes(2)).to_rfc3339();
         let later = (Utc::now() - Duration::minutes(1)).to_rfc3339();
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
 
         database
             .record_live_event(
                 &earlier,
-                &expires_at,
                 "codex",
                 "earlier-session",
                 "EarlierEvent",
                 "project",
-                "{}",
                 "running",
             )
             .expect("earlier event should persist");
         database
             .record_live_event(
                 &later,
-                &expires_at,
                 "codex",
                 "later-session",
                 "LaterEvent",
                 "project",
-                "{}",
                 "running",
             )
             .expect("later event should persist");
@@ -9866,80 +10287,6 @@ mod concurrency_tests {
         assert_eq!(activity.timeline[0].source_session_id, "later-session");
         assert_eq!(activity.timeline[1].event_name, "Activity");
         assert_eq!(activity.timeline[1].source_session_id, "earlier-session");
-    }
-
-    #[test]
-    fn removes_codex_memory_children_from_existing_live_metrics() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
-        let database = Database::open(temporary.path().join("memory-cleanup.sqlite"))
-            .expect("database should open");
-        let received_at = Utc::now().to_rfc3339();
-        let expires_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
-        database
-            .record_live_event(
-                &received_at,
-                &expires_at,
-                "codex",
-                "memory-child",
-                "PermissionRequest",
-                "memories",
-                r#"{"payload":{"cwd":"/Users/test/.codex/memories"}}"#,
-                "waiting",
-            )
-            .expect("memory child should persist");
-        database
-            .record_live_event(
-                &received_at,
-                &expires_at,
-                "codex",
-                "real-session",
-                "SessionStart",
-                "project",
-                r#"{"payload":{"cwd":"/Users/test/Code/project"}}"#,
-                "running",
-            )
-            .expect("real session should persist");
-        database
-            .connect()
-            .expect("database connection")
-            .execute(
-                "UPDATE live_events
-                 SET payload_json=?1 WHERE source_session_id='memory-child'",
-                params![r#"{"payload":{"cwd":"/Users/test/.codex/memories"}}"#],
-            )
-            .expect("legacy memory payload should be restored for cleanup");
-
-        assert_eq!(
-            database
-                .purge_codex_memory_live_events()
-                .expect("memory cleanup"),
-            1
-        );
-        let connection = database.connect().expect("database connection");
-        let memory_metrics: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_session_metrics
-                 WHERE source_session_id='memory-child'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("memory metric count");
-        let real_metrics: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM live_session_metrics
-                 WHERE source_session_id='real-session'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("real metric count");
-        let canonical_events: i64 = connection
-            .query_row("SELECT COUNT(*) FROM canonical_events", [], |row| {
-                row.get(0)
-            })
-            .expect("canonical event count");
-        assert_eq!(memory_metrics, 0);
-        assert_eq!(real_metrics, 1);
-        assert_eq!(canonical_events, 1);
     }
 
     #[test]

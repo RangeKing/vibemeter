@@ -8,6 +8,7 @@ Historical agent records                  Claude Code / Codex Hook events
   → normalized sessions and evidence        → 0600 local Unix socket
                  ↘                         ↙
                     SQLite evidence store
+                    ├─ canonical event ledger and activity cycles
                     ├─ range analytics and work events
                     ├─ session ledger and replay
                     ├─ catchphrase counts and attribution
@@ -37,6 +38,14 @@ Historical agent records                  Claude Code / Codex Hook events
 - `providers.rs`: optional provider status and account-usage queries;
 - `export.rs`: deterministic SVG and PNG rendering;
 - `privacy.rs`: path, secret, title, and export sanitization.
+
+## Evidence contract
+
+`canonical_events` is the only event-level fact source used by Live and historical replay. Provider adapters may produce richer source records transiently, but shared queries consume normalized event types, lifecycle state, process phase, evidence level, coverage, privacy level, stable identity, and tombstone state. Session aggregates, activity cycles, tasks, and VCTI are derived models; they do not reintroduce provider-specific event tables.
+
+Exact Claude Code and Codex hooks publish `live-hook` lifecycle evidence. Experimental Kimi Code and ZCode observers publish `live-observer` recent-activity evidence only and cannot create exact waiting, error, completion, or activity-cycle claims. Historical evidence uses `history-index` and remains isolated from live queries.
+
+Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries
 

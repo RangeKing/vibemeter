@@ -11,6 +11,7 @@ VibeMeter is local-first. It can encounter sensitive development data, so collec
 - project-relative file evidence and line-count summaries;
 - optional read-only Git evidence;
 - generated reviews, settings, and user edits;
+- fixed-choice attention feedback linked to canonical evidence;
 - derived catchphrase counts, session counts, and Agent attribution;
 - raw local Hook envelopes only when the user enables diagnostic mode, encrypted with a platform-secured key and deleted after seven days;
 - long-term derived live counters used by activity analytics and VCTI.
@@ -49,4 +50,4 @@ Share Guard checks export content for secrets, absolute paths, email addresses, 
 
 ## Source access and migration
 
-Historical Agent directories and source repositories are read-only. First launch copies an existing aftervibe or legacy TokenGraph database through SQLite online backup into VibeMeter’s own application directory. The source database, WAL, and SHM are not migration targets.
+Historical Agent directories and source repositories are read-only. First launch copies an existing aftervibe or legacy TokenGraph database through SQLite online backup into VibeMeter’s own application directory. The source database, WAL, and SHM are not migration targets. Schema contraction runs only on a staged VibeMeter copy and installs it after integrity and canonical-coverage checks. Reindexing tombstones replaceable source evidence instead of deleting user confirmations, manual task membership, attention feedback, or long-term snapshots.

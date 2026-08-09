@@ -733,7 +733,6 @@ pub struct LiveSnapshot {
 pub struct ObservedLiveEvent {
     pub occurred_at: String,
     pub observed_at: String,
-    pub expires_at: String,
     pub agent: String,
     pub source_session_id: String,
     pub source_event_id: Option<String>,

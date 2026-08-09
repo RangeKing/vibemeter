@@ -1764,7 +1764,11 @@ mod tests {
         )
         .expect("persisted evidence should open read-only");
         let mut statement = evidence
-            .prepare("SELECT source_event_id FROM events WHERE source_event_id IS NOT NULL")
+            .prepare(
+                "SELECT source_event_id FROM canonical_events
+                 WHERE source='history-index' AND source_event_id IS NOT NULL
+                   AND deleted_at IS NULL",
+            )
             .expect("event identities should query");
         let identities = statement
             .query_map([], |row| row.get::<_, String>(0))
@@ -2226,7 +2230,7 @@ mod tests {
                 .phases
                 .iter()
                 .flat_map(|phase| &phase.events)
-                .filter(|event| event.event_type == "prompt")
+                .filter(|event| event.event_type == "prompt.observed")
                 .count(),
             1
         );
