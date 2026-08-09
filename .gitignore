@@ -92,3 +92,11 @@ apps/desktop/playwright-report/
 /backups/
 /exports/
 /recordings/
+
+# Internal development plans, decisions, agent configuration, and local tickets.
+/CONTEXT.md
+/docs/product-roadmap.md
+/docs/adr/
+/docs/internal/
+/docs/agents/
+/.scratch/
