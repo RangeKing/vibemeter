@@ -7,6 +7,10 @@ use serde_json::Value;
 /// this parser deliberately accepts the stable message/tool/usage envelope and
 /// leaves unknown records out of the derived metrics.
 pub fn parse_record(state: &mut ParseState, record: &Value) {
+    let (accepted, source_record_id) = common::source_record_once(state, record);
+    if !accepted {
+        return;
+    }
     let timestamp = timestamp(record);
     let event = record
         .get("type")
@@ -71,7 +75,7 @@ pub fn parse_record(state: &mut ParseState, record: &Value) {
                 timestamp.as_deref(),
             );
         } else {
-            common::record_tool(
+            common::record_tool_with_source(
                 state,
                 record
                     .get("name")
@@ -80,6 +84,7 @@ pub fn parse_record(state: &mut ParseState, record: &Value) {
                     .unwrap_or("tool"),
                 record.get("arguments"),
                 timestamp.as_deref(),
+                source_record_id.as_deref(),
             );
         }
     }

@@ -230,7 +230,7 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
     let can_resume = source.adapter != SourceAdapter::ZCode
         && !force
         && cursor.as_ref().is_some_and(|cursor| {
-            cursor.source_size <= source.size
+            cursor.source_size < source.size
                 && cursor.byte_offset <= source.size
                 && cursor.state.agent == source.agent
                 && cursor.state.parser_version == PARSER_VERSION
@@ -243,6 +243,23 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
     } else {
         ParseState::new(source.agent, fallback_id)
     };
+    state.source_record_receipt_key = database.source_record_receipt_key();
+    if !can_resume {
+        state.replace_source_record_ids = true;
+    }
+    if can_resume
+        && state.project_root.is_none()
+        && matches!(
+            source.adapter,
+            SourceAdapter::Kimi | SourceAdapter::OpenClaw
+        )
+    {
+        restore_transient_project_context(
+            &source.path,
+            cursor.as_ref().map_or(0, |cursor| cursor.byte_offset),
+            &mut state,
+        )?;
+    }
     if source.adapter == SourceAdapter::Cursor {
         // Cursor's transcript stream has no dependable message timestamps. Its
         // filesystem modification time is an honest session-level anchor, which
@@ -336,14 +353,28 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
             continue;
         }
         match serde_json::from_slice::<Value>(&buffer) {
-            Ok(record) => match source.adapter {
-                SourceAdapter::Codex => codex::parse_record(&mut state, &record),
-                SourceAdapter::Claude => claude::parse_record(&mut state, &record),
-                SourceAdapter::Cursor => cursor::parse_record(&mut state, &record),
-                SourceAdapter::Kimi => kimi::parse_record(&mut state, &record),
-                SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, &record),
-                SourceAdapter::ZCode => zcode::parse_record(&mut state, &record),
-            },
+            Ok(record) => {
+                if can_resume
+                    && matches!(
+                        source.adapter,
+                        SourceAdapter::Kimi | SourceAdapter::OpenClaw | SourceAdapter::ZCode
+                    )
+                    && database.history_record_id_exists(
+                        &file_hash,
+                        &common::source_record_receipt(&record, &state.source_record_receipt_key),
+                    )?
+                {
+                    continue;
+                }
+                match source.adapter {
+                    SourceAdapter::Codex => codex::parse_record(&mut state, &record),
+                    SourceAdapter::Claude => claude::parse_record(&mut state, &record),
+                    SourceAdapter::Cursor => cursor::parse_record(&mut state, &record),
+                    SourceAdapter::Kimi => kimi::parse_record(&mut state, &record),
+                    SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, &record),
+                    SourceAdapter::ZCode => zcode::parse_record(&mut state, &record),
+                }
+            }
             Err(_) => {
                 state.malformed_records = state.malformed_records.saturating_add(1);
             }
@@ -379,6 +410,42 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         &state,
     )?;
     Ok(true)
+}
+
+fn restore_transient_project_context(
+    path: &Path,
+    byte_offset: u64,
+    state: &mut ParseState,
+) -> AppResult<()> {
+    let mut reader = BufReader::new(File::open(path)?);
+    let mut buffer = Vec::with_capacity(4096);
+    while reader.stream_position()? < byte_offset && state.project_root.is_none() {
+        buffer.clear();
+        let record_start = reader.stream_position()?;
+        let bytes = reader.read_until(b'\n', &mut buffer)?;
+        if bytes == 0 || reader.stream_position()? > byte_offset {
+            break;
+        }
+        if buffer.len() > MAX_RECORD_BYTES {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&buffer) else {
+            continue;
+        };
+        let context = record.get("meta").unwrap_or(&record);
+        common::set_project(
+            state,
+            context
+                .get("workspacePath")
+                .or_else(|| context.get("cwd"))
+                .or_else(|| context.get("workdir"))
+                .and_then(Value::as_str),
+        );
+        if reader.stream_position()? <= record_start {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn collect_jsonl_files(
@@ -669,8 +736,618 @@ fn timestamp_from_seconds(value: f64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::SessionListFilters;
+    use crate::models::{IndexStatus, SessionListFilters, ShareRenderRequest};
+    use serde_json::json;
     use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    fn text_history_records(adapter: SourceAdapter, project_root: &str) -> Vec<Value> {
+        let private_path = format!("{project_root}/src/lib.rs");
+        match adapter {
+            SourceAdapter::Kimi => {
+                let prompt = json!({
+                    "id":"prompt-1", "type":"turn.prompt",
+                    "time":1_775_000_000_000_i64,
+                    "sessionId":"kimi-text-session", "cwd":project_root,
+                    "prompt":"Implement text history coverage"
+                });
+                let usage = json!({
+                    "type":"usage.record",
+                    "time":1_775_000_001_000_i64,
+                    "model":"kimi-code/k3",
+                    "usage":{"inputOther":60,"output":40,"inputCacheRead":0,"inputCacheCreation":0},
+                    "sourceSpecificSecret":"sk-text-source-secret"
+                });
+                let edit = json!({
+                    "id":"edit-record", "type":"context.append_loop_event",
+                    "time":1_775_000_002_000_i64,
+                    "event":{"id":"edit-1","type":"tool.call","name":"Edit",
+                        "args":{"file_path":private_path,"old_string":"secret old","new_string":"secret new"}}
+                });
+                let verify = json!({
+                    "id":"verify-record", "type":"context.append_loop_event",
+                    "time":1_775_000_003_000_i64,
+                    "event":{"id":"verify-1","type":"tool.call","name":"Bash",
+                        "args":{"command":"cargo test --secret"}}
+                });
+                vec![
+                    prompt.clone(),
+                    prompt,
+                    usage.clone(),
+                    usage,
+                    edit.clone(),
+                    edit,
+                    verify.clone(),
+                    verify,
+                    json!({"id":"missing-1","type":"metadata"}),
+                ]
+            }
+            SourceAdapter::OpenClaw => {
+                let message = json!({
+                    "type":"message", "timestamp":"2026-04-01T00:00:00Z",
+                    "sessionId":"openclaw-text-session", "cwd":project_root,
+                    "model":"gpt-text", "role":"user",
+                    "message":{"role":"user","content":"Implement text history coverage"},
+                    "usage":{"input_tokens":60,"output_tokens":40},
+                    "sourceSpecificSecret":"sk-text-source-secret"
+                });
+                let edit = json!({
+                    "id":"edit-1", "type":"tool.call", "timestamp":"2026-04-01T00:00:01Z",
+                    "sessionId":"openclaw-text-session", "name":"Edit",
+                    "arguments":{"file_path":private_path,"old_string":"secret old","new_string":"secret new"}
+                });
+                let verify = json!({
+                    "id":"verify-1", "type":"tool.call", "timestamp":"2026-04-01T00:00:02Z",
+                    "sessionId":"openclaw-text-session", "name":"Bash",
+                    "arguments":{"command":"cargo test --secret"}
+                });
+                vec![
+                    message.clone(),
+                    message,
+                    edit.clone(),
+                    edit,
+                    verify.clone(),
+                    verify,
+                    json!({"id":"missing-1","type":"metadata"}),
+                ]
+            }
+            SourceAdapter::ZCode => {
+                let model_io = json!({
+                    "type":"model_io",
+                    "sessionId":"zcode-text-session", "startedAt":"2026-04-01T00:00:00Z",
+                    "workspacePath":project_root, "model":{"modelId":"glm-text"},
+                    "request":{"messages":[{"role":"user","content":"Implement text history coverage"}]},
+                    "response":{
+                        "text":"Implemented",
+                        "usage":{"inputTokens":60,"outputTokens":40},
+                        "toolCalls":[
+                            {"id":"edit-1","name":"Edit","input":{"file_path":private_path,"old_string":"secret old","new_string":"secret new"}},
+                            {"id":"verify-1","name":"Bash","input":{"command":"cargo test --secret"}}
+                        ]
+                    },
+                    "sourceSpecificSecret":"sk-text-source-secret"
+                });
+                let completed = json!({
+                    "id":"turn-1", "type":"turn.completed", "timestamp":"2026-04-01T00:00:03Z",
+                    "payload":{"duration":3000}
+                });
+                vec![
+                    model_io.clone(),
+                    model_io,
+                    completed.clone(),
+                    completed,
+                    json!({"id":"missing-1","type":"unknown"}),
+                ]
+            }
+            _ => unreachable!("fixture is limited to text history adapters"),
+        }
+    }
+
+    fn appended_text_history_records(adapter: SourceAdapter, project_root: &str) -> Vec<Value> {
+        let appended_path = format!("{project_root}/src/append.rs");
+        let ignored_path = format!("{project_root}/src/ignored.rs");
+        match adapter {
+            SourceAdapter::Kimi => [
+                ("append-record", "append-tool", appended_path),
+                ("ignored-record", "ignored-tool", ignored_path),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (record_id, tool_id, path))| {
+                json!({
+                    "id":record_id, "type":"context.append_loop_event",
+                    "time":1_775_000_004_000_i64 + index as i64,
+                    "event":{"id":tool_id,"type":"tool.call","name":"Edit",
+                        "args":{"file_path":path,"new_string":"safe"}}
+                })
+            })
+            .collect(),
+            SourceAdapter::OpenClaw => [
+                ("append-tool", appended_path),
+                ("ignored-tool", ignored_path),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (record_id, path))| {
+                json!({
+                    "id":record_id, "type":"tool.call",
+                    "timestamp":format!("2026-04-01T00:00:0{}Z", index + 4),
+                    "sessionId":"openclaw-text-session", "name":"Edit",
+                    "arguments":{"file_path":path,"new_string":"safe"}
+                })
+            })
+            .collect(),
+            SourceAdapter::ZCode => vec![json!({
+                "id":"appended-model-io", "type":"model_io",
+                "sessionId":"zcode-text-session", "startedAt":"2026-04-01T00:00:04Z",
+                "model":{"modelId":"glm-text"},
+                "response":{"toolCalls":[
+                    {"id":"append-tool","name":"Edit","input":{"file_path":appended_path,"new_string":"safe"}},
+                    {"id":"ignored-tool","name":"Edit","input":{"file_path":ignored_path,"new_string":"safe"}}
+                ]}
+            })],
+            _ => unreachable!("fixture is limited to text history adapters"),
+        }
+    }
+
+    fn untimed_usage_record(adapter: SourceAdapter) -> Value {
+        match adapter {
+            SourceAdapter::Kimi => json!({
+                "type":"usage.record", "model":"kimi-code/k3",
+                "usage":{"inputOther":60,"output":40}
+            }),
+            SourceAdapter::OpenClaw => json!({
+                "type":"message", "model":"gpt-text", "role":"assistant",
+                "usage":{"input_tokens":60,"output_tokens":40}
+            }),
+            SourceAdapter::ZCode => json!({
+                "type":"model_io", "sessionId":"zcode-untimed", "model":{"modelId":"glm-text"},
+                "response":{"usage":{"inputTokens":60,"outputTokens":40}}
+            }),
+            _ => unreachable!("fixture is limited to text history adapters"),
+        }
+    }
+
+    #[test]
+    fn text_history_sources_handle_normal_missing_corrupt_and_duplicate_records() {
+        for (agent, adapter, expected_model) in [
+            (AgentKind::KimiCode, SourceAdapter::Kimi, "kimi-code/k3"),
+            (AgentKind::OpenClaw, SourceAdapter::OpenClaw, "gpt-text"),
+            (AgentKind::ZCode, SourceAdapter::ZCode, "glm-text"),
+        ] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let database = Database::open(
+                temporary
+                    .path()
+                    .join(format!("{}-text.sqlite", agent.as_str())),
+            )
+            .expect("database should open");
+            let project_root = temporary.path().join("private-project");
+            std::fs::create_dir_all(project_root.join("src"))
+                .expect("project fixture should exist");
+            std::fs::write(project_root.join(".gitignore"), "src/ignored.rs\n")
+                .expect("ignore fixture should write");
+            let project_root = project_root.to_string_lossy().to_string();
+            let source_path = temporary
+                .path()
+                .join(format!("{}-history.jsonl", agent.as_str()));
+            let mut source_file = File::create(&source_path).expect("fixture should create");
+            for record in text_history_records(adapter, &project_root) {
+                writeln!(source_file, "{record}").expect("record should write");
+            }
+            writeln!(source_file, "{{not-json").expect("corrupt record should write");
+            source_file.flush().expect("fixture should flush");
+            let metadata = source_file
+                .metadata()
+                .expect("fixture metadata should load");
+            let mut source = SourceFile {
+                path: source_path,
+                agent,
+                adapter,
+                size: metadata.len(),
+                modified: 1,
+            };
+
+            assert!(parse_source_file(&database, &source, false).expect("source should parse"));
+            let cursor = database
+                .load_cursor(&stable_hash(&source.path.to_string_lossy()))
+                .expect("cursor should load")
+                .expect("cursor should exist");
+            assert_eq!(cursor.state.malformed_records, 1);
+            assert_eq!(cursor.state.tool_calls, 2);
+            assert_eq!(cursor.state.usage.total(), 100);
+            assert_eq!(
+                cursor.state.primary_model().as_deref(),
+                Some(expected_model)
+            );
+            assert_eq!(
+                cursor
+                    .state
+                    .events
+                    .iter()
+                    .filter(|event| event.event_type == "tool")
+                    .count(),
+                2,
+                "duplicate tool records must not create duplicate evidence"
+            );
+
+            let sessions = database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some(agent.as_str()),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    10,
+                )
+                .expect("sessions should load");
+            assert_eq!(sessions.total, 1);
+            let detail = database
+                .session_detail(&sessions.items[0].id)
+                .expect("session detail should load");
+            assert_eq!(detail.file_changes.len(), 1);
+            assert_eq!(detail.file_changes[0].path, "src/lib.rs");
+            assert_eq!(detail.summary.verification_state, "verified");
+            let initial_offset = cursor.byte_offset;
+
+            let mut source_file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&source.path)
+                .expect("fixture should reopen for append");
+            for record in appended_text_history_records(adapter, &project_root) {
+                writeln!(source_file, "{record}").expect("appended record should write");
+            }
+            source_file.flush().expect("appended fixture should flush");
+            let metadata = source_file
+                .metadata()
+                .expect("appended metadata should load");
+            source.size = metadata.len();
+            source.modified = 2;
+            assert!(parse_source_file(&database, &source, false).expect("append should parse"));
+            let appended_cursor = database
+                .load_cursor(&stable_hash(&source.path.to_string_lossy()))
+                .expect("appended cursor should load")
+                .expect("appended cursor should exist");
+            assert!(appended_cursor.byte_offset > initial_offset);
+            assert_eq!(appended_cursor.state.usage.total(), 100);
+            assert_eq!(appended_cursor.state.tool_calls, 4);
+
+            let sessions = database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some(agent.as_str()),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    10,
+                )
+                .expect("sessions should reload after append");
+            let detail = database
+                .session_detail(&sessions.items[0].id)
+                .expect("session detail should reload after append");
+            assert!(
+                detail
+                    .file_changes
+                    .iter()
+                    .any(|change| change.path == "src/append.rs")
+            );
+            assert!(detail.file_changes.iter().all(
+                |change| change.path != "src/ignored.rs" && !change.path.contains("[external]")
+            ));
+
+            let overview = database
+                .overview("all", IndexStatus::default())
+                .expect("overview should include partial source");
+            assert_eq!(overview.totals.usage.total(), 100);
+            assert!(overview.agents.iter().any(|item| item.id == agent.as_str()));
+            assert!(database.insights("all").expect("insights").sample_size >= 1);
+            assert_eq!(database.vcti_profile("all").expect("vcti").session_count, 1);
+            let share = crate::export::preview(
+                &database,
+                ShareRenderRequest {
+                    template_id: "usage-overview".into(),
+                    locale: "en-US".into(),
+                    aspect_ratio: "1:1".into(),
+                    theme: "light".into(),
+                    range: "all".into(),
+                    session_id: None,
+                    compare_ids: Vec::new(),
+                    title: String::new(),
+                    summary: String::new(),
+                    project_name: String::new(),
+                    metrics: Vec::new(),
+                    show_brand: true,
+                    show_model: true,
+                    show_cost: false,
+                    show_project: false,
+                    show_behavior_evidence: false,
+                    privacy_reviewed: true,
+                },
+            )
+            .expect("share preview should include partial source");
+            assert!(share.can_export);
+
+            let before = serde_json::to_value((
+                &sessions,
+                &detail,
+                &overview.totals,
+                &overview.daily,
+                &overview.hourly,
+                &overview.agents,
+                &overview.models,
+                &overview.tools,
+            ))
+            .expect("surface should serialize");
+            let public_json = format!("{}{}", before, share.svg);
+            for private in [
+                "sk-text-source-secret",
+                "cargo test --secret",
+                &project_root,
+                "secret old",
+                "secret new",
+            ] {
+                assert!(!public_json.contains(private));
+            }
+
+            assert!(
+                parse_source_file(&database, &source, true).expect("force reparse should work")
+            );
+            let sessions_after = database
+                .sessions(
+                    "all",
+                    SessionListFilters {
+                        agent: Some(agent.as_str()),
+                        ..SessionListFilters::default()
+                    },
+                    0,
+                    10,
+                )
+                .expect("sessions should reload");
+            let detail_after = database
+                .session_detail(&sessions_after.items[0].id)
+                .expect("session detail should reload");
+            let overview_after = database
+                .overview("all", IndexStatus::default())
+                .expect("overview should reload after reparse");
+            assert_eq!(
+                before,
+                serde_json::to_value((
+                    &sessions_after,
+                    &detail_after,
+                    &overview_after.totals,
+                    &overview_after.daily,
+                    &overview_after.hourly,
+                    &overview_after.agents,
+                    &overview_after.models,
+                    &overview_after.tools,
+                ))
+                .expect("surface should serialize after reparse")
+            );
+        }
+    }
+
+    #[test]
+    fn untimed_text_usage_stays_session_level_without_becoming_today() {
+        for (agent, adapter) in [
+            (AgentKind::KimiCode, SourceAdapter::Kimi),
+            (AgentKind::OpenClaw, SourceAdapter::OpenClaw),
+            (AgentKind::ZCode, SourceAdapter::ZCode),
+        ] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let database = Database::open(temporary.path().join("untimed.sqlite"))
+                .expect("database should open");
+            let mut state = ParseState::new(agent, format!("{}-untimed", agent.as_str()));
+            state.started_at = Some("2026-04-01T00:00:00Z".into());
+            state.ended_at = state.started_at.clone();
+            let record = untimed_usage_record(adapter);
+            match adapter {
+                SourceAdapter::Kimi => kimi::parse_record(&mut state, &record),
+                SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, &record),
+                SourceAdapter::ZCode => zcode::parse_record(&mut state, &record),
+                _ => unreachable!("fixture is limited to text history adapters"),
+            }
+            assert_eq!(state.usage.total(), 100);
+            assert!(state.daily.is_empty());
+            assert!(state.hourly.is_empty());
+            let session_id = database
+                .persist_parse_state(agent.as_str(), 1, 1, 1, &state)
+                .expect("untimed session should persist");
+            assert_eq!(
+                database
+                    .session_detail(&session_id)
+                    .expect("untimed session should load by identity")
+                    .summary
+                    .usage
+                    .total(),
+                100
+            );
+            assert_eq!(
+                database
+                    .overview("today", IndexStatus::default())
+                    .expect("today overview should load")
+                    .totals
+                    .usage
+                    .total(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn source_record_receipts_are_exact_transient_and_private() {
+        let mut state = ParseState::new(AgentKind::KimiCode, "bounded-records".into());
+        state.source_record_receipt_key = [7; 32];
+        let private_left = json!({
+            "type":"tool.call", "timestamp":"2026-04-01T00:00:00Z", "name":"Bash",
+            "arguments":{"command":"cat alpha", "file_path":"/private/alpha.rs"},
+            "prompt":"secret-one", "sourceSpecificSecret":"sk-secret-one"
+        });
+        let private_right = json!({
+            "type":"tool.call", "timestamp":"2026-04-01T00:00:00Z", "name":"Bash",
+            "arguments":{"command":"pwd omega", "file_path":"/another/omega.rs"},
+            "prompt":"hidden-two", "sourceSpecificSecret":"sk-hidden-two"
+        });
+        let left_receipt =
+            common::source_record_receipt(&private_left, &state.source_record_receipt_key);
+        let right_receipt =
+            common::source_record_receipt(&private_right, &state.source_record_receipt_key);
+        assert_ne!(
+            left_receipt, right_receipt,
+            "keyed receipts must distinguish different private records without storing them"
+        );
+        for private in [
+            "cat alpha",
+            "/private/alpha.rs",
+            "secret-one",
+            "sk-secret-one",
+            "tool.call",
+        ] {
+            assert!(!left_receipt.contains(private));
+        }
+        assert!(common::source_record_once(&mut state, &private_left).0);
+        assert!(common::source_record_once(&mut state, &private_right).0);
+        let first_native = json!({"id":"native-0","type":"metadata"});
+        let native_receipt =
+            common::source_record_receipt(&first_native, &state.source_record_receipt_key);
+        assert!(!native_receipt.contains("native-0"));
+        assert!(!native_receipt.contains("metadata"));
+        assert!(common::source_record_once(&mut state, &first_native).0);
+        for index in 1..=1_000 {
+            let record = json!({"id":format!("native-{index}"),"type":"metadata"});
+            assert!(common::source_record_once(&mut state, &record).0);
+        }
+        assert!(!common::source_record_once(&mut state, &first_native).0);
+
+        for index in 0..1_000 {
+            let record = json!({"type":"metadata","sequence":index,"secret":"sk-bounded-secret"});
+            assert!(common::source_record_once(&mut state, &record).0);
+        }
+        assert_eq!(state.source_record_ids.len(), 2_003);
+        let first_structural = json!({"type":"metadata","sequence":0,"secret":"sk-bounded-secret"});
+        assert!(!common::source_record_once(&mut state, &first_structural).0);
+        let recent = json!({"type":"metadata","sequence":999,"secret":"sk-bounded-secret"});
+        assert!(!common::source_record_once(&mut state, &recent).0);
+        let serialized = serde_json::to_string(&state).expect("state should serialize");
+        assert!(serialized.len() < 16 * 1024);
+        assert!(!serialized.contains("sk-bounded-secret"));
+        assert!(!serialized.contains("native-0"));
+    }
+
+    #[test]
+    fn text_record_receipts_deduplicate_after_long_cross_batch_replay_and_force() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database_path = temporary.path().join("native-records.sqlite");
+        let database = Database::open(database_path.clone()).expect("database should open");
+        let receipt_key = database.source_record_receipt_key();
+        let key_path = temporary
+            .path()
+            .join(".native-records.sqlite.source-record-key");
+        assert_eq!(
+            std::fs::read(&key_path)
+                .expect("receipt key should read")
+                .len(),
+            32
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&key_path)
+                .expect("receipt key metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let source_path = temporary.path().join("kimi-history.jsonl");
+        let usage = json!({
+            "type":"usage.record", "time":1_775_000_000_000_i64,
+            "model":"kimi-code/k3", "usage":{"inputOther":60,"output":40}
+        });
+        let mut source_file = File::create(&source_path).expect("fixture should create");
+        writeln!(source_file, "{usage}").expect("usage should write");
+        for index in 0..300 {
+            writeln!(
+                source_file,
+                "{}",
+                json!({"id":format!("metadata-{index}"),"type":"metadata"})
+            )
+            .expect("metadata should write");
+        }
+        source_file.flush().expect("fixture should flush");
+        let metadata = source_file.metadata().expect("metadata should load");
+        let mut source = SourceFile {
+            path: source_path,
+            agent: AgentKind::KimiCode,
+            adapter: SourceAdapter::Kimi,
+            size: metadata.len(),
+            modified: 1,
+        };
+        assert!(parse_source_file(&database, &source, false).expect("source should parse"));
+
+        let mut source_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&source.path)
+            .expect("fixture should reopen");
+        writeln!(source_file, "{usage}").expect("old usage should replay");
+        source_file.flush().expect("replay should flush");
+        source.size = source_file.metadata().expect("metadata").len();
+        source.modified = 2;
+        assert!(parse_source_file(&database, &source, false).expect("replay should parse"));
+
+        let file_hash = stable_hash(&source.path.to_string_lossy());
+        let cursor = database
+            .load_cursor(&file_hash)
+            .expect("cursor should load")
+            .expect("cursor should exist");
+        assert_eq!(cursor.state.usage.total(), 100);
+        assert!(cursor.state.source_record_ids.is_empty());
+        let usage_receipt =
+            common::source_record_receipt(&usage, &database.source_record_receipt_key());
+        assert!(
+            database
+                .history_record_id_exists(&file_hash, &usage_receipt)
+                .expect("usage receipt should load")
+        );
+
+        assert!(parse_source_file(&database, &source, true).expect("force reparse should work"));
+        let force_cursor = database
+            .load_cursor(&file_hash)
+            .expect("force cursor should load")
+            .expect("force cursor should exist");
+        assert_eq!(force_cursor.state.usage.total(), 100);
+        assert!(
+            database
+                .history_record_id_exists(&file_hash, &usage_receipt)
+                .expect("force receipt should load")
+        );
+
+        database
+            .clear_local_data()
+            .expect("local data should clear");
+        assert!(
+            !database
+                .history_record_id_exists(&file_hash, &usage_receipt)
+                .expect("cleared receipt lookup should work")
+        );
+        let interrupted_temporary_key = temporary
+            .path()
+            .join(".native-records.sqlite.source-record-key.interrupted.tmp");
+        std::fs::write(&interrupted_temporary_key, [9_u8; 32])
+            .expect("interrupted key artifact should write");
+        drop(database);
+        assert_eq!(
+            Database::open(database_path)
+                .expect("database should reopen")
+                .source_record_receipt_key(),
+            receipt_key
+        );
+        assert!(
+            !interrupted_temporary_key.exists(),
+            "reopening should retain the published key and clean interrupted artifacts"
+        );
+    }
 
     #[test]
     fn leaves_an_incomplete_final_record_for_the_next_pass() {

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.5.0";
+pub const PARSER_VERSION: &str = "6.6.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -237,6 +237,14 @@ pub struct ParseState {
     pub last_claude_message_id: Option<String>,
     pub last_claude_message_usage: TokenUsage,
     pub seen_tool_ids: HashSet<String>,
+    #[serde(skip)]
+    pub source_record_ids: HashSet<String>,
+    #[serde(skip)]
+    pub new_source_record_ids: HashSet<String>,
+    #[serde(skip)]
+    pub replace_source_record_ids: bool,
+    #[serde(skip)]
+    pub source_record_receipt_key: [u8; 32],
     pub touched_file_hashes: HashSet<String>,
     pub tool_counts: HashMap<String, u64>,
     #[serde(default)]
@@ -308,6 +316,10 @@ impl ParseState {
             last_claude_message_id: None,
             last_claude_message_usage: TokenUsage::default(),
             seen_tool_ids: HashSet::new(),
+            source_record_ids: HashSet::new(),
+            new_source_record_ids: HashSet::new(),
+            replace_source_record_ids: false,
+            source_record_receipt_key: [0; 32],
             touched_file_hashes: HashSet::new(),
             tool_counts: HashMap::new(),
             skill_counts: HashMap::new(),

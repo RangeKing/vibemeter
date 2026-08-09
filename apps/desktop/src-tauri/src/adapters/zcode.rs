@@ -104,17 +104,35 @@ fn parse_message(state: &mut ParseState, message: &Value) {
     }
 
     if let Some(tools) = object.get("tools").and_then(Value::as_array) {
-        for tool in tools {
+        for (index, tool) in tools.iter().enumerate() {
             let Some(tool_object) = tool.as_object() else {
                 continue;
             };
+            let source_event_id = common::normalized_source_record_id(tool).or_else(|| {
+                timestamp.as_deref().map(|timestamp| {
+                    common::derived_source_event_id(timestamp, "zcode-message-tool", index)
+                })
+            });
+            if source_event_id.as_ref().is_some_and(|source_event_id| {
+                !state
+                    .seen_tool_ids
+                    .insert(format!("history-tool:{source_event_id}"))
+            }) {
+                continue;
+            }
             let name = tool_object
                 .get("toolName")
                 .or_else(|| tool_object.get("title"))
                 .or_else(|| tool_object.get("kind"))
                 .and_then(Value::as_str)
                 .unwrap_or("tool");
-            common::record_tool(state, name, tool_object.get("input"), timestamp.as_deref());
+            common::record_tool_with_source(
+                state,
+                name,
+                tool_object.get("input"),
+                timestamp.as_deref(),
+                source_event_id.as_deref(),
+            );
             if let Some(status) = tool_object.get("status").and_then(Value::as_str) {
                 common::record_tool_result(
                     state,
@@ -128,6 +146,10 @@ fn parse_message(state: &mut ParseState, message: &Value) {
 }
 
 fn parse_model_io(state: &mut ParseState, record: &Value) {
+    let (accepted, source_record_id) = common::source_record_once(state, record);
+    if !accepted {
+        return;
+    }
     let timestamp = record_timestamp(record);
     common::set_source_session(state, record.get("sessionId").and_then(Value::as_str));
     state.source_session_observed = true;
@@ -186,13 +208,29 @@ fn parse_model_io(state: &mut ParseState, record: &Value) {
             common::record_usage(state, &usage, timestamp.as_deref(), model);
         }
         if let Some(tool_calls) = response.get("toolCalls").and_then(Value::as_array) {
-            for tool_call in tool_calls {
+            for (index, tool_call) in tool_calls.iter().enumerate() {
                 let name = tool_call
                     .get("name")
                     .or_else(|| tool_call.get("toolName"))
                     .and_then(Value::as_str)
                     .unwrap_or("tool");
-                common::record_tool(state, name, tool_call.get("input"), timestamp.as_deref());
+                let source_event_id =
+                    common::normalized_source_record_id(tool_call).or_else(|| {
+                        source_record_id.as_deref().map(|source_record_id| {
+                            common::derived_source_event_id(
+                                source_record_id,
+                                "zcode-model-tool",
+                                index,
+                            )
+                        })
+                    });
+                common::record_tool_with_source(
+                    state,
+                    name,
+                    tool_call.get("input"),
+                    timestamp.as_deref(),
+                    source_event_id.as_deref(),
+                );
             }
         }
     } else if let Some(usage) = record.get("usage") {
@@ -206,6 +244,10 @@ fn parse_model_io(state: &mut ParseState, record: &Value) {
 }
 
 fn parse_session_event(state: &mut ParseState, event: &Value) {
+    let (accepted, source_record_id) = common::source_record_once(state, event);
+    if !accepted {
+        return;
+    }
     let Some(event_type) = event
         .get("type")
         .or_else(|| event.get("event"))
@@ -232,7 +274,15 @@ fn parse_session_event(state: &mut ParseState, event: &Value) {
                 .or_else(|| payload.get("name"))
                 .and_then(Value::as_str)
                 .unwrap_or("tool");
-            common::record_tool(state, name, payload.get("input"), timestamp.as_deref());
+            let tool_source_id =
+                common::normalized_source_record_id(payload).or_else(|| source_record_id.clone());
+            common::record_tool_with_source(
+                state,
+                name,
+                payload.get("input"),
+                timestamp.as_deref(),
+                tool_source_id.as_deref(),
+            );
         }
         _ => common::mark_unknown(state),
     }

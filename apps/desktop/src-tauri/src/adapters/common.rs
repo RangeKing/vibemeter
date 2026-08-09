@@ -6,6 +6,7 @@ use crate::privacy::{
 };
 use chrono::{DateTime, Local, SecondsFormat, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -95,22 +96,28 @@ fn close_agent_run(state: &mut ParseState, timestamp: &str) {
     let Some(started_at) = state.current_run_started_at.take() else {
         return;
     };
-    let duration = DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .zip(DateTime::parse_from_rfc3339(&started_at).ok())
-        .map(|(end, start)| end.signed_duration_since(start).num_seconds())
-        .unwrap_or(0)
-        .max(0) as u64;
+    let duration = agent_run_duration(&started_at, timestamp);
     state.longest_uninterrupted_seconds = state.longest_uninterrupted_seconds.max(duration);
 }
 
+fn agent_run_duration(started_at: &str, ended_at: &str) -> u64 {
+    DateTime::parse_from_rfc3339(ended_at)
+        .ok()
+        .zip(DateTime::parse_from_rfc3339(started_at).ok())
+        .map(|(end, start)| end.signed_duration_since(start).num_seconds())
+        .unwrap_or(0)
+        .max(0) as u64
+}
+
 pub fn finalize_run(state: &mut ParseState) {
-    if let Some(ended_at) = state.ended_at.clone() {
-        close_agent_run(state, &ended_at);
+    if let (Some(started_at), Some(ended_at)) = (
+        state.current_run_started_at.as_deref(),
+        state.ended_at.as_deref(),
+    ) {
+        state.longest_uninterrupted_seconds = state
+            .longest_uninterrupted_seconds
+            .max(agent_run_duration(started_at, ended_at));
     }
-    state.active_seconds = state
-        .active_seconds
-        .max(if state.event_count > 0 { 30 } else { 0 });
 }
 
 pub fn set_model(state: &mut ParseState, model: Option<&str>) {
@@ -145,58 +152,38 @@ pub fn record_usage(
     }
     state.usage.add_assign(usage);
 
-    let date = timestamp
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| {
-            value
-                .with_timezone(&Local)
-                .date_naive()
-                .format("%Y-%m-%d")
-                .to_string()
-        })
-        .or_else(|| {
-            state.started_at.as_deref().and_then(|value| {
-                DateTime::parse_from_rfc3339(value).ok().map(|parsed| {
-                    parsed
-                        .with_timezone(&Local)
-                        .date_naive()
-                        .format("%Y-%m-%d")
-                        .to_string()
-                })
-            })
-        })
-        .unwrap_or_else(|| Local::now().date_naive().format("%Y-%m-%d").to_string());
-    let aggregate = state.daily.entry(date).or_default();
-    aggregate.usage.add_assign(usage);
-
-    let hour = timestamp
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| {
-            value
-                .with_timezone(&Local)
-                .format("%Y-%m-%dT%H:00")
-                .to_string()
-        })
-        .or_else(|| {
-            state.started_at.as_deref().and_then(|value| {
-                DateTime::parse_from_rfc3339(value).ok().map(|parsed| {
-                    parsed
-                        .with_timezone(&Local)
-                        .format("%Y-%m-%dT%H:00")
-                        .to_string()
-                })
-            })
-        })
-        .unwrap_or_else(|| Local::now().format("%Y-%m-%dT%H:00").to_string());
-    state.hourly.entry(hour).or_default().add_assign(usage);
+    let anchor = timestamp.and_then(|value| DateTime::parse_from_rfc3339(value).ok());
 
     if let Some(model) = model.or(state.current_model.as_deref())
         && let Some(cost) = pricing::estimate_cost(state.agent, model, usage)
     {
         state.estimated_cost_usd += cost;
         state.cost_coverage_tokens = state.cost_coverage_tokens.saturating_add(usage.total());
-        aggregate.estimated_cost_usd = Some(aggregate.estimated_cost_usd.unwrap_or(0.0) + cost);
+        if let Some(anchor) = anchor.as_ref() {
+            let date = anchor
+                .with_timezone(&Local)
+                .date_naive()
+                .format("%Y-%m-%d")
+                .to_string();
+            let aggregate = state.daily.entry(date).or_default();
+            aggregate.estimated_cost_usd = Some(aggregate.estimated_cost_usd.unwrap_or(0.0) + cost);
+        }
     }
+
+    let Some(anchor) = anchor else {
+        return;
+    };
+    let date = anchor
+        .with_timezone(&Local)
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    state.daily.entry(date).or_default().usage.add_assign(usage);
+    let hour = anchor
+        .with_timezone(&Local)
+        .format("%Y-%m-%dT%H:00")
+        .to_string();
+    state.hourly.entry(hour).or_default().add_assign(usage);
 }
 
 pub fn consider_title(state: &mut ParseState, text: Option<&str>) {
@@ -1457,11 +1444,71 @@ fn local_date(timestamp: Option<&str>) -> Option<String> {
 }
 
 pub fn normalized_tool_id(value: &Value) -> Option<String> {
+    normalized_source_record_id(value)
+}
+
+pub fn normalized_source_record_id(value: &Value) -> Option<String> {
+    source_record_native_id(value).map(stable_hash)
+}
+
+fn source_record_native_id(value: &Value) -> Option<&str> {
     value
         .get("id")
         .or_else(|| value.get("call_id"))
+        .or_else(|| value.get("event_id"))
+        .or_else(|| value.get("eventId"))
+        .or_else(|| value.get("request_id"))
+        .or_else(|| value.get("requestId"))
+        .or_else(|| value.get("tool_use_id"))
+        .or_else(|| value.get("toolUseId"))
         .and_then(Value::as_str)
-        .map(stable_hash)
+}
+
+pub fn source_record_receipt(value: &Value, key: &[u8; 32]) -> String {
+    let record_kind = value
+        .get("type")
+        .or_else(|| value.get("event"))
+        .and_then(Value::as_str)
+        .unwrap_or("record");
+    if let Some(source_id) = source_record_native_id(value) {
+        let mut material = Vec::with_capacity(record_kind.len() + source_id.len() + 24);
+        material.extend_from_slice(b"vibemeter-native-record\0");
+        material.extend_from_slice(&(record_kind.len() as u64).to_be_bytes());
+        material.extend_from_slice(record_kind.as_bytes());
+        material.extend_from_slice(&(source_id.len() as u64).to_be_bytes());
+        material.extend_from_slice(source_id.as_bytes());
+        return format!("native:{}", hmac_sha256(key, &material));
+    }
+    let material = serde_json::to_vec(value).unwrap_or_default();
+    format!("keyed:{}", hmac_sha256(key, &material))
+}
+
+fn hmac_sha256(key: &[u8; 32], material: &[u8]) -> String {
+    const BLOCK_BYTES: usize = 64;
+    let mut inner_pad = [0x36_u8; BLOCK_BYTES];
+    let mut outer_pad = [0x5c_u8; BLOCK_BYTES];
+    for (index, byte) in key.iter().enumerate() {
+        inner_pad[index] ^= byte;
+        outer_pad[index] ^= byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(material);
+    let inner_digest = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner_digest);
+    hex::encode(outer.finalize())
+}
+
+pub fn source_record_once(state: &mut ParseState, value: &Value) -> (bool, Option<String>) {
+    let identity = source_record_receipt(value, &state.source_record_receipt_key);
+    let source_id = normalized_source_record_id(value);
+    if !state.source_record_ids.insert(identity.clone()) {
+        return (false, source_id);
+    }
+    state.new_source_record_ids.insert(identity);
+    (true, source_id)
 }
 
 pub fn derived_source_event_id(parent: &str, kind: &str, index: usize) -> String {

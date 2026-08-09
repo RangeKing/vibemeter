@@ -4,6 +4,25 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
 
 pub fn parse_record(state: &mut ParseState, record: &Value) {
+    let (accepted, source_record_id) = common::source_record_once(state, record);
+    if !accepted {
+        return;
+    }
+    common::set_source_session(
+        state,
+        record
+            .get("sessionId")
+            .or_else(|| record.get("session_id"))
+            .and_then(Value::as_str),
+    );
+    common::set_project(
+        state,
+        record
+            .get("workspacePath")
+            .or_else(|| record.get("cwd"))
+            .or_else(|| record.get("workdir"))
+            .and_then(Value::as_str),
+    );
     let timestamp = record_timestamp(record);
     let record_type = record
         .get("type")
@@ -42,12 +61,17 @@ pub fn parse_record(state: &mut ParseState, record: &Value) {
                         common::append_result(state, part.get("text").and_then(Value::as_str));
                     }
                 }
-                "tool.call" => common::record_tool(
-                    state,
-                    event.get("name").and_then(Value::as_str).unwrap_or("other"),
-                    event.get("args"),
-                    timestamp.as_deref(),
-                ),
+                "tool.call" => {
+                    let event_source_id = common::normalized_source_record_id(event)
+                        .or_else(|| source_record_id.clone());
+                    common::record_tool_with_source(
+                        state,
+                        event.get("name").and_then(Value::as_str).unwrap_or("other"),
+                        event.get("args"),
+                        timestamp.as_deref(),
+                        event_source_id.as_deref(),
+                    );
+                }
                 "tool.result" => {
                     let result = event.get("result").unwrap_or(&Value::Null);
                     let success = result

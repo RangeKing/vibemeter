@@ -13,9 +13,14 @@ use crate::models::{
 };
 use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
-use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, params};
+use rusqlite::{
+    Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, params, params_from_iter,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -450,10 +455,10 @@ PRAGMA user_version = 13;
 "#;
 
 const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
-const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 16;
+const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 17;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 16;
+const DATABASE_SCHEMA_VERSION: i64 = 17;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -665,9 +670,19 @@ PRAGMA user_version = 16;
 COMMIT;
 "#;
 
+const MIGRATION_V17: &str = r#"
+CREATE TABLE IF NOT EXISTS history_record_ids (
+    history_source_file_hash TEXT NOT NULL,
+    record_identity TEXT NOT NULL,
+    PRIMARY KEY(history_source_file_hash, record_identity)
+);
+PRAGMA user_version = 17;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
+    source_record_receipt_key: Arc<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -849,8 +864,33 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
     })
 }
 
-fn exact_history_agent(agent: &str) -> bool {
-    matches!(agent, "claude-code" | "codex")
+fn history_evidence_coverage(agent: &str) -> Option<&'static str> {
+    match agent {
+        "claude-code" | "codex" => Some("full-history"),
+        "kimi-code" | "openclaw" | "zcode" => Some("partial-history"),
+        _ => None,
+    }
+}
+
+fn persist_history_record_ids(
+    connection: &Connection,
+    file_hash: &str,
+    state: &ParseState,
+) -> AppResult<()> {
+    if state.replace_source_record_ids {
+        connection.execute(
+            "DELETE FROM history_record_ids WHERE history_source_file_hash=?1",
+            params![file_hash],
+        )?;
+    }
+    for identity in &state.new_source_record_ids {
+        connection.execute(
+            "INSERT OR IGNORE INTO history_record_ids(history_source_file_hash, record_identity)
+             VALUES(?1, ?2)",
+            params![file_hash, identity],
+        )?;
+    }
+    Ok(())
 }
 
 fn history_event_type(event: &CanonicalEvent) -> &'static str {
@@ -925,6 +965,7 @@ fn insert_history_canonical_event(
     agent: &str,
     source_session_id: &str,
     project_label: &str,
+    source_coverage: &str,
     algorithm_version: &str,
     observed_at: &str,
     source_identity: &str,
@@ -955,7 +996,7 @@ fn insert_history_canonical_event(
          ) VALUES(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'history-index',
             ?11, ?12, ?13, ?14, ?15, NULL, ?16, ?17, ?18,
-            'observed', 'full-history', 'normalized-local', ?19, ?20, NULL
+            'observed', ?19, 'normalized-local', ?20, ?21, NULL
          )
          ON CONFLICT(dedup_key) DO UPDATE SET
             source_event_id=excluded.source_event_id,
@@ -998,6 +1039,7 @@ fn insert_history_canonical_event(
             event_type,
             crate::privacy::sanitize_tool_name(source_event_name),
             process_phase,
+            source_coverage,
             project_label,
             event_result,
         ],
@@ -1006,7 +1048,7 @@ fn insert_history_canonical_event(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn sync_exact_history_evidence(
+fn sync_history_evidence(
     connection: &Connection,
     session_id: &str,
     file_hash: &str,
@@ -1023,9 +1065,9 @@ fn sync_exact_history_evidence(
          WHERE source='history-index' AND history_source_file_hash=?2",
         params![observed_at, file_hash],
     )?;
-    if !exact_history_agent(agent) {
+    let Some(source_coverage) = history_evidence_coverage(agent) else {
         return Ok(());
-    }
+    };
     let project_label = history_project_label(project_label);
     let mut fallback_occurrences = HashMap::<String, usize>::new();
     for event in events {
@@ -1067,6 +1109,7 @@ fn sync_exact_history_evidence(
             agent,
             source_session_id,
             &project_label,
+            source_coverage,
             algorithm_version,
             observed_at,
             &source_identity,
@@ -1108,6 +1151,7 @@ fn sync_exact_history_evidence(
             agent,
             source_session_id,
             &project_label,
+            source_coverage,
             algorithm_version,
             observed_at,
             &source_identity,
@@ -1133,17 +1177,19 @@ fn sync_exact_history_evidence(
     Ok(())
 }
 
-fn backfill_exact_history_evidence(connection: &Connection) -> AppResult<()> {
+fn backfill_history_evidence(connection: &Connection, agents: &[&str]) -> AppResult<()> {
     let transaction = connection.unchecked_transaction()?;
     let sessions = {
-        let mut statement = transaction.prepare(
+        let placeholders = std::iter::repeat_n("?", agents.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = transaction.prepare(&format!(
             "SELECT id, source_file_hash, agent, source_session_id,
                     project_label, parser_version, updated_at
-             FROM sessions
-             WHERE agent IN('claude-code', 'codex')",
-        )?;
+             FROM sessions WHERE agent IN ({placeholders})"
+        ))?;
         statement
-            .query_map([], |row| {
+            .query_map(params_from_iter(agents.iter()), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1166,6 +1212,9 @@ fn backfill_exact_history_evidence(connection: &Connection) -> AppResult<()> {
         observed_at,
     ) in sessions
     {
+        let Some(source_coverage) = history_evidence_coverage(&agent) else {
+            continue;
+        };
         let events = query_events(&transaction, &session_id)?;
         let file_changes = {
             let mut statement = transaction.prepare(
@@ -1187,7 +1236,19 @@ fn backfill_exact_history_evidence(connection: &Connection) -> AppResult<()> {
                 })?
                 .collect::<Result<Vec<_>, _>>()?
         };
-        sync_exact_history_evidence(
+        transaction.execute(
+            "UPDATE file_changes
+             SET agent=?1, evidence_level='observed', source_coverage=?2,
+                 algorithm_version=?3
+             WHERE session_id=?4",
+            params![
+                agent,
+                source_coverage,
+                format!("{HISTORY_NORMALIZER_VERSION}:{parser_version}"),
+                session_id,
+            ],
+        )?;
+        sync_history_evidence(
             &transaction,
             &session_id,
             &file_hash,
@@ -1527,15 +1588,106 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
         (14, MIGRATION_V14),
         (15, MIGRATION_V15),
         (16, MIGRATION_V16),
+        (17, MIGRATION_V17),
     ] {
         if version < target_version {
             connection.execute_batch(migration)?;
         }
     }
     if version < 16 {
-        backfill_exact_history_evidence(connection)?;
+        backfill_history_evidence(connection, &["claude-code", "codex"])?;
+    }
+    if version < 17 {
+        backfill_history_evidence(connection, &["kimi-code", "openclaw", "zcode"])?;
     }
     Ok(())
+}
+
+fn load_or_create_source_record_receipt_key(database_path: &Path) -> AppResult<[u8; 32]> {
+    let parent = database_path
+        .parent()
+        .ok_or_else(|| AppError::InvalidRequest("database path has no parent".into()))?;
+    let database_name = database_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AppError::InvalidRequest("database path has no valid filename".into()))?;
+    let temporary_prefix = format!(".{database_name}.source-record-key.");
+    let key_path = parent.join(format!(".{database_name}.source-record-key"));
+    if key_path.is_file() {
+        cleanup_source_record_receipt_key_temps(parent, &temporary_prefix)?;
+        sync_parent_directory(parent)?;
+        return read_source_record_receipt_key(&key_path);
+    }
+
+    let mut key = [0_u8; 32];
+    key[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    key[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+    let temporary_path = parent.join(format!("{temporary_prefix}{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temporary_path)?;
+    file.write_all(&key)?;
+    file.sync_all()?;
+    drop(file);
+    match std::fs::hard_link(&temporary_path, &key_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && key_path.is_file() => {}
+        Err(error) => {
+            let _ = std::fs::remove_file(&temporary_path);
+            return Err(error.into());
+        }
+    }
+    sync_parent_directory(parent)?;
+    match std::fs::remove_file(&temporary_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    cleanup_source_record_receipt_key_temps(parent, &temporary_prefix)?;
+    sync_parent_directory(parent)?;
+    read_source_record_receipt_key(&key_path)
+}
+
+fn cleanup_source_record_receipt_key_temps(parent: &Path, prefix: &str) -> AppResult<()> {
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(prefix) && name.ends_with(".tmp") {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> AppResult<()> {
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> AppResult<()> {
+    Ok(())
+}
+
+fn read_source_record_receipt_key(path: &Path) -> AppResult<[u8; 32]> {
+    let bytes = std::fs::read(path)?;
+    let key: [u8; 32] = bytes.try_into().map_err(|_| {
+        AppError::InvalidRequest("source record receipt key has an invalid length".into())
+    })?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(key)
 }
 
 fn database_version(path: &Path) -> AppResult<i64> {
@@ -1649,6 +1801,12 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let history_record_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('history_record_ids')
+         WHERE name IN ('history_source_file_hash', 'record_identity')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 13
@@ -1657,6 +1815,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || file_change_evidence_columns != 4
         || event_identity_columns != 2
         || nullable_time_columns != 2
+        || history_record_columns != 2
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -1877,6 +2036,7 @@ impl Database {
         if path.is_file() && database_version(&path)? < DATABASE_SCHEMA_VERSION {
             migrate_schema_on_copy(&path)?;
         }
+        let source_record_receipt_key = load_or_create_source_record_receipt_key(&path)?;
         let connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -1886,6 +2046,7 @@ impl Database {
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            source_record_receipt_key: Arc::new(source_record_receipt_key),
         })
     }
 
@@ -1893,6 +2054,10 @@ impl Database {
         self.connection
             .lock()
             .map_err(|_| AppError::InvalidRequest("database connection lock was poisoned".into()))
+    }
+
+    pub fn source_record_receipt_key(&self) -> [u8; 32] {
+        *self.source_record_receipt_key
     }
 
     pub fn load_cursor(&self, file_hash: &str) -> AppResult<Option<CursorRecord>> {
@@ -1921,6 +2086,18 @@ impl Database {
             })
         })
         .transpose()
+    }
+
+    pub fn history_record_id_exists(&self, file_hash: &str, identity: &str) -> AppResult<bool> {
+        let connection = self.connect()?;
+        Ok(connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM history_record_ids
+                WHERE history_source_file_hash=?1 AND record_identity=?2
+             )",
+            params![file_hash, identity],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
     }
 
     pub fn persist_parse_state(
@@ -2007,6 +2184,7 @@ impl Database {
                     now,
                 ],
             )?;
+            persist_history_record_ids(&transaction, file_hash, state)?;
             transaction.commit()?;
             return Ok(session_id);
         }
@@ -2017,6 +2195,10 @@ impl Database {
         } else {
             None
         };
+        let persisted_active_seconds =
+            state
+                .active_seconds
+                .max(if state.event_count > 0 { 30 } else { 0 });
 
         transaction.execute(
             "INSERT INTO sessions (
@@ -2075,7 +2257,7 @@ impl Database {
                 state.project_hash,
                 started_at,
                 state.ended_at,
-                sql_i64(state.active_seconds),
+                sql_i64(persisted_active_seconds),
                 sql_i64(state.usage.input_tokens),
                 sql_i64(state.usage.output_tokens),
                 sql_i64(state.usage.cache_read_tokens),
@@ -2125,7 +2307,7 @@ impl Database {
 
         replace_session_children(&transaction, &session_id, state)?;
         let file_changes = state.file_changes.values().cloned().collect::<Vec<_>>();
-        sync_exact_history_evidence(
+        sync_history_evidence(
             &transaction,
             &session_id,
             file_hash,
@@ -2160,6 +2342,7 @@ impl Database {
                 now,
             ],
         )?;
+        persist_history_record_ids(&transaction, file_hash, state)?;
         upsert_warning_rows(&transaction, file_hash, state, &now)?;
         transaction.commit()?;
         Ok(session_id)
@@ -2454,6 +2637,7 @@ impl Database {
              DELETE FROM tasks;
              DELETE FROM sessions;
              DELETE FROM ingestion_cursors;
+             DELETE FROM history_record_ids;
              DELETE FROM parser_warnings;
              DELETE FROM sources;
              DELETE FROM share_exports;
@@ -4197,7 +4381,7 @@ fn replace_session_children(
         )?;
     }
     for change in state.file_changes.values() {
-        let exact_history = exact_history_agent(state.agent.as_str());
+        let history_coverage = history_evidence_coverage(state.agent.as_str());
         transaction.execute(
             "INSERT INTO file_changes(
                 session_id, path, change_kind, lines_added, lines_deleted,
@@ -4213,11 +4397,11 @@ fn replace_session_children(
                 sql_i64(change.modification_count),
                 change.first_observed_at,
                 change.last_observed_at,
-                exact_history.then_some(state.agent.as_str()),
-                exact_history.then_some("observed"),
-                exact_history.then_some("full-history"),
-                exact_history
-                    .then(|| format!("{HISTORY_NORMALIZER_VERSION}:{}", state.parser_version)),
+                history_coverage.map(|_| state.agent.as_str()),
+                history_coverage.map(|_| "observed"),
+                history_coverage,
+                history_coverage
+                    .map(|_| format!("{HISTORY_NORMALIZER_VERSION}:{}", state.parser_version)),
             ],
         )?;
     }
@@ -6483,6 +6667,25 @@ mod concurrency_tests {
             .expect("v15 fixture schema should be restored");
     }
 
+    fn downgrade_v17_to_v16(path: &Path) {
+        let connection = Connection::open(path).expect("v17 database should reopen");
+        connection
+            .execute_batch(
+                "DELETE FROM canonical_events
+                 WHERE source='history-index'
+                   AND agent IN('kimi-code','openclaw','zcode');
+                 UPDATE file_changes
+                 SET agent=NULL, evidence_level=NULL, source_coverage=NULL,
+                     algorithm_version=NULL
+                 WHERE session_id IN(
+                    SELECT id FROM sessions
+                    WHERE agent IN('kimi-code','openclaw','zcode')
+                 );
+                 PRAGMA user_version = 16;",
+            )
+            .expect("v16 text-history fixture should be restored");
+    }
+
     fn exact_history_state(agent: AgentKind) -> ParseState {
         let mut state = ParseState::new(agent, format!("{}-history-session", agent.as_str()));
         match agent {
@@ -6584,6 +6787,46 @@ mod concurrency_tests {
         state
     }
 
+    fn partial_text_history_state(agent: AgentKind) -> ParseState {
+        let mut state = ParseState::new(agent, format!("{}-text-session", agent.as_str()));
+        common::set_project(&mut state, Some("/tmp/private-text-project"));
+        common::observe_timestamp(&mut state, Some("2026-08-10T02:00:00Z"), true);
+        common::consider_title(&mut state, Some("Migrate partial text history"));
+        common::set_model(&mut state, Some("text-model"));
+        common::record_usage(
+            &mut state,
+            &TokenUsage {
+                input_tokens: 60,
+                output_tokens: 40,
+                ..TokenUsage::default()
+            },
+            Some("2026-08-10T02:00:00Z"),
+            Some("text-model"),
+        );
+        let edit_id = crate::privacy::stable_hash(&format!("{}-edit", agent.as_str()));
+        common::record_tool_with_source(
+            &mut state,
+            "Edit",
+            Some(&json!({
+                "file_path":"/tmp/private-text-project/src/lib.rs",
+                "old_string":"private old body",
+                "new_string":"private new body"
+            })),
+            Some("2026-08-10T02:00:01Z"),
+            Some(&edit_id),
+        );
+        let verify_id = crate::privacy::stable_hash(&format!("{}-verify", agent.as_str()));
+        common::record_tool_with_source(
+            &mut state,
+            "Bash",
+            Some(&json!({"command":"cargo test --token sk-private-text"})),
+            Some("2026-08-10T02:00:02Z"),
+            Some(&verify_id),
+        );
+        common::finalize_run(&mut state);
+        state
+    }
+
     fn exact_history_surface_snapshot(database: &Database, session_id: &str) -> Value {
         let overview = database
             .overview("all", IndexStatus::default())
@@ -6594,6 +6837,7 @@ mod concurrency_tests {
             "models": overview.models,
             "tools": overview.tools,
             "behavior": overview.behavior,
+            "vcti": database.vcti_profile("all").expect("VCTI should load"),
             "recentSessions": overview.recent_sessions,
             "tasks": database.tasks("all").expect("tasks should load"),
             "sessions": database
@@ -7207,6 +7451,353 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn partial_text_history_uses_shared_evidence_without_claiming_full_replay() {
+        for agent in [AgentKind::KimiCode, AgentKind::OpenClaw, AgentKind::ZCode] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let database = Database::open(
+                temporary
+                    .path()
+                    .join(format!("{}-canonical-text.sqlite", agent.as_str())),
+            )
+            .expect("database should open");
+            let state = partial_text_history_state(agent);
+            let file_hash = format!("{}-text-file", agent.as_str());
+            let session_id = database
+                .persist_parse_state(&file_hash, 100, 1, 100, &state)
+                .expect("partial text history should persist");
+            let detail = database
+                .session_detail(&session_id)
+                .expect("partial text detail should load");
+            assert_eq!(detail.summary.usage.total(), 100);
+            assert_eq!(detail.summary.model.as_deref(), Some("text-model"));
+            assert_eq!(detail.file_changes.len(), 1);
+            assert_eq!(detail.summary.verification_state, "verified");
+            assert!(
+                database
+                    .live_activity()
+                    .expect("live activity should load")
+                    .timeline
+                    .is_empty(),
+                "historical text facts must not imply exact live activity"
+            );
+
+            let (before_ids, summary, file_evidence) = {
+                let connection = database.connect().expect("database should connect");
+                let ids = connection
+                    .prepare(
+                        "SELECT id FROM canonical_events
+                         WHERE source='history-index' AND deleted_at IS NULL
+                           AND history_source_file_hash=?1 ORDER BY id",
+                    )
+                    .expect("canonical text ids should prepare")
+                    .query_map(params![file_hash], |row| row.get::<_, String>(0))
+                    .expect("canonical text ids should load")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("canonical text ids should collect");
+                let summary = connection
+                    .query_row(
+                        "SELECT COUNT(*), COUNT(DISTINCT dedup_key),
+                                MIN(agent), MIN(evidence_level), MIN(source_coverage),
+                                SUM(event_type='verification.observed'),
+                                SUM(event_type='file.change'),
+                                SUM(activity_cycle_id IS NOT NULL)
+                         FROM canonical_events
+                         WHERE source='history-index' AND deleted_at IS NULL
+                           AND history_source_file_hash=?1",
+                        params![file_hash],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, i64>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, i64>(5)?,
+                                row.get::<_, i64>(6)?,
+                                row.get::<_, i64>(7)?,
+                            ))
+                        },
+                    )
+                    .expect("canonical text summary should load");
+                let file_evidence = connection
+                    .query_row(
+                        "SELECT agent, evidence_level, source_coverage, algorithm_version
+                         FROM file_changes WHERE session_id=?1",
+                        params![session_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, Option<String>>(3)?,
+                            ))
+                        },
+                    )
+                    .expect("partial file evidence should load");
+                (ids, summary, file_evidence)
+            };
+            assert_eq!(
+                summary.0 as usize,
+                state.events.len() + state.file_changes.len()
+            );
+            assert_eq!(summary.0, summary.1);
+            assert_eq!(summary.2, agent.as_str());
+            assert_eq!(summary.3, "observed");
+            assert_eq!(summary.4, "partial-history");
+            assert_eq!(summary.5, 1);
+            assert_eq!(summary.6, 1);
+            assert_eq!(summary.7, 0);
+            assert_eq!(file_evidence.0.as_deref(), Some(agent.as_str()));
+            assert_eq!(file_evidence.1.as_deref(), Some("observed"));
+            assert_eq!(file_evidence.2.as_deref(), Some("partial-history"));
+            assert_eq!(
+                file_evidence.3,
+                Some(format!(
+                    "{HISTORY_NORMALIZER_VERSION}:{}",
+                    state.parser_version
+                ))
+            );
+            let public_json = serde_json::to_string(&detail).expect("detail should serialize");
+            for private in [
+                "/tmp/private-text-project",
+                "private old body",
+                "private new body",
+                "cargo test --token",
+                "sk-private-text",
+            ] {
+                assert!(!public_json.contains(private));
+            }
+
+            database
+                .persist_parse_state(&file_hash, 100, 1, 100, &state)
+                .expect("identical text reindex should persist");
+            let connection = database.connect().expect("database should connect");
+            let after_ids = connection
+                .prepare(
+                    "SELECT id FROM canonical_events
+                     WHERE source='history-index' AND deleted_at IS NULL
+                       AND history_source_file_hash=?1 ORDER BY id",
+                )
+                .expect("reindexed text ids should prepare")
+                .query_map(params![file_hash], |row| row.get::<_, String>(0))
+                .expect("reindexed text ids should load")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("reindexed text ids should collect");
+            assert_eq!(before_ids, after_ids);
+            drop(connection);
+
+            let mut upgraded_state = state.clone();
+            upgraded_state.parser_version = "text-parser-upgrade-test".into();
+            upgraded_state.events.insert(
+                0,
+                CanonicalEvent {
+                    sequence: 1,
+                    source_event_id: None,
+                    source_event_fingerprint: Some(
+                        crate::adapters::common::source_event_fingerprint_base(
+                            "context",
+                            "plan",
+                            "context",
+                            Some(true),
+                            None,
+                            Some("2026-08-10T01:59:59Z"),
+                            "observed",
+                        ),
+                    ),
+                    occurred_at: Some("2026-08-10T01:59:59Z".into()),
+                    event_type: "context".into(),
+                    category: "plan".into(),
+                    name: "context".into(),
+                    success: Some(true),
+                    duration_ms: None,
+                    provenance: "observed".into(),
+                },
+            );
+            for (index, event) in upgraded_state.events.iter_mut().enumerate() {
+                event.sequence = index as u64 + 1;
+            }
+            database
+                .persist_parse_state(&file_hash, 110, 2, 110, &upgraded_state)
+                .expect("text parser upgrade should preserve prior identities");
+            let upgraded_ids = database
+                .connect()
+                .expect("database should connect")
+                .prepare(
+                    "SELECT id FROM canonical_events
+                     WHERE source='history-index' AND deleted_at IS NULL
+                       AND history_source_file_hash=?1",
+                )
+                .expect("upgraded text ids should prepare")
+                .query_map(params![file_hash], |row| row.get::<_, String>(0))
+                .expect("upgraded text ids should load")
+                .collect::<Result<HashSet<_>, _>>()
+                .expect("upgraded text ids should collect");
+            assert!(before_ids.iter().all(|id| upgraded_ids.contains(id)));
+        }
+    }
+
+    #[test]
+    fn partial_text_history_without_events_remains_session_only() {
+        for agent in [AgentKind::KimiCode, AgentKind::OpenClaw, AgentKind::ZCode] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let database = Database::open(
+                temporary
+                    .path()
+                    .join(format!("{}-session-only.sqlite", agent.as_str())),
+            )
+            .expect("database should open");
+            let mut state = ParseState::new(agent, format!("{}-sparse-session", agent.as_str()));
+            common::observe_timestamp(&mut state, Some("2026-08-10T03:00:00Z"), false);
+            common::set_model(&mut state, Some("sparse-model"));
+            common::record_usage(
+                &mut state,
+                &TokenUsage {
+                    input_tokens: 12,
+                    output_tokens: 8,
+                    ..TokenUsage::default()
+                },
+                Some("2026-08-10T03:00:00Z"),
+                Some("sparse-model"),
+            );
+            let session_id = database
+                .persist_parse_state(
+                    &format!("{}-sparse-file", agent.as_str()),
+                    10,
+                    1,
+                    10,
+                    &state,
+                )
+                .expect("sparse text history should persist");
+            let detail = database
+                .session_detail(&session_id)
+                .expect("sparse detail should load");
+            assert_eq!(detail.summary.usage.total(), 20);
+            assert_eq!(detail.summary.model.as_deref(), Some("sparse-model"));
+            assert!(detail.phases.is_empty());
+            let canonical_count: i64 = database
+                .connect()
+                .expect("database should connect")
+                .query_row(
+                    "SELECT COUNT(*) FROM canonical_events
+                     WHERE history_session_id=?1 AND deleted_at IS NULL",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .expect("sparse canonical count should load");
+            assert_eq!(canonical_count, 0);
+        }
+    }
+
+    #[test]
+    fn v16_text_history_backfill_is_idempotent_and_surface_compatible() {
+        for agent in [AgentKind::KimiCode, AgentKind::OpenClaw, AgentKind::ZCode] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let path = temporary
+                .path()
+                .join(format!("{}-v16-text.sqlite", agent.as_str()));
+            let database = Database::open(path.clone()).expect("database should open");
+            let state = partial_text_history_state(agent);
+            let file_hash = format!("{}-v16-text-file", agent.as_str());
+            let session_id = database
+                .persist_parse_state(&file_hash, 100, 1, 100, &state)
+                .expect("text history should persist");
+            let before = exact_history_surface_snapshot(&database, &session_id);
+            drop(database);
+            downgrade_v17_to_v16(&path);
+
+            let migrated = Database::open(path.clone()).expect("v16 text history should migrate");
+            let after = exact_history_surface_snapshot(&migrated, &session_id);
+            assert_eq!(before, after);
+            let connection = migrated.connect().expect("database should connect");
+            let summary: (i64, i64, String, i64) = connection
+                .query_row(
+                    "SELECT COUNT(*), COUNT(DISTINCT dedup_key), MIN(source_coverage),
+                            MIN(schema_version)
+                     FROM canonical_events
+                     WHERE source='history-index' AND deleted_at IS NULL
+                       AND history_source_file_hash=?1",
+                    params![file_hash],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("migrated text evidence should load");
+            let version: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .expect("version should load");
+            assert_eq!(summary.0, summary.1);
+            assert_eq!(summary.2, "partial-history");
+            assert_eq!(summary.3, CANONICAL_EVENT_SCHEMA_VERSION);
+            assert_eq!(version, DATABASE_SCHEMA_VERSION);
+            drop(connection);
+            migrated
+                .persist_parse_state(&file_hash, 110, 2, 110, &state)
+                .expect("post-migration reindex should remain idempotent");
+            let active_count: i64 = migrated
+                .connect()
+                .expect("database should connect")
+                .query_row(
+                    "SELECT COUNT(*) FROM canonical_events
+                     WHERE source='history-index' AND deleted_at IS NULL
+                       AND history_source_file_hash=?1",
+                    params![file_hash],
+                    |row| row.get(0),
+                )
+                .expect("active text evidence count should load");
+            assert_eq!(active_count, summary.0);
+            assert_no_schema_migration_artifacts(&path);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires VIBEMETER_AUDIT_DATABASE pointing to a disposable database copy"]
+    fn real_database_copy_migrates_partial_text_history_without_schema_damage() {
+        let path = std::env::var_os("VIBEMETER_AUDIT_DATABASE")
+            .map(PathBuf::from)
+            .expect("VIBEMETER_AUDIT_DATABASE must point to a disposable copy");
+        let database = Database::open(path).expect("database copy should migrate");
+        let connection = database.connect().expect("database should connect");
+        let quick_check: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .expect("quick check should run");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version should load");
+        let foreign_key_violations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check should run");
+        let text_facts: Vec<(String, String, i64, i64)> = connection
+            .prepare(
+                "SELECT agent, source_coverage, COUNT(*), COUNT(DISTINCT dedup_key)
+                 FROM canonical_events
+                 WHERE source='history-index' AND deleted_at IS NULL
+                   AND agent IN('kimi-code','openclaw','zcode')
+                 GROUP BY agent, source_coverage ORDER BY agent",
+            )
+            .expect("text history audit should prepare")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("text history audit should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("text history audit should collect");
+        assert_eq!(quick_check, "ok");
+        assert_eq!(version, DATABASE_SCHEMA_VERSION);
+        assert_eq!(foreign_key_violations, 0);
+        assert!(text_facts.iter().all(|(_, coverage, count, unique)| {
+            coverage == "partial-history" && count == unique
+        }));
+        drop(connection);
+        let profile = database
+            .vcti_profile("all")
+            .expect("VCTI should remain queryable after migration");
+        println!(
+            "real database audit: sessions={} text_facts={text_facts:?}",
+            profile.session_count
+        );
+    }
+
+    #[test]
     fn exact_waiting_event_is_canonical_deduplicated_and_user_visible() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("canonical-waiting.sqlite"))
@@ -7726,6 +8317,7 @@ mod concurrency_tests {
                 "claude-code",
                 "same-time-session",
                 "project",
+                "full-history",
                 "history-normalizer-test",
                 "2026-08-10T00:03:02Z",
                 "history-error",
