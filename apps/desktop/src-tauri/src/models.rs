@@ -829,6 +829,27 @@ pub struct LiveActivityResponse {
     pub timeline: Vec<LiveTimelinePoint>,
     pub history: Vec<LiveHistoryItem>,
     pub concurrency: Vec<LiveConcurrencyLane>,
+    pub attention: Vec<AttentionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionEvent {
+    pub id: String,
+    pub kind: String,
+    pub state: String,
+    pub reason_key: String,
+    pub agent: String,
+    pub source_session_id: String,
+    pub project_label: String,
+    pub opened_at: String,
+    pub latest_evidence_at: String,
+    pub expires_at: String,
+    pub resolved_at: Option<String>,
+    pub evidence_level: String,
+    pub source_coverage: String,
+    pub rule_version: String,
+    pub evidence_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

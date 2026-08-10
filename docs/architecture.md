@@ -47,6 +47,8 @@ Exact Claude Code and Codex hooks publish `live-hook` lifecycle evidence. Experi
 
 Every active live session exposes one explainable work pulse with four independent dimensions: lifecycle, work phase, attention signal, and freshness. Exact sources may populate all four from canonical lifecycle evidence. Experimental observers populate recent activity and freshness only; lifecycle and attention stay explicitly unknown. Freshness is derived from the last structured update using fixed 30-second fresh and 120-second lost-update boundaries. Live renders the full pulse, while Notch renders a compact value from the same model.
 
+Exact waiting and error facts open persistent attention episodes. Repeated canonical facts attach as evidence to the same unresolved episode; acknowledged and snoozed episodes remain unresolved until canonical progress resumes. Unresolved episodes expire after 24 hours. Episode identity, evidence links, rule version, evidence level, and source coverage live in SQLite so restart and replay do not duplicate alerts.
+
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries

@@ -1,15 +1,15 @@
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    AgentKind, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem, CoverageNotice,
-    DailyUsagePoint, DistributionItem, EvidenceReference, FileChange, FileChangeAccumulator,
-    GitCommitEvidence, GitEvidence, GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem,
-    InsightStat, InsightsResponse, LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem,
-    LiveSession, LiveTimelinePoint, NotchClearResult, NotchCompletedSession, ObservedLiveEvent,
-    OverviewResponse, OverviewTotals, PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud,
-    PhraseCloudItem, PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem,
-    ProcessPhase, ProjectControl, Provenance, SavePlaybookRequest, SessionDetail,
-    SessionListFilters, SessionSummary, SessionsResponse, SkillUsageItem, SkillUsageSummary,
-    SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    AgentKind, AttentionEvent, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem,
+    CoverageNotice, DailyUsagePoint, DistributionItem, EvidenceReference, FileChange,
+    FileChangeAccumulator, GitCommitEvidence, GitEvidence, GitFileStat, HourlyUsagePoint,
+    IndexStatus, InsightItem, InsightStat, InsightsResponse, LiveActivityResponse,
+    LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint, NotchClearResult,
+    NotchCompletedSession, ObservedLiveEvent, OverviewResponse, OverviewTotals, PARSER_VERSION,
+    ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem, PhraseCloudResponse,
+    PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase, ProjectControl, Provenance,
+    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionSummary, SessionsResponse,
+    SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
 };
 use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
@@ -455,10 +455,10 @@ PRAGMA user_version = 13;
 "#;
 
 const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
-const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 19;
+const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 19;
+const DATABASE_SCHEMA_VERSION: i64 = 20;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -754,6 +754,54 @@ CREATE INDEX canonical_events_live_project_idx
     ON canonical_events(source, agent, occurred_at, project_label)
     WHERE deleted_at IS NULL;
 PRAGMA user_version = 19;
+"#;
+
+const MIGRATION_V20: &str = r#"
+CREATE TABLE attention_events (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN('waiting','error','stuck','completion-review')),
+    state TEXT NOT NULL CHECK(state IN(
+        'open','acknowledged','snoozed','resolved','ignored','expired'
+    )),
+    reason_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    project_label TEXT NOT NULL DEFAULT '',
+    opened_at TEXT NOT NULL,
+    latest_evidence_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolution_reason TEXT,
+    evidence_level TEXT NOT NULL,
+    source_coverage TEXT NOT NULL,
+    rule_version TEXT NOT NULL,
+    notification_sent_at TEXT,
+    acknowledged_at TEXT,
+    snoozed_until TEXT,
+    feedback TEXT CHECK(feedback IS NULL OR feedback IN(
+        'handled','not-relevant','not-stuck','snoozed'
+    )),
+    feedback_at TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX attention_events_active_kind_idx
+    ON attention_events(agent, source_session_id, kind)
+    WHERE state IN('open','acknowledged','snoozed');
+CREATE INDEX attention_events_queue_idx
+    ON attention_events(state, opened_at DESC);
+CREATE TABLE attention_event_evidence (
+    attention_event_id TEXT NOT NULL,
+    canonical_event_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'supporting',
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(attention_event_id, canonical_event_id),
+    FOREIGN KEY(attention_event_id) REFERENCES attention_events(id) ON DELETE CASCADE,
+    FOREIGN KEY(canonical_event_id) REFERENCES canonical_events(id) ON DELETE CASCADE
+);
+CREATE INDEX attention_event_evidence_canonical_idx
+    ON attention_event_evidence(canonical_event_id);
+UPDATE canonical_events SET schema_version=20;
+PRAGMA user_version = 20;
 "#;
 
 #[derive(Clone)]
@@ -1839,6 +1887,104 @@ fn rebuild_activity_cycles(
     Ok(())
 }
 
+fn sync_attention_event(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    if !canonical.exact_lifecycle {
+        return Ok(());
+    }
+    let now = &canonical.observed_at;
+    transaction.execute(
+        "UPDATE attention_events
+         SET state='expired', resolved_at=COALESCE(resolved_at, ?1),
+             resolution_reason='expired', updated_at=?1
+         WHERE state IN('open','acknowledged','snoozed') AND expires_at<=?1",
+        params![now],
+    )?;
+
+    if matches!(canonical.lifecycle_status.as_str(), "idle" | "running") {
+        transaction.execute(
+            "UPDATE attention_events
+             SET state='resolved', resolved_at=?1, resolution_reason='progress', updated_at=?2
+             WHERE agent=?3 AND source_session_id=?4
+               AND kind IN('waiting','error')
+               AND state IN('open','acknowledged','snoozed')",
+            params![
+                canonical.occurred_at,
+                now,
+                canonical.agent,
+                canonical.source_session_id
+            ],
+        )?;
+        return Ok(());
+    }
+
+    let (kind, reason_key) = match canonical.lifecycle_status.as_str() {
+        "waiting" => ("waiting", "permission-required"),
+        "error" => ("error", "blocking-error"),
+        _ => return Ok(()),
+    };
+    let existing = transaction
+        .query_row(
+            "SELECT id FROM attention_events
+             WHERE agent=?1 AND source_session_id=?2 AND kind=?3
+               AND state IN('open','acknowledged','snoozed')
+             LIMIT 1",
+            params![canonical.agent, canonical.source_session_id, kind],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let attention_id = existing.unwrap_or_else(|| {
+        format!(
+            "attention-{}",
+            crate::privacy::stable_hash(&format!("{}|{}", kind, canonical.id))
+        )
+    });
+    let expires_at = DateTime::parse_from_rfc3339(&canonical.observed_at)
+        .map(|opened| {
+            (opened.with_timezone(&Utc) + Duration::hours(24))
+                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        })
+        .unwrap_or_else(|_| canonical.observed_at.clone());
+    transaction.execute(
+        "INSERT INTO attention_events(
+            id, kind, state, reason_key, agent, source_session_id, project_label,
+            opened_at, latest_evidence_at, expires_at, resolved_at, resolution_reason,
+            evidence_level, source_coverage, rule_version, updated_at
+         ) VALUES(?1, ?2, 'open', ?3, ?4, ?5, ?6, ?7, ?7, ?8, NULL, NULL,
+                  'observed', 'exact-lifecycle', 'attention-episode-1.0.0', ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            latest_evidence_at=MAX(attention_events.latest_evidence_at, excluded.latest_evidence_at),
+            project_label=excluded.project_label,
+            updated_at=excluded.updated_at",
+        params![
+            attention_id,
+            kind,
+            reason_key,
+            canonical.agent,
+            canonical.source_session_id,
+            canonical.project_label,
+            canonical.occurred_at,
+            expires_at,
+            now,
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE attention_events
+         SET latest_evidence_at=MAX(latest_evidence_at, ?1), updated_at=?2
+         WHERE id=?3",
+        params![canonical.occurred_at, now, attention_id],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO attention_event_evidence(
+            attention_event_id, canonical_event_id, role, observed_at
+         ) VALUES(?1, ?2, 'supporting', ?3)",
+        params![attention_id, canonical.id, canonical.observed_at],
+    )?;
+    Ok(())
+}
+
 fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<()> {
     for (target_version, migration) in [
         (1, MIGRATION_V1),
@@ -1881,6 +2027,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
         backfill_legacy_live_evidence(connection)?;
         verify_legacy_evidence_covered(connection)?;
         connection.execute_batch(MIGRATION_V19_CONTRACT)?;
+    }
+    if version < 20 {
+        connection.execute_batch(MIGRATION_V20)?;
     }
     Ok(())
 }
@@ -2096,6 +2245,22 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let attention_event_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('attention_events')
+         WHERE name IN(
+            'id','kind','state','reason_key','agent','source_session_id',
+            'opened_at','latest_evidence_at','expires_at','resolved_at',
+            'evidence_level','source_coverage','rule_version','updated_at'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let attention_evidence_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('attention_event_evidence')
+         WHERE name IN('attention_event_id','canonical_event_id','role','observed_at')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 15
@@ -2106,6 +2271,8 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || history_record_columns != 2
         || diagnostic_envelope_columns != 5
         || attention_feedback_columns != 4
+        || attention_event_columns != 14
+        || attention_evidence_columns != 4
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -3215,6 +3382,8 @@ impl Database {
                  DELETE FROM vcti_profile_snapshots;
                  DELETE FROM diagnostic_live_envelopes;
                  DELETE FROM activity_cycles;
+                 DELETE FROM attention_event_evidence;
+                 DELETE FROM attention_events;
                  DELETE FROM attention_feedback;
                  DELETE FROM canonical_events;
                  DELETE FROM live_session_metrics;
@@ -3375,6 +3544,7 @@ impl Database {
             && canonical.exact_lifecycle
         {
             update_activity_cycles(&transaction, canonical)?;
+            sync_attention_event(&transaction, canonical)?;
         }
         if canonical_inserted {
             transaction.execute(
@@ -3620,7 +3790,67 @@ impl Database {
         Ok(restored as u64)
     }
 
+    pub fn attention_events(&self) -> AppResult<Vec<AttentionEvent>> {
+        self.attention_events_at(Utc::now())
+    }
+
+    fn attention_events_at(&self, now: DateTime<Utc>) -> AppResult<Vec<AttentionEvent>> {
+        let now = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE attention_events
+             SET state='expired', resolved_at=COALESCE(resolved_at, ?1),
+                 resolution_reason='expired', updated_at=?1
+             WHERE state IN('open','acknowledged','snoozed') AND expires_at<=?1",
+            params![now],
+        )?;
+        let events = {
+            let mut statement = transaction.prepare(
+                "SELECT ae.id, ae.kind, ae.state, ae.reason_key, ae.agent,
+                        ae.source_session_id, ae.project_label, ae.opened_at,
+                        ae.latest_evidence_at, ae.expires_at, ae.resolved_at,
+                        ae.evidence_level, ae.source_coverage, ae.rule_version,
+                        (SELECT COUNT(*) FROM attention_event_evidence evidence
+                         WHERE evidence.attention_event_id=ae.id)
+                 FROM attention_events ae
+                 ORDER BY
+                    CASE ae.state
+                        WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1
+                        WHEN 'snoozed' THEN 2 ELSE 3 END,
+                    CASE ae.kind
+                        WHEN 'waiting' THEN 0 WHEN 'error' THEN 1
+                        WHEN 'stuck' THEN 2 ELSE 3 END,
+                    ae.opened_at ASC, ae.id ASC",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok(AttentionEvent {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        state: row.get(2)?,
+                        reason_key: row.get(3)?,
+                        agent: row.get(4)?,
+                        source_session_id: row.get(5)?,
+                        project_label: row.get(6)?,
+                        opened_at: row.get(7)?,
+                        latest_evidence_at: row.get(8)?,
+                        expires_at: row.get(9)?,
+                        resolved_at: row.get(10)?,
+                        evidence_level: row.get(11)?,
+                        source_coverage: row.get(12)?,
+                        rule_version: row.get(13)?,
+                        evidence_count: read_u64(row, 14)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        transaction.commit()?;
+        Ok(events)
+    }
+
     pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
+        let attention = self.attention_events()?;
         let connection = self.connect()?;
         let now = Utc::now();
         let period_start = Local::now()
@@ -3755,6 +3985,7 @@ impl Database {
             timeline,
             history,
             concurrency: lanes,
+            attention,
         })
     }
 
@@ -8710,6 +8941,121 @@ mod concurrency_tests {
             activity.history[0].observed_at.as_deref(),
             Some(first_observed_at.as_str())
         );
+    }
+
+    #[test]
+    fn exact_attention_episode_is_persistent_idempotent_and_resolves_only_on_progress() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("attention-episode.sqlite");
+        let database = Database::open(path.clone()).expect("database should open");
+        let base = DateTime::parse_from_rfc3339("2026-08-10T08:00:00Z")
+            .expect("base timestamp")
+            .with_timezone(&Utc);
+        let observed = |id: &str, status: &str, seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: "attention-session".into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(seconds),
+            source_event_fingerprint: None,
+            event_name: if status == "waiting" {
+                "PermissionRequest".into()
+            } else {
+                "PostToolUse".into()
+            },
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(if status == "waiting" {
+                "needs-you".into()
+            } else {
+                "editing".into()
+            }),
+        };
+
+        database
+            .record_observed_live_event(&observed("wait-1", "waiting", 0))
+            .expect("first wait should persist");
+        database
+            .record_observed_live_event(&observed("wait-2", "waiting", 5))
+            .expect("repeated wait should persist as evidence");
+
+        let attention = database
+            .attention_events_at(base + Duration::seconds(6))
+            .expect("attention should load");
+        assert_eq!(attention.len(), 1);
+        assert_eq!(attention[0].kind, "waiting");
+        assert_eq!(attention[0].state, "open");
+        assert_eq!(attention[0].evidence_count, 2);
+        assert_eq!(
+            attention[0].opened_at,
+            base.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        );
+        assert_eq!(
+            attention[0].latest_evidence_at,
+            (base + Duration::seconds(5)).to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        );
+
+        drop(database);
+        let reopened = Database::open(path).expect("database should reopen");
+        let attention = reopened
+            .attention_events_at(base + Duration::seconds(7))
+            .expect("attention should survive restart");
+        assert_eq!(attention.len(), 1);
+        assert_eq!(attention[0].evidence_count, 2);
+
+        reopened
+            .record_observed_live_event(&observed("progress-1", "running", 10))
+            .expect("progress should resolve wait");
+        let resolved = reopened
+            .attention_events_at(base + Duration::seconds(11))
+            .expect("resolved attention should load");
+        assert_eq!(resolved[0].state, "resolved");
+        let resolved_at =
+            (base + Duration::seconds(10)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        assert_eq!(
+            resolved[0].resolved_at.as_deref(),
+            Some(resolved_at.as_str())
+        );
+    }
+
+    #[test]
+    fn attention_episode_expires_after_one_day_and_ignores_experimental_lifecycle_claims() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("attention-expiry.sqlite"))
+            .expect("database should open");
+        let base = DateTime::parse_from_rfc3339("2026-08-08T08:00:00Z")
+            .expect("base timestamp")
+            .with_timezone(&Utc);
+        let event = |agent: &str, id: &str| ObservedLiveEvent {
+            occurred_at: base.to_rfc3339(),
+            observed_at: base.to_rfc3339(),
+            agent: agent.into(),
+            source_session_id: format!("{agent}-session"),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(1),
+            source_event_fingerprint: None,
+            event_name: "PostToolUseFailure".into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: "error".into(),
+            phase: Some("error".into()),
+        };
+        database
+            .record_observed_live_event(&event("codex", "exact-error"))
+            .expect("exact error should persist");
+        database
+            .record_observed_live_event(&event("kimi-code", "experimental-error"))
+            .expect("experimental activity should not become exact attention");
+
+        let attention = database
+            .attention_events_at(base + Duration::hours(25))
+            .expect("expired attention should load");
+        assert_eq!(attention.len(), 1);
+        assert_eq!(attention[0].agent, "codex");
+        assert_eq!(attention[0].state, "expired");
+        assert_eq!(attention[0].evidence_count, 1);
     }
 
     #[test]

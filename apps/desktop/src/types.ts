@@ -333,6 +333,25 @@ export interface LiveActivityResponse {
   timeline: LiveTimelinePoint[];
   history: LiveHistoryItem[];
   concurrency: LiveConcurrencyLane[];
+  attention: AttentionEvent[];
+}
+
+export interface AttentionEvent {
+  id: string;
+  kind: "waiting" | "error" | "stuck" | "completion-review";
+  state: "open" | "acknowledged" | "snoozed" | "resolved" | "ignored" | "expired";
+  reasonKey: string;
+  agent: string;
+  sourceSessionId: string;
+  projectLabel: string;
+  openedAt: string;
+  latestEvidenceAt: string;
+  expiresAt: string;
+  resolvedAt?: string;
+  evidenceLevel: string;
+  sourceCoverage: string;
+  ruleVersion: string;
+  evidenceCount: number;
 }
 
 export interface NotchUiState {
