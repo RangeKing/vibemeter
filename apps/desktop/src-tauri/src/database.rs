@@ -461,6 +461,7 @@ const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
 const DATABASE_SCHEMA_VERSION: i64 = 24;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
+const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
 
 const MIGRATION_V14: &str = r#"
 BEGIN IMMEDIATE;
@@ -2019,6 +2020,67 @@ fn insert_attention_intervention(
     Ok(())
 }
 
+fn insert_recovery_interventions(
+    transaction: &Transaction<'_>,
+    attention_event_id: &str,
+    opened_at: &str,
+    recovered_at: &str,
+) -> AppResult<()> {
+    insert_attention_intervention(
+        transaction,
+        attention_event_id,
+        "recovery",
+        "progress",
+        "recovery-observed",
+        recovered_at,
+    )?;
+    let recovered_within_five_minutes = DateTime::parse_from_rfc3339(recovered_at)
+        .ok()
+        .zip(DateTime::parse_from_rfc3339(opened_at).ok())
+        .map(|(recovered, opened)| {
+            let elapsed = recovered.signed_duration_since(opened);
+            elapsed >= Duration::zero() && elapsed <= Duration::minutes(5)
+        })
+        .unwrap_or(false);
+    if recovered_within_five_minutes {
+        insert_attention_intervention(
+            transaction,
+            attention_event_id,
+            "inferred",
+            "recovered-within-five-minutes",
+            "derived-inferred",
+            recovered_at,
+        )?;
+    }
+    Ok(())
+}
+
+fn expire_attention_after_source_end(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    let expires_at = DateTime::parse_from_rfc3339(&canonical.occurred_at)
+        .map(|ended| {
+            (ended.with_timezone(&Utc) + Duration::hours(24))
+                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        })
+        .unwrap_or_else(|_| canonical.observed_at.clone());
+    transaction.execute(
+        "UPDATE attention_events
+         SET expires_at=MIN(expires_at, ?1), updated_at=?2
+         WHERE agent=?3 AND source_session_id=?4
+           AND kind IN('waiting','error','stuck')
+           AND state IN('open','acknowledged','snoozed')",
+        params![
+            expires_at,
+            canonical.observed_at,
+            canonical.agent,
+            canonical.source_session_id
+        ],
+    )?;
+    Ok(())
+}
+
 fn expire_attention_events(transaction: &Transaction<'_>, now: &str) -> AppResult<()> {
     transaction.execute(
         "UPDATE attention_events
@@ -2069,7 +2131,7 @@ fn sync_attention_event(
     if matches!(canonical.lifecycle_status.as_str(), "idle" | "running") {
         let resolved = {
             let mut statement = transaction.prepare(
-                "SELECT id FROM attention_events
+                "SELECT id, opened_at FROM attention_events
                  WHERE agent=?1 AND source_session_id=?2
                    AND kind IN('waiting','error')
                    AND latest_evidence_at<=?3
@@ -2082,7 +2144,7 @@ fn sync_attention_event(
                         canonical.source_session_id,
                         canonical.occurred_at
                     ],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )?
                 .collect::<Result<Vec<_>, _>>()?
         };
@@ -2100,17 +2162,19 @@ fn sync_attention_event(
                 canonical.source_session_id
             ],
         )?;
-        for attention_id in resolved {
-            insert_attention_intervention(
+        for (attention_id, opened_at) in resolved {
+            insert_recovery_interventions(
                 transaction,
                 &attention_id,
-                "recovery",
-                "progress",
-                "recovery-observed",
+                &opened_at,
                 &canonical.occurred_at,
             )?;
         }
         return Ok(());
+    }
+
+    if canonical.lifecycle_status == "completed" {
+        expire_attention_after_source_end(transaction, canonical)?;
     }
 
     let (kind, reason_key) = match canonical.lifecycle_status.as_str() {
@@ -2121,7 +2185,7 @@ fn sync_attention_event(
     };
     let existing = transaction
         .query_row(
-            "SELECT id FROM attention_events
+            "SELECT id, opened_at FROM attention_events
              WHERE agent=?1 AND source_session_id=?2 AND kind=?3
                AND state IN('open','acknowledged','snoozed')
              LIMIT 1",
@@ -2135,12 +2199,16 @@ fn sync_attention_event(
             crate::privacy::stable_hash(&format!("{}|{}", kind, canonical.id))
         )
     });
-    let expires_at = DateTime::parse_from_rfc3339(&canonical.observed_at)
-        .map(|opened| {
-            (opened.with_timezone(&Utc) + Duration::hours(24))
-                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
-        })
-        .unwrap_or_else(|_| canonical.observed_at.clone());
+    let expires_at = if kind == "completion-review" {
+        DateTime::parse_from_rfc3339(&canonical.observed_at)
+            .map(|opened| {
+                (opened.with_timezone(&Utc) + Duration::hours(24))
+                    .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+            })
+            .unwrap_or_else(|_| canonical.observed_at.clone())
+    } else {
+        ATTENTION_UNBOUNDED_EXPIRES_AT.into()
+    };
     transaction.execute(
         "INSERT INTO attention_events(
             id, kind, state, reason_key, agent, source_session_id, project_label,
@@ -2151,6 +2219,9 @@ fn sync_attention_event(
          ON CONFLICT(id) DO UPDATE SET
             latest_evidence_at=MAX(attention_events.latest_evidence_at, excluded.latest_evidence_at),
             project_label=excluded.project_label,
+            expires_at=CASE
+                WHEN excluded.kind IN('waiting','error') THEN excluded.expires_at
+                ELSE attention_events.expires_at END,
             updated_at=excluded.updated_at",
         params![
             attention_id,
@@ -2193,7 +2264,7 @@ fn resolve_stuck_attention(
 ) -> AppResult<()> {
     let resolved = {
         let mut statement = transaction.prepare(
-            "SELECT id FROM attention_events
+            "SELECT id, opened_at FROM attention_events
              WHERE agent=?1 AND source_session_id=?2 AND kind='stuck'
                AND latest_evidence_at<=?3
                AND state IN('open','acknowledged','snoozed')",
@@ -2205,7 +2276,7 @@ fn resolve_stuck_attention(
                     canonical.source_session_id,
                     canonical.occurred_at
                 ],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?
             .collect::<Result<Vec<_>, _>>()?
     };
@@ -2222,13 +2293,11 @@ fn resolve_stuck_attention(
             canonical.source_session_id
         ],
     )?;
-    for attention_id in resolved {
-        insert_attention_intervention(
+    for (attention_id, opened_at) in resolved {
+        insert_recovery_interventions(
             transaction,
             &attention_id,
-            "recovery",
-            "progress",
-            "recovery-observed",
+            &opened_at,
             &canonical.occurred_at,
         )?;
     }
@@ -2263,12 +2332,7 @@ fn upsert_stuck_attention(
         .first()
         .map(|(_, occurred_at)| occurred_at.as_str())
         .unwrap_or(&canonical.occurred_at);
-    let expires_at = DateTime::parse_from_rfc3339(&canonical.observed_at)
-        .map(|opened| {
-            (opened.with_timezone(&Utc) + Duration::hours(24))
-                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
-        })
-        .unwrap_or_else(|_| canonical.observed_at.clone());
+    let expires_at = ATTENTION_UNBOUNDED_EXPIRES_AT;
     transaction.execute(
         "INSERT INTO attention_events(
             id, kind, state, reason_key, agent, source_session_id, project_label,
@@ -2279,6 +2343,7 @@ fn upsert_stuck_attention(
          ON CONFLICT(id) DO UPDATE SET
             latest_evidence_at=excluded.latest_evidence_at,
             project_label=excluded.project_label,
+            expires_at=excluded.expires_at,
             updated_at=excluded.updated_at",
         params![
             attention_id,
@@ -10044,34 +10109,64 @@ mod concurrency_tests {
         let base = DateTime::parse_from_rfc3339("2026-08-08T08:00:00Z")
             .expect("base timestamp")
             .with_timezone(&Utc);
-        let event = |agent: &str, id: &str| ObservedLiveEvent {
-            occurred_at: base.to_rfc3339(),
-            observed_at: base.to_rfc3339(),
+        let event = |agent: &str, id: &str, status: &str, hours: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::hours(hours)).to_rfc3339(),
+            observed_at: (base + Duration::hours(hours)).to_rfc3339(),
             agent: agent.into(),
             source_session_id: format!("{agent}-session"),
             source_event_id: Some(id.into()),
-            source_sequence: Some(1),
+            source_sequence: Some(hours),
             source_event_fingerprint: None,
-            event_name: "PostToolUseFailure".into(),
+            event_name: if status == "completed" {
+                "SessionEnd".into()
+            } else {
+                "PostToolUseFailure".into()
+            },
             project_label: "project".into(),
             payload_json: "{}".into(),
-            status: "error".into(),
-            phase: Some("error".into()),
+            status: status.into(),
+            phase: Some(status.into()),
         };
         database
-            .record_observed_live_event(&event("codex", "exact-error"))
+            .record_observed_live_event(&event("codex", "exact-error", "error", 0))
             .expect("exact error should persist");
         database
-            .record_observed_live_event(&event("kimi-code", "experimental-error"))
+            .record_observed_live_event(&event("kimi-code", "experimental-error", "error", 0))
             .expect("experimental activity should not become exact attention");
 
         let attention = database
             .attention_events_at(base + Duration::hours(25))
-            .expect("expired attention should load");
+            .expect("active attention should load");
         assert_eq!(attention.len(), 1);
         assert_eq!(attention[0].agent, "codex");
-        assert_eq!(attention[0].state, "expired");
+        assert_eq!(attention[0].state, "open");
         assert_eq!(attention[0].evidence_count, 1);
+
+        database
+            .record_observed_live_event(&event("codex", "source-end", "completed", 25))
+            .expect("source end should persist");
+        let before_expiry = database
+            .attention_events_at(base + Duration::hours(48) + Duration::minutes(59))
+            .expect("attention should remain before the post-end window");
+        assert_eq!(
+            before_expiry
+                .iter()
+                .find(|event| event.kind == "error")
+                .expect("error attention should remain")
+                .state,
+            "open"
+        );
+        let expired = database
+            .attention_events_at(base + Duration::hours(49) + Duration::minutes(1))
+            .expect("expired attention should load");
+        assert_eq!(
+            expired
+                .iter()
+                .find(|event| event.kind == "error")
+                .expect("error history should remain")
+                .state,
+            "expired"
+        );
     }
 
     #[test]
@@ -10178,6 +10273,11 @@ mod concurrency_tests {
             "recovery".into(),
             "progress".into(),
             "recovery-observed".into()
+        )));
+        assert!(interventions.contains(&(
+            "inferred".into(),
+            "recovered-within-five-minutes".into(),
+            "derived-inferred".into()
         )));
     }
 
