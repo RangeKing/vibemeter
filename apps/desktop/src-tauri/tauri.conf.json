@@ -22,6 +22,7 @@
         "center": true,
         "resizable": true,
         "fullscreen": false,
+        "visible": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }

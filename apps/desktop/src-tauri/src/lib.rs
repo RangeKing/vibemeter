@@ -31,8 +31,13 @@ use crate::models::{
 use crate::providers::ProviderStore;
 use chrono::Utc;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+
+static BACKEND_READY: AtomicBool = AtomicBool::new(false);
+static MAIN_PAGE_READY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct AppState {
@@ -657,19 +662,48 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
     }
 }
 
-#[tauri::command]
-fn show_main_window(app: AppHandle) -> AppResult<()> {
+fn startup_can_reveal_main_window(backend_ready: bool, page_ready: bool, preview: bool) -> bool {
+    backend_ready && page_ready && !preview
+}
+
+fn is_surface_preview() -> bool {
+    std::env::var_os("VIBEMETER_PREVIEW_MENUBAR").is_some()
+        || std::env::var_os("AFTERVIBE_PREVIEW_MENUBAR").is_some()
+        || std::env::var_os("TOKENGRAPH_PREVIEW_MENUBAR").is_some()
+        || std::env::var_os("VIBEMETER_PREVIEW_NOTCH").is_some()
+}
+
+fn reveal_main_window(app: &AppHandle) -> AppResult<()> {
     app.set_activation_policy(tauri::ActivationPolicy::Regular)
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| AppError::InvalidRequest("main window is unavailable".into()))?;
     window
+        .unminimize()
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    window
         .show()
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     window
         .set_focus()
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    Ok(())
+}
+
+fn reveal_main_window_if_ready(app: &AppHandle) {
+    if startup_can_reveal_main_window(
+        BACKEND_READY.load(Ordering::SeqCst),
+        MAIN_PAGE_READY.load(Ordering::SeqCst),
+        is_surface_preview(),
+    ) {
+        let _ = reveal_main_window(app);
+    }
+}
+
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> AppResult<()> {
+    reveal_main_window(&app)?;
     app.emit_to("main", "navigate", "data")
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     Ok(())
@@ -677,17 +711,7 @@ fn show_main_window(app: AppHandle) -> AppResult<()> {
 
 #[tauri::command]
 fn show_settings_window(app: AppHandle) -> AppResult<()> {
-    app.set_activation_policy(tauri::ActivationPolicy::Regular)
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| AppError::InvalidRequest("main window is unavailable".into()))?;
-    window
-        .show()
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
-    window
-        .set_focus()
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    reveal_main_window(&app)?;
     app.emit_to("main", "navigate", "settings")
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     Ok(())
@@ -737,7 +761,12 @@ fn current_index_status(state: &State<'_, AppState>) -> IndexStatus {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        reveal_main_window_if_ready(app);
+    }));
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init());
@@ -802,10 +831,6 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::setup(app, notch_enabled, menu_bar_enabled)?;
-            #[cfg(target_os = "macos")]
-            if std::env::var_os("VIBEMETER_PREVIEW_NOTCH").is_none() {
-                app.set_activation_policy(tauri::ActivationPolicy::Regular);
-            }
 
             #[cfg(debug_assertions)]
             if std::env::var_os("VIBEMETER_PREVIEW_MENUBAR").is_some()
@@ -874,7 +899,15 @@ pub fn run() {
                     std::thread::sleep(std::time::Duration::from_secs(60));
                 }
             });
+            BACKEND_READY.store(true, Ordering::SeqCst);
+            reveal_main_window_if_ready(app.handle());
             Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && payload.event() == PageLoadEvent::Finished {
+                MAIN_PAGE_READY.store(true, Ordering::SeqCst);
+                reveal_main_window_if_ready(webview.app_handle());
+            }
         })
         .on_window_event(|window, event| {
             if window.label() == "main"
@@ -955,12 +988,39 @@ pub fn run() {
                 has_visible_windows: false,
                 ..
             } = event
-                && let Some(window) = app_handle.get_webview_window("main")
             {
-                let _ = window.show();
-                let _ = window.set_focus();
+                reveal_main_window_if_ready(app_handle);
             }
         }),
         Err(error) => eprintln!("VibeMeter failed to start: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::startup_can_reveal_main_window;
+
+    #[test]
+    fn configured_main_window_starts_hidden_until_the_page_is_ready() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("Tauri configuration should be valid JSON");
+        let main_window = config["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.iter().find(|window| window["label"] == "main"))
+            .expect("main window should be configured");
+        assert_eq!(
+            main_window["visible"].as_bool(),
+            Some(false),
+            "the native shell must stay hidden while setup and the first page load are incomplete"
+        );
+    }
+
+    #[test]
+    fn startup_gate_requires_both_backend_and_page_readiness() {
+        assert!(!startup_can_reveal_main_window(false, false, false));
+        assert!(!startup_can_reveal_main_window(true, false, false));
+        assert!(!startup_can_reveal_main_window(false, true, false));
+        assert!(!startup_can_reveal_main_window(true, true, true));
+        assert!(startup_can_reveal_main_window(true, true, false));
     }
 }
