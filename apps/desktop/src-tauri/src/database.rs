@@ -459,7 +459,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 23;
+const DATABASE_SCHEMA_VERSION: i64 = 24;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -851,6 +851,15 @@ CREATE TABLE attention_quality_checks (
 PRAGMA user_version = 23;
 "#;
 
+const MIGRATION_V24: &str = r#"
+ALTER TABLE canonical_events ADD COLUMN operation_key TEXT;
+CREATE INDEX canonical_events_operation_idx
+    ON canonical_events(agent, source_session_id, event_type, operation_key, occurred_at)
+    WHERE source='live-hook' AND deleted_at IS NULL AND operation_key IS NOT NULL;
+UPDATE canonical_events SET schema_version=24;
+PRAGMA user_version = 24;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -879,6 +888,7 @@ struct CanonicalLiveEvent {
     lifecycle_status: String,
     live_phase: String,
     event_type: String,
+    operation_key: Option<String>,
     source_event_name: String,
     project_label: String,
     source: &'static str,
@@ -968,6 +978,45 @@ fn canonical_live_phase(event: &ObservedLiveEvent, event_type: &str, status: &st
         .into()
 }
 
+fn safe_private_signal(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let payload = payload
+        .get("payload")
+        .and_then(serde_json::Value::as_object)
+        .or_else(|| payload.as_object())?;
+    keys.iter().find_map(|key| {
+        let raw = payload.get(*key)?.as_str()?;
+        let safe = crate::privacy::sanitize_tool_name(raw);
+        (!safe.is_empty() && safe != "Tool").then_some(safe)
+    })
+}
+
+fn canonical_operation_key(
+    event: &ObservedLiveEvent,
+    event_type: &str,
+    live_phase: &str,
+) -> Option<String> {
+    if event_type == "agent.error" {
+        return Some(crate::privacy::stable_hash("subagent-start-failure"));
+    }
+    if !matches!(event_type, "tool.start" | "tool.error") {
+        return None;
+    }
+    let payload = serde_json::from_str::<serde_json::Value>(&event.payload_json).ok()?;
+    let tool = safe_private_signal(&payload, &["tool_name", "tool"])?;
+    let failure_class = if event_type == "tool.error" {
+        safe_private_signal(
+            &payload,
+            &["error_code", "error_type", "failure_type", "failure_code"],
+        )
+        .unwrap_or_else(|| "generic".into())
+    } else {
+        String::new()
+    };
+    Some(crate::privacy::stable_hash(&format!(
+        "operation|{event_type}|{tool}|{failure_class}|{live_phase}"
+    )))
+}
+
 fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent> {
     let capability = source_capabilities()
         .iter()
@@ -992,6 +1041,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         ("activity.observed", "Activity", "running")
     };
     let live_phase = canonical_live_phase(event, event_type, lifecycle_status);
+    let operation_key = canonical_operation_key(event, event_type, &live_phase);
     let project_label = if event.project_label.contains(['/', '\\']) {
         format!(
             "private-{}",
@@ -1043,6 +1093,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         lifecycle_status: lifecycle_status.into(),
         live_phase,
         event_type: event_type.into(),
+        operation_key,
         source_event_name: source_event_name.into(),
         project_label,
         source,
@@ -1659,10 +1710,10 @@ fn insert_canonical_live_event(
             source_sequence,
             lifecycle_status, live_phase, event_type, source_event_name,
             process_phase, evidence_level, source_coverage, privacy_level, project_label,
-            event_duration_ms
+            event_duration_ms, operation_key
          ) VALUES(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, ?23
          ) ON CONFLICT(dedup_key) DO NOTHING",
         params![
             canonical.id,
@@ -1687,6 +1738,7 @@ fn insert_canonical_live_event(
             canonical.source_coverage,
             "normalized-local",
             canonical.project_label,
+            canonical.operation_key,
         ],
     )? == 1)
 }
@@ -2020,11 +2072,16 @@ fn sync_attention_event(
                 "SELECT id FROM attention_events
                  WHERE agent=?1 AND source_session_id=?2
                    AND kind IN('waiting','error')
+                   AND latest_evidence_at<=?3
                    AND state IN('open','acknowledged','snoozed')",
             )?;
             statement
                 .query_map(
-                    params![canonical.agent, canonical.source_session_id],
+                    params![
+                        canonical.agent,
+                        canonical.source_session_id,
+                        canonical.occurred_at
+                    ],
                     |row| row.get::<_, String>(0),
                 )?
                 .collect::<Result<Vec<_>, _>>()?
@@ -2034,6 +2091,7 @@ fn sync_attention_event(
              SET state='resolved', resolved_at=?1, resolution_reason='progress', updated_at=?2
              WHERE agent=?3 AND source_session_id=?4
                AND kind IN('waiting','error')
+               AND latest_evidence_at<=?1
                AND state IN('open','acknowledged','snoozed')",
             params![
                 canonical.occurred_at,
@@ -2125,7 +2183,7 @@ fn valid_stuck_progress(canonical: &CanonicalLiveEvent) -> bool {
     canonical.lifecycle_status == "running"
         && matches!(
             canonical.event_type.as_str(),
-            "tool.finish" | "lifecycle.resume" | "agent.stop" | "activity.progress"
+            "tool.finish" | "lifecycle.resume" | "agent.stop"
         )
 }
 
@@ -2137,11 +2195,16 @@ fn resolve_stuck_attention(
         let mut statement = transaction.prepare(
             "SELECT id FROM attention_events
              WHERE agent=?1 AND source_session_id=?2 AND kind='stuck'
+               AND latest_evidence_at<=?3
                AND state IN('open','acknowledged','snoozed')",
         )?;
         statement
             .query_map(
-                params![canonical.agent, canonical.source_session_id],
+                params![
+                    canonical.agent,
+                    canonical.source_session_id,
+                    canonical.occurred_at
+                ],
                 |row| row.get::<_, String>(0),
             )?
             .collect::<Result<Vec<_>, _>>()?
@@ -2150,6 +2213,7 @@ fn resolve_stuck_attention(
         "UPDATE attention_events
          SET state='resolved', resolved_at=?1, resolution_reason='progress', updated_at=?2
          WHERE agent=?3 AND source_session_id=?4 AND kind='stuck'
+           AND latest_evidence_at<=?1
            AND state IN('open','acknowledged','snoozed')",
         params![
             canonical.occurred_at,
@@ -2255,9 +2319,8 @@ fn latest_stuck_progress_at(
             "SELECT MAX(occurred_at) FROM canonical_events
              WHERE source='live-hook' AND deleted_at IS NULL
                AND agent=?1 AND source_session_id=?2
-               AND event_type IN(
-                   'tool.finish','lifecycle.resume','agent.stop','activity.progress'
-               ) AND occurred_at>=?3 AND occurred_at<=?4",
+               AND event_type IN('tool.finish','lifecycle.resume','agent.stop')
+               AND occurred_at>=?3 AND occurred_at<=?4",
             params![
                 canonical.agent,
                 canonical.source_session_id,
@@ -2313,12 +2376,15 @@ fn sync_stuck_detection(
     }
 
     if canonical.lifecycle_status == "error" {
+        let Some(operation_key) = canonical.operation_key.as_deref() else {
+            return Ok(());
+        };
         let evidence = {
             let mut statement = transaction.prepare(
                 "SELECT id, occurred_at FROM canonical_events
                  WHERE source='live-hook' AND deleted_at IS NULL
                    AND agent=?1 AND source_session_id=?2
-                   AND lifecycle_status='error' AND event_type=?3 AND live_phase=?4
+                   AND lifecycle_status='error' AND event_type=?3 AND operation_key=?4
                    AND occurred_at>?5 AND occurred_at<=?6
                  ORDER BY occurred_at DESC, id DESC LIMIT 3",
             )?;
@@ -2328,7 +2394,7 @@ fn sync_stuck_detection(
                         canonical.agent,
                         canonical.source_session_id,
                         canonical.event_type,
-                        canonical.live_phase,
+                        operation_key,
                         evidence_start,
                         canonical.occurred_at
                     ],
@@ -2344,12 +2410,15 @@ fn sync_stuck_detection(
     if canonical.event_type == "tool.start"
         && !matches!(canonical.live_phase.as_str(), "reading" | "editing")
     {
+        let Some(operation_key) = canonical.operation_key.as_deref() else {
+            return Ok(());
+        };
         let evidence = {
             let mut statement = transaction.prepare(
                 "SELECT id, occurred_at FROM canonical_events
                  WHERE source='live-hook' AND deleted_at IS NULL
                    AND agent=?1 AND source_session_id=?2
-                   AND event_type='tool.start' AND live_phase=?3
+                   AND event_type='tool.start' AND operation_key=?3
                    AND occurred_at>?4 AND occurred_at<=?5
                  ORDER BY occurred_at DESC, id DESC LIMIT 3",
             )?;
@@ -2358,7 +2427,7 @@ fn sync_stuck_detection(
                     params![
                         canonical.agent,
                         canonical.source_session_id,
-                        canonical.live_phase,
+                        operation_key,
                         evidence_start,
                         canonical.occurred_at
                     ],
@@ -2369,6 +2438,76 @@ fn sync_stuck_detection(
             rows
         };
         upsert_stuck_attention(transaction, canonical, "repeated-operation-loop", &evidence)?;
+    }
+    Ok(())
+}
+
+fn canonical_attention_event_is_latest(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<bool> {
+    let latest_id = transaction.query_row(
+        "SELECT id FROM canonical_events
+         WHERE source='live-hook' AND deleted_at IS NULL
+           AND agent=?1 AND source_session_id=?2
+         ORDER BY occurred_at DESC,
+                  CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END DESC,
+                  source_sequence DESC, id DESC
+         LIMIT 1",
+        params![canonical.agent, canonical.source_session_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    Ok(latest_id == canonical.id)
+}
+
+fn replay_session_attention(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    let events = {
+        let mut statement = transaction.prepare(
+            "SELECT id, source_event_id, source_sequence, event_fingerprint, dedup_key,
+                    occurred_at, observed_at, agent, source_session_id, lifecycle_status,
+                    COALESCE(live_phase, ''), event_type, source_event_name,
+                    project_label, operation_key
+             FROM canonical_events
+             WHERE source='live-hook' AND deleted_at IS NULL
+               AND agent=?1 AND source_session_id=?2
+             ORDER BY occurred_at,
+                      CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END,
+                      source_sequence, id",
+        )?;
+        statement
+            .query_map(
+                params![canonical.agent, canonical.source_session_id],
+                |row| {
+                    Ok(CanonicalLiveEvent {
+                        id: row.get(0)?,
+                        source_event_id: row.get(1)?,
+                        source_sequence: row.get(2)?,
+                        event_fingerprint: row.get(3)?,
+                        dedup_key: row.get(4)?,
+                        occurred_at: row.get(5)?,
+                        observed_at: row.get(6)?,
+                        agent: row.get(7)?,
+                        source_session_id: row.get(8)?,
+                        lifecycle_status: row.get(9)?,
+                        live_phase: row.get(10)?,
+                        event_type: row.get(11)?,
+                        source_event_name: row.get(12)?,
+                        project_label: row.get(13)?,
+                        source: "live-hook",
+                        source_coverage: "exact-lifecycle",
+                        exact_lifecycle: true,
+                        operation_key: row.get(14)?,
+                    })
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for event in events {
+        sync_attention_event(transaction, &event)?;
+        sync_stuck_detection(transaction, &event)?;
     }
     Ok(())
 }
@@ -2427,6 +2566,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 23 {
         connection.execute_batch(MIGRATION_V23)?;
+    }
+    if version < 24 {
+        connection.execute_batch(MIGRATION_V24)?;
     }
     Ok(())
 }
@@ -2589,7 +2731,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
             'occurred_at', 'observed_at', 'evidence_level',
             'source_coverage', 'privacy_level', 'source_sequence',
             'history_session_id', 'history_source_file_hash', 'event_result',
-            'event_duration_ms', 'source_event_fingerprint'
+            'event_duration_ms', 'source_event_fingerprint', 'operation_key'
          )",
         [],
         |row| row.get(0),
@@ -2678,7 +2820,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
     )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
-        || canonical_columns != 15
+        || canonical_columns != 16
         || legacy_evidence_tables != 0
         || activity_cycle_columns != 8
         || file_change_evidence_columns != 4
@@ -4030,8 +4172,12 @@ impl Database {
             && canonical.exact_lifecycle
         {
             update_activity_cycles(&transaction, canonical)?;
-            sync_attention_event(&transaction, canonical)?;
-            sync_stuck_detection(&transaction, canonical)?;
+            if canonical_attention_event_is_latest(&transaction, canonical)? {
+                sync_attention_event(&transaction, canonical)?;
+                sync_stuck_detection(&transaction, canonical)?;
+            } else {
+                replay_session_attention(&transaction, canonical)?;
+            }
         }
         if canonical_inserted {
             transaction.execute(
@@ -8074,13 +8220,15 @@ mod concurrency_tests {
         restore_legacy_evidence_tables(connection);
         connection
             .execute_batch(
-                "DROP INDEX canonical_events_live_project_idx;
+                "DROP INDEX canonical_events_operation_idx;
+                 DROP INDEX canonical_events_live_project_idx;
                  DROP TABLE IF EXISTS attention_quality_checks;
                  DROP TABLE IF EXISTS attention_review_samples;
                  DROP TABLE IF EXISTS attention_interventions;
                  DROP TABLE IF EXISTS attention_event_evidence;
                  DROP TABLE IF EXISTS attention_events;
                  DROP TABLE attention_feedback;
+                 ALTER TABLE canonical_events DROP COLUMN operation_key;
                  ALTER TABLE canonical_events DROP COLUMN source_event_fingerprint;
                  ALTER TABLE canonical_events DROP COLUMN event_duration_ms;",
             )
@@ -10050,7 +10198,7 @@ mod concurrency_tests {
                 source_event_fingerprint: None,
                 event_name: name.into(),
                 project_label: "project".into(),
-                payload_json: "{}".into(),
+                payload_json: r#"{"payload":{"tool_name":"Bash","error_code":"exit"}}"#.into(),
                 status: status.into(),
                 phase: Some(phase.into()),
             };
@@ -10094,6 +10242,27 @@ mod concurrency_tests {
         assert_eq!(stuck.source_coverage, "exact-lifecycle");
         assert_eq!(stuck.rule_version, "stuck-detector-1.0.0");
         assert_eq!(stuck.evidence_count, 3);
+
+        database
+            .record_observed_live_event(&event(
+                "token-only",
+                "TokenUsage",
+                "running",
+                "thinking",
+                150,
+            ))
+            .expect("token activity should persist");
+        assert_eq!(
+            database
+                .attention_events()
+                .expect("stuck attention should remain")
+                .into_iter()
+                .find(|attention| attention.id == stuck.id)
+                .expect("stuck history should remain")
+                .state,
+            "open",
+            "token-only activity is not valid progress"
+        );
 
         database
             .record_observed_live_event(&event(
@@ -10183,7 +10352,7 @@ mod concurrency_tests {
                     source_event_fingerprint: None,
                     event_name: name.into(),
                     project_label: "project".into(),
-                    payload_json: "{}".into(),
+                    payload_json: r#"{"payload":{"tool_name":"Bash","error_code":"exit"}}"#.into(),
                     status: status.into(),
                     phase: Some(phase.into()),
                 }
@@ -10262,6 +10431,136 @@ mod concurrency_tests {
                 .iter()
                 .all(|attention| attention.source_session_id != "normal-edits")
         );
+    }
+
+    #[test]
+    fn distinct_failures_and_operations_do_not_form_a_stuck_loop() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("distinct-stuck-signals.sqlite"))
+            .expect("database should open");
+        let base = Utc::now();
+        for (index, tool) in ["Bash", "Task", "WebFetch"].into_iter().enumerate() {
+            let occurred_at = (base + Duration::seconds(index as i64)).to_rfc3339();
+            database
+                .record_observed_live_event(&ObservedLiveEvent {
+                    occurred_at: occurred_at.clone(),
+                    observed_at: occurred_at,
+                    agent: "codex".into(),
+                    source_session_id: "distinct-failures".into(),
+                    source_event_id: Some(format!("failure-{index}")),
+                    source_sequence: Some(index as i64),
+                    source_event_fingerprint: None,
+                    event_name: "PostToolUseFailure".into(),
+                    project_label: "project".into(),
+                    payload_json: format!(
+                        r#"{{"payload":{{"tool_name":"{tool}","error_code":"exit"}}}}"#
+                    ),
+                    status: "error".into(),
+                    phase: Some("verifying".into()),
+                })
+                .expect("distinct failure should persist");
+        }
+        for (index, tool) in ["Bash", "Task", "WebFetch"].into_iter().enumerate() {
+            let occurred_at = (base + Duration::seconds(30 + index as i64)).to_rfc3339();
+            database
+                .record_observed_live_event(&ObservedLiveEvent {
+                    occurred_at: occurred_at.clone(),
+                    observed_at: occurred_at,
+                    agent: "codex".into(),
+                    source_session_id: "distinct-operations".into(),
+                    source_event_id: Some(format!("operation-{index}")),
+                    source_sequence: Some(index as i64),
+                    source_event_fingerprint: None,
+                    event_name: "PreToolUse".into(),
+                    project_label: "project".into(),
+                    payload_json: format!(r#"{{"payload":{{"tool_name":"{tool}"}}}}"#),
+                    status: "running".into(),
+                    phase: Some("verifying".into()),
+                })
+                .expect("distinct operation should persist");
+        }
+
+        assert!(
+            database
+                .attention_events()
+                .expect("attention should load")
+                .iter()
+                .all(|attention| attention.kind != "stuck")
+        );
+    }
+
+    #[test]
+    fn attention_state_converges_when_canonical_events_arrive_out_of_order() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let ordered = Database::open(temporary.path().join("ordered-attention.sqlite"))
+            .expect("ordered database should open");
+        let shuffled = Database::open(temporary.path().join("shuffled-attention.sqlite"))
+            .expect("shuffled database should open");
+        let base = Utc::now() - Duration::minutes(1);
+        let event = |session: &str, id: &str, status: &str, seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: session.into(),
+            source_event_id: Some(format!("{session}-{id}")),
+            source_sequence: Some(seconds),
+            source_event_fingerprint: None,
+            event_name: if status == "waiting" {
+                "PermissionRequest".into()
+            } else {
+                "PostToolUse".into()
+            },
+            project_label: "project".into(),
+            payload_json: r#"{"payload":{"tool_name":"Bash"}}"#.into(),
+            status: status.into(),
+            phase: Some(if status == "waiting" {
+                "needs-you".into()
+            } else {
+                "verifying".into()
+            }),
+        };
+        let first_session = [
+            event("resolve-session", "waiting", "waiting", 10),
+            event("resolve-session", "progress", "running", 20),
+        ];
+        let second_session = [
+            event("remain-session", "progress", "running", 10),
+            event("remain-session", "waiting", "waiting", 20),
+        ];
+        for item in first_session.iter().chain(second_session.iter()) {
+            ordered
+                .record_observed_live_event(item)
+                .expect("ordered event should persist");
+        }
+        for item in first_session
+            .iter()
+            .rev()
+            .chain(second_session.iter().rev())
+        {
+            shuffled
+                .record_observed_live_event(item)
+                .expect("shuffled event should persist");
+        }
+        let summarize = |database: &Database| {
+            let mut rows = database
+                .attention_events()
+                .expect("attention should load")
+                .into_iter()
+                .map(|attention| {
+                    (
+                        attention.source_session_id,
+                        attention.kind,
+                        attention.state,
+                        attention.opened_at,
+                        attention.resolved_at,
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.sort();
+            rows
+        };
+
+        assert_eq!(summarize(&shuffled), summarize(&ordered));
     }
 
     #[test]
