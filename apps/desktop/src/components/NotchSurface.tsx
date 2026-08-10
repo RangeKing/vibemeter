@@ -73,19 +73,44 @@ export function liveElapsedEnd(session: LiveSession, now: number): number {
 }
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
-  if (session.status === "error") return t("live.reason.error");
+  const attention = session.pulse.attentionSignal.value;
+  if (attention === "blocking-error") return t("live.reason.error");
   if (session.status === "paused") return t("live.reason.paused");
-  if (session.status !== "waiting") return undefined;
+  if (attention !== "needs-you") return undefined;
   const tool = session.actions[session.actions.length - 1]?.label;
   return tool && tool !== "PermissionRequest"
     ? t("live.reason.waiting", { tool })
     : t("live.reason.waitingGeneric");
 }
 
-function notchPhaseLabel(phase: LiveSession["phase"], t: TFunction): string {
-  return t(`notch.phase.${phase}`, {
-    defaultValue: t(`live.phase.${phase}`, { defaultValue: phase }),
+function notchPhaseLabel(value: string, t: TFunction): string {
+  return t(`notch.phase.${value}`, {
+    defaultValue: t(`live.pulse.value.${value}`, {
+      defaultValue: t(`live.phase.${value}`, { defaultValue: value }),
+    }),
   });
+}
+
+export function notchPulseValue(session: LiveSession): string {
+  if (session.pulse.lifecycle.availability !== "available") {
+    return session.pulse.workPhase.value ?? "not-recorded";
+  }
+  const attention = session.pulse.attentionSignal.value;
+  if (attention && attention !== "none") return attention;
+  return session.pulse.workPhase.value ?? session.pulse.lifecycle.value ?? "not-recorded";
+}
+
+export function notchVisibleActions(session: LiveSession): LiveSession["actions"] {
+  return session.pulse.lifecycle.availability === "available" ? session.actions : [];
+}
+
+function notchPulseStatus(session: LiveSession): LiveSession["status"] | "limited" {
+  if (session.pulse.lifecycle.availability !== "available") return "limited";
+  const status = session.pulse.lifecycle.value;
+  return status === "waiting" || status === "error" || status === "running" ||
+    status === "paused" || status === "idle" || status === "completed"
+    ? status
+    : "idle";
 }
 
 function notchActionLabel(action: LiveSession["actions"][number], t: TFunction): string {
@@ -210,11 +235,11 @@ export function AgentActivityGlyph({
   session,
   compact = false,
 }: {
-  session?: Pick<LiveSession, "phase" | "status">;
+  session?: LiveSession;
   compact?: boolean;
 }) {
-  const status = session?.status ?? "idle";
-  const phase = session?.phase ?? "ready";
+  const status = session ? notchPulseStatus(session) : "idle";
+  const phase = session ? notchPulseValue(session) : "ready";
   let Icon = Gauge;
   if (status === "waiting" || status === "error") Icon = CircleAlert;
   else if (status === "paused") Icon = CirclePause;
@@ -238,17 +263,18 @@ export function AgentActivityGlyph({
 }
 
 export function pickRightWingSession(sessions: LiveSession[], now: number) {
-  const waiting = sessions.find((session) => session.status === "waiting");
+  const waiting = sessions.find((session) => session.pulse.attentionSignal.value === "needs-you");
   if (waiting) return waiting;
-  const error = sessions.find((session) => session.status === "error");
+  const error = sessions.find((session) => session.pulse.attentionSignal.value === "blocking-error");
   if (error) return error;
   const completion = sessions.find(
     (session) =>
-      session.status === "completed" &&
+      session.pulse.attentionSignal.value === "completion-review" &&
       now - new Date(session.updatedAt).getTime() < COMPLETION_CUE_MS,
   );
   if (completion) return completion;
-  return sessions.find((session) => session.status === "running");
+  return sessions.find((session) => session.pulse.lifecycle.value === "running")
+    ?? sessions.find((session) => session.pulse.workPhase.value === "recent-activity");
 }
 
 export function activeProviderCounts(sessions: LiveSession[]) {
@@ -632,11 +658,11 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           )}
         </span>
         <span className="notch-hardware" />
-        <span className={`notch-wing notch-wing-right status-${rightSession?.status ?? "idle"}`}>
+        <span className={`notch-wing notch-wing-right status-${rightSession ? notchPulseStatus(rightSession) : "idle"}`}>
           {rightSession ? (
             <>
               <AgentActivityGlyph session={rightSession} compact />
-              <strong>{notchPhaseLabel(rightSession.phase, t)}</strong>
+              <strong>{notchPhaseLabel(notchPulseValue(rightSession), t)}</strong>
             </>
           ) : null}
         </span>
@@ -685,7 +711,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           return (
             <article
               key={session.id}
-              className={`status-${session.status}`}
+              className={`status-${notchPulseStatus(session)}`}
               style={{ "--notch-session-index": index } as CSSProperties}
             >
               <div className="notch-session-top">
@@ -712,12 +738,12 @@ export function NotchSurface({ locale }: { locale: Locale }) {
                 </span>
                 <span className="notch-phase">
                   <AgentActivityGlyph session={session} compact />
-                  {notchPhaseLabel(session.phase, t)}
+                  {notchPhaseLabel(notchPulseValue(session), t)}
                 </span>
               </div>
               {reason ? <p>{reason}</p> : null}
               <footer>
-                <NotchActionFlow actions={session.actions} t={t} />
+                <NotchActionFlow actions={notchVisibleActions(session)} t={t} />
                 <button
                   onPointerDown={(event) => onActionPointerDown(event, `jump:${session.id}`, () => jumpToActive(session.id))}
                   onClick={(event) => onActionClick(event, `jump:${session.id}`, () => jumpToActive(session.id))}

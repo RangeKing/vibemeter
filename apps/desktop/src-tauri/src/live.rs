@@ -3,9 +3,10 @@ use crate::errors::{AppError, AppResult};
 use crate::live_sources;
 use crate::models::{
     HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession, LiveSnapshot,
-    NotchCompletedSession, ObservedLiveEvent,
+    NotchCompletedSession, ObservedLiveEvent, WorkPulse, WorkPulseDimension,
 };
 use crate::providers::{codex_binary, write_json_line};
+use crate::source_capabilities::{SourceLiveCapability, source_capabilities};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -35,6 +36,8 @@ const CODEX_DISCOVERY_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
 const MAX_DISCOVERED_TRANSCRIPTS: usize = 64;
 const MANAGED_MARKER: &str = "vibemeter_hook.py";
 const CODEX_PROBE_TTL: StdDuration = StdDuration::from_secs(20);
+const WORK_PULSE_FRESH_SECONDS: u64 = 30;
+const WORK_PULSE_LOST_UPDATE_SECONDS: u64 = 120;
 const CLAUDE_HOOKS: &[(&str, Option<&str>, Option<u64>)] = &[
     ("SessionStart", None, None),
     ("UserPromptSubmit", None, None),
@@ -1636,6 +1639,7 @@ fn session_from_envelope(envelope: &Value) -> Option<(LiveSession, String, Strin
             .get("origin")
             .and_then(Value::as_str)
             .map(str::to_string),
+        pulse: WorkPulse::default(),
         jump_context: object
             .get("jump_context")
             .cloned()
@@ -2328,6 +2332,7 @@ fn bootstrap_codex_transcript_from(
         }],
         process_id: None,
         origin,
+        pulse: WorkPulse::default(),
         jump_context: None,
     };
     Some(CodexTranscriptBootstrap {
@@ -2811,14 +2816,36 @@ fn merge_live_actions(session: &mut LiveSession, incoming: Vec<LiveAction>) {
 fn snapshot_from(
     sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
     socket_ready: bool,
+    completed_sessions: Vec<NotchCompletedSession>,
+    database: &Database,
+) -> LiveSnapshot {
+    snapshot_from_at(
+        sessions,
+        socket_ready,
+        completed_sessions,
+        database,
+        Utc::now(),
+    )
+}
+
+fn snapshot_from_at(
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
+    socket_ready: bool,
     mut completed_sessions: Vec<NotchCompletedSession>,
     database: &Database,
+    now: DateTime<Utc>,
 ) -> LiveSnapshot {
     let mut items = sessions
         .read()
         .map(|value| value.values().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     hydrate_conversation_titles(database, &mut items, &mut completed_sessions);
+    for session in items
+        .iter_mut()
+        .chain(completed_sessions.iter_mut().map(|item| &mut item.session))
+    {
+        session.pulse = work_pulse_at(session, now);
+    }
     sort_live_sessions(&mut items);
     let urgent_session_id = items.first().map(|item| item.id.clone());
     let active_count = items
@@ -2826,12 +2853,91 @@ fn snapshot_from(
         .filter(|item| matches!(item.status.as_str(), "waiting" | "error" | "running"))
         .count() as u64;
     LiveSnapshot {
-        generated_at: Utc::now().to_rfc3339(),
+        generated_at: now.to_rfc3339(),
         sessions: items,
         completed_sessions,
         urgent_session_id,
         active_count,
         hook_status: hook_status(socket_ready),
+    }
+}
+
+fn work_pulse_at(session: &LiveSession, now: DateTime<Utc>) -> WorkPulse {
+    let live_capability = source_capabilities()
+        .iter()
+        .find(|capability| capability.agent == session.agent)
+        .map(|capability| capability.live_capability)
+        .unwrap_or(SourceLiveCapability::None);
+    let source_coverage = live_capability.as_str();
+    let available = |value: &str, evidence_level: &str| WorkPulseDimension {
+        availability: "available".into(),
+        value: Some(value.into()),
+        evidence_level: evidence_level.into(),
+        source_coverage: source_coverage.into(),
+        age_seconds: None,
+    };
+    let unknown = || WorkPulseDimension {
+        availability: "unknown".into(),
+        value: None,
+        evidence_level: "not-recorded".into(),
+        source_coverage: source_coverage.into(),
+        age_seconds: None,
+    };
+    let freshness = match DateTime::parse_from_rfc3339(&session.updated_at) {
+        Ok(updated_at) => {
+            let age_seconds = now
+                .signed_duration_since(updated_at.with_timezone(&Utc))
+                .num_seconds()
+                .max(0) as u64;
+            let value = if age_seconds <= WORK_PULSE_FRESH_SECONDS {
+                "fresh"
+            } else if age_seconds <= WORK_PULSE_LOST_UPDATE_SECONDS {
+                "aging"
+            } else {
+                "lost-update"
+            };
+            WorkPulseDimension {
+                availability: "available".into(),
+                value: Some(value.into()),
+                evidence_level: "derived".into(),
+                source_coverage: source_coverage.into(),
+                age_seconds: Some(age_seconds),
+            }
+        }
+        Err(_) => unknown(),
+    };
+
+    match live_capability {
+        SourceLiveCapability::Exact => WorkPulse {
+            lifecycle: available(&session.status, "observed"),
+            work_phase: if session.phase.trim().is_empty() {
+                unknown()
+            } else {
+                available(&session.phase, "derived")
+            },
+            attention_signal: available(
+                match session.status.as_str() {
+                    "waiting" => "needs-you",
+                    "error" => "blocking-error",
+                    "completed" => "completion-review",
+                    _ => "none",
+                },
+                "derived",
+            ),
+            freshness,
+        },
+        SourceLiveCapability::Experimental => WorkPulse {
+            lifecycle: unknown(),
+            work_phase: available("recent-activity", "observed"),
+            attention_signal: unknown(),
+            freshness,
+        },
+        SourceLiveCapability::None => WorkPulse {
+            lifecycle: unknown(),
+            work_phase: unknown(),
+            attention_signal: unknown(),
+            freshness,
+        },
     }
 }
 
@@ -3179,7 +3285,8 @@ fn notify_if_background(session: &LiveSession, status: &str) {
 }
 
 fn notification_allowed_for_origin(session: &LiveSession, status: &str) -> bool {
-    status != "completed" || session.origin.as_deref() == Some("cli")
+    session.pulse.lifecycle.availability == "available"
+        && (status != "completed" || session.origin.as_deref() == Some("cli"))
 }
 
 fn source_is_foreground(session: &LiveSession) -> bool {
@@ -3563,6 +3670,64 @@ fn write_if_changed(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn snapshot_exposes_independent_work_pulse_dimensions_without_overclaiming_experimental_live() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("work-pulse.sqlite"))
+            .expect("database should open");
+        let now = DateTime::parse_from_rfc3339("2026-08-10T08:00:30Z")
+            .expect("fixed clock")
+            .with_timezone(&Utc);
+
+        let mut exact = jump_test_session("codex", "desktop", None);
+        exact.id = "exact".into();
+        exact.status = "waiting".into();
+        exact.phase = "needs-you".into();
+        exact.updated_at = "2026-08-10T08:00:20Z".into();
+
+        let mut experimental = jump_test_session("kimi-code", "desktop", None);
+        experimental.id = "experimental".into();
+        experimental.status = "error".into();
+        experimental.phase = "error".into();
+        experimental.updated_at = "2026-08-10T07:57:30Z".into();
+
+        let sessions = Arc::new(RwLock::new(HashMap::from([
+            (exact.id.clone(), exact),
+            (experimental.id.clone(), experimental),
+        ])));
+        let snapshot = snapshot_from_at(&sessions, true, Vec::new(), &database, now);
+        let exact = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.id == "exact")
+            .expect("exact pulse");
+        assert_eq!(exact.pulse.lifecycle.value.as_deref(), Some("waiting"));
+        assert_eq!(exact.pulse.work_phase.value.as_deref(), Some("needs-you"));
+        assert_eq!(
+            exact.pulse.attention_signal.value.as_deref(),
+            Some("needs-you")
+        );
+        assert_eq!(exact.pulse.freshness.value.as_deref(), Some("fresh"));
+
+        let experimental = snapshot
+            .sessions
+            .iter()
+            .find(|session| session.id == "experimental")
+            .expect("experimental pulse");
+        assert_eq!(experimental.pulse.lifecycle.availability, "unknown");
+        assert_eq!(experimental.pulse.lifecycle.value, None);
+        assert_eq!(
+            experimental.pulse.work_phase.value.as_deref(),
+            Some("recent-activity")
+        );
+        assert_eq!(experimental.pulse.attention_signal.availability, "unknown");
+        assert_eq!(experimental.pulse.attention_signal.value, None);
+        assert_eq!(
+            experimental.pulse.freshness.value.as_deref(),
+            Some("lost-update")
+        );
+    }
 
     #[test]
     fn hook_merge_preserves_other_commands_and_uninstall_only_prunes_ours() {
@@ -4014,6 +4179,7 @@ mod tests {
             actions: Vec::new(),
             process_id: Some(42),
             origin: Some("desktop".into()),
+            pulse: WorkPulse::default(),
             jump_context: None,
         };
         let sessions = Arc::new(RwLock::new(HashMap::from([(
@@ -4752,6 +4918,7 @@ mod tests {
             actions: Vec::new(),
             process_id: Some(42),
             origin: Some(origin.into()),
+            pulse: WorkPulse::default(),
             jump_context,
         }
     }
@@ -4871,7 +5038,7 @@ mod tests {
 
     #[test]
     fn foreground_matching_stays_provider_and_origin_specific() {
-        let desktop = LiveSession {
+        let mut desktop = LiveSession {
             id: "desktop".into(),
             source_session_id: "thread".into(),
             agent: "codex".into(),
@@ -4887,8 +5054,11 @@ mod tests {
             actions: Vec::new(),
             process_id: None,
             origin: Some("desktop".into()),
+            pulse: WorkPulse::default(),
             jump_context: None,
         };
+        desktop.pulse.lifecycle.availability = "available".into();
+        desktop.pulse.lifecycle.value = Some("running".into());
         let mut cli = desktop.clone();
         cli.origin = Some("cli".into());
         assert!(source_matches_frontmost(&desktop, "Codex"));
@@ -4905,5 +5075,10 @@ mod tests {
         assert!(!notification_allowed_for_origin(&desktop, "completed"));
         assert!(notification_allowed_for_origin(&cli, "completed"));
         assert!(notification_allowed_for_origin(&desktop, "waiting"));
+        let mut experimental = desktop.clone();
+        experimental.agent = "kimi-code".into();
+        experimental.pulse.lifecycle.availability = "unknown".into();
+        experimental.pulse.lifecycle.value = None;
+        assert!(!notification_allowed_for_origin(&experimental, "error"));
     }
 }

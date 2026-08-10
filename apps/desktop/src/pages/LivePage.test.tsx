@@ -4,8 +4,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
-import type { LiveHistoryItem, LiveTimelinePoint } from "../types";
-import { HistoryList, TimelineList } from "./LivePage";
+import type { LiveHistoryItem, LiveSession, LiveTimelinePoint } from "../types";
+import { HistoryList, LiveSessionCard, TimelineList } from "./LivePage";
 
 const historyItem: LiveHistoryItem = {
   id: "621",
@@ -79,5 +79,83 @@ describe("Live timeline", () => {
     expect(container.querySelector(".live-timeline-list")?.children).toHaveLength(21);
     expect(container.querySelector(".live-timeline-list")?.classList.contains("live-timeline-list")).toBe(true);
     expect(screen.getByText("project-0")).toBeTruthy();
+  });
+});
+
+describe("Live work pulse", () => {
+  beforeAll(async () => {
+    await i18n.changeLanguage("zh-CN");
+  });
+
+  afterEach(cleanup);
+
+  function liveSession(agent: LiveSession["agent"], status: LiveSession["status"]): LiveSession {
+    return {
+      id: `${agent}-${status}`,
+      sourceSessionId: "source-session",
+      agent,
+      projectLabel: "VibeMeter",
+      status,
+      phase: status === "waiting" ? "needs-you" : "error",
+      startedAt: "2026-08-10T08:00:00Z",
+      updatedAt: "2026-08-10T08:00:20Z",
+      actions: status === "error"
+        ? [{ kind: "error", label: "Error", occurredAt: "2026-08-10T08:00:20Z" }]
+        : [],
+      pulse: {
+        lifecycle: {
+          availability: agent === "codex" ? "available" : "unknown",
+          value: agent === "codex" ? status : undefined,
+          evidenceLevel: agent === "codex" ? "observed" : "not-recorded",
+          sourceCoverage: agent === "codex" ? "exact" : "experimental",
+        },
+        workPhase: {
+          availability: "available",
+          value: agent === "codex" ? "needs-you" : "recent-activity",
+          evidenceLevel: agent === "codex" ? "derived" : "observed",
+          sourceCoverage: agent === "codex" ? "exact" : "experimental",
+        },
+        attentionSignal: {
+          availability: agent === "codex" ? "available" : "unknown",
+          value: agent === "codex" ? "needs-you" : undefined,
+          evidenceLevel: agent === "codex" ? "derived" : "not-recorded",
+          sourceCoverage: agent === "codex" ? "exact" : "experimental",
+        },
+        freshness: {
+          availability: "available",
+          value: "fresh",
+          evidenceLevel: "derived",
+          sourceCoverage: agent === "codex" ? "exact" : "experimental",
+          ageSeconds: 10,
+        },
+      },
+    };
+  }
+
+  it("renders the four independent dimensions for exact live sources", () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LiveSessionCard session={liveSession("codex", "waiting")} locale="zh-CN" />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("生命周期")).toBeTruthy();
+    expect(screen.getByText("工作阶段")).toBeTruthy();
+    expect(screen.getByText("注意力信号")).toBeTruthy();
+    expect(screen.getByText("新鲜度")).toBeTruthy();
+    expect(screen.getAllByText("需要你").length).toBeGreaterThan(0);
+  });
+
+  it("shows only recent activity and freshness for experimental sources", () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LiveSessionCard session={liveSession("kimi-code", "error")} locale="zh-CN" />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getAllByText("近期活动").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("未知")).toHaveLength(2);
+    expect(screen.queryByText("错误")).toBeNull();
+    expect(screen.getByLabelText("最近动作").children).toHaveLength(0);
   });
 });

@@ -552,6 +552,7 @@ fn runtime_session(
         }],
         process_id: process.map(|(pid, _)| pid),
         origin: process.map(|(_, origin)| origin.into()),
+        pulse: Default::default(),
         jump_context: None,
     }
 }

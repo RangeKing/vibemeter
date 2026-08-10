@@ -645,6 +645,39 @@ pub struct LiveJumpContext {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct WorkPulseDimension {
+    pub availability: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub evidence_level: String,
+    pub source_coverage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<u64>,
+}
+
+impl Default for WorkPulseDimension {
+    fn default() -> Self {
+        Self {
+            availability: "not-recorded".into(),
+            value: None,
+            evidence_level: "not-recorded".into(),
+            source_coverage: "unknown".into(),
+            age_seconds: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkPulse {
+    pub lifecycle: WorkPulseDimension,
+    pub work_phase: WorkPulseDimension,
+    pub attention_signal: WorkPulseDimension,
+    pub freshness: WorkPulseDimension,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveSession {
     pub id: String,
     pub source_session_id: String,
@@ -664,6 +697,8 @@ pub struct LiveSession {
     pub actions: Vec<LiveAction>,
     pub process_id: Option<u32>,
     pub origin: Option<String>,
+    #[serde(default)]
+    pub pulse: WorkPulse,
     #[serde(default, skip_serializing)]
     pub jump_context: Option<LiveJumpContext>,
 }

@@ -8,6 +8,8 @@ import {
   formatLiveElapsed,
   liveElapsedEnd,
   leftWingWidthForSession,
+  notchPulseValue,
+  notchVisibleActions,
   pickRightWingSession,
 } from "./NotchSurface";
 
@@ -27,6 +29,23 @@ function session(
     startedAt: updatedAt,
     updatedAt,
     actions: [],
+    pulse: {
+      lifecycle: { availability: "available", value: status, evidenceLevel: "observed", sourceCoverage: "exact" },
+      workPhase: { availability: "available", value: "thinking", evidenceLevel: "derived", sourceCoverage: "exact" },
+      attentionSignal: {
+        availability: "available",
+        value: status === "waiting"
+          ? "needs-you"
+          : status === "error"
+            ? "blocking-error"
+            : status === "completed"
+              ? "completion-review"
+              : "none",
+        evidenceLevel: "derived",
+        sourceCoverage: "exact",
+      },
+      freshness: { availability: "available", value: "fresh", evidenceLevel: "derived", sourceCoverage: "exact", ageSeconds: 0 },
+    },
   };
 }
 
@@ -76,6 +95,31 @@ describe("Notch session selection", () => {
     const paused = session("paused", "paused");
     expect(pickRightWingSession([paused], Date.now())).toBeUndefined();
     expect(activeProviderCounts([paused]).active).toHaveLength(0);
+  });
+
+  it("keeps experimental recent activity from posing as an exact error", () => {
+    const experimental = session("experimental-error", "error", "kimi-code");
+    experimental.pulse.lifecycle = {
+      availability: "unknown",
+      evidenceLevel: "not-recorded",
+      sourceCoverage: "experimental",
+    };
+    experimental.pulse.workPhase = {
+      availability: "available",
+      value: "recent-activity",
+      evidenceLevel: "observed",
+      sourceCoverage: "experimental",
+    };
+    experimental.pulse.attentionSignal = {
+      availability: "unknown",
+      evidenceLevel: "not-recorded",
+      sourceCoverage: "experimental",
+    };
+    const running = session("exact-running", "running", "codex");
+
+    expect(notchPulseValue(experimental)).toBe("recent-activity");
+    expect(notchVisibleActions(experimental)).toEqual([]);
+    expect(pickRightWingSession([experimental, running], Date.now())?.id).toBe("exact-running");
   });
 
   it("counts only running, waiting, and error sessions by provider", () => {

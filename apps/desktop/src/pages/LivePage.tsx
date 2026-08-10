@@ -19,16 +19,31 @@ import { agentName, formatDateTime, formatTime } from "../lib/format";
 import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
-import type { LiveHistoryItem, LiveSession, LiveTimelinePoint, Locale } from "../types";
+import type {
+  LiveHistoryItem,
+  LiveSession,
+  LiveTimelinePoint,
+  Locale,
+  WorkPulseDimension,
+} from "../types";
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
-  if (session.status === "error") return t("live.reason.error");
+  const attention = session.pulse.attentionSignal.value;
+  if (attention === "blocking-error") return t("live.reason.error");
   if (session.status === "paused") return t("live.reason.paused");
-  if (session.status !== "waiting") return undefined;
+  if (attention !== "needs-you") return undefined;
   const tool = session.actions[session.actions.length - 1]?.label;
   return tool && tool !== "PermissionRequest"
     ? t("live.reason.waiting", { tool })
     : t("live.reason.waitingGeneric");
+}
+
+function pulseValue(dimension: WorkPulseDimension, t: TFunction): string {
+  if (dimension.availability === "unknown") return t("live.pulse.unknown");
+  if (dimension.availability === "not-recorded" || !dimension.value) {
+    return t("live.pulse.notRecorded");
+  }
+  return t(`live.pulse.value.${dimension.value}`, { defaultValue: dimension.value });
 }
 
 function statusIcon(status: LiveSession["status"] | string) {
@@ -38,27 +53,37 @@ function statusIcon(status: LiveSession["status"] | string) {
   return <Waves size={15} />;
 }
 
-function LiveSessionCard({ session, locale }: { session: LiveSession; locale: Locale }) {
+export function LiveSessionCard({ session, locale }: { session: LiveSession; locale: Locale }) {
   const { t } = useTranslation();
   const reason = liveReason(session, t);
+  const experimental = session.pulse.lifecycle.availability !== "available";
+  const visibleActions = experimental ? [] : session.actions;
+  const headline = experimental
+    ? pulseValue(session.pulse.workPhase, t)
+    : pulseValue(session.pulse.lifecycle, t);
   return (
-    <article className={`live-session-card status-${session.status}`}>
+    <article className={`live-session-card status-${experimental ? "limited" : session.status}`}>
       <header>
         <AgentBadge agent={session.agent} />
         <div>
           <strong>{session.projectLabel}</strong>
           <small>{agentName(session.agent)} · {session.origin ? t(`live.origin.${session.origin}`) : t("live.origin.unknown")}</small>
         </div>
-        <span className="live-status">{statusIcon(session.status)}{t(`live.status.${session.status}`)}</span>
+        <span className="live-status">{statusIcon(experimental ? "limited" : session.status)}{headline}</span>
       </header>
-      <div className="live-phase">
-        <span>{t("live.currentPhase")}</span>
-        <strong>{t(`live.phase.${session.phase}`, { defaultValue: session.phase })}</strong>
-        <small><Clock3 size={12} />{formatTime(session.updatedAt, locale)}</small>
+      <div className="live-pulse-grid">
+        <div><span>{t("live.pulse.lifecycle")}</span><strong>{pulseValue(session.pulse.lifecycle, t)}</strong></div>
+        <div><span>{t("live.pulse.workPhase")}</span><strong>{pulseValue(session.pulse.workPhase, t)}</strong></div>
+        <div><span>{t("live.pulse.attention")}</span><strong>{pulseValue(session.pulse.attentionSignal, t)}</strong></div>
+        <div>
+          <span>{t("live.pulse.freshness")}</span>
+          <strong>{pulseValue(session.pulse.freshness, t)}</strong>
+          <small><Clock3 size={12} />{formatTime(session.updatedAt, locale)}</small>
+        </div>
       </div>
       {reason ? <p className="live-reason">{reason}</p> : null}
       <div className="live-actions" aria-label={t("live.recentActions")}>
-        {session.actions.map((action, index) => (
+        {visibleActions.map((action, index) => (
           <span key={`${action.occurredAt}-${index}`}>
             <i />
             {t(`live.action.${action.kind}`, { defaultValue: action.label })}

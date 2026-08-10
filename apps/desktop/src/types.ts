@@ -228,6 +228,21 @@ export interface LiveAction {
   occurredAt: string;
 }
 
+export interface WorkPulseDimension {
+  availability: "available" | "unknown" | "not-recorded";
+  value?: string;
+  evidenceLevel: "observed" | "derived" | "estimated" | "not-recorded" | string;
+  sourceCoverage: "exact" | "experimental" | "none" | "unknown" | string;
+  ageSeconds?: number;
+}
+
+export interface WorkPulse {
+  lifecycle: WorkPulseDimension;
+  workPhase: WorkPulseDimension;
+  attentionSignal: WorkPulseDimension;
+  freshness: WorkPulseDimension;
+}
+
 export interface LiveSession {
   id: string;
   sourceSessionId: string;
@@ -243,6 +258,7 @@ export interface LiveSession {
   actions: LiveAction[];
   processId?: number;
   origin?: "cli" | "desktop";
+  pulse: WorkPulse;
 }
 
 export interface NotchCompletedSession {

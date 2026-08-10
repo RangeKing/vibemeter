@@ -7348,6 +7348,7 @@ mod concurrency_tests {
             actions: Vec::new(),
             process_id: None,
             origin: Some("desktop".into()),
+            pulse: Default::default(),
             jump_context: None,
         }
     }

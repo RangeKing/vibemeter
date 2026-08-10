@@ -45,6 +45,8 @@ Historical agent records                  Claude Code / Codex Hook events
 
 Exact Claude Code and Codex hooks publish `live-hook` lifecycle evidence. Experimental Kimi Code and ZCode observers publish `live-observer` recent-activity evidence only and cannot create exact waiting, error, completion, or activity-cycle claims. Historical evidence uses `history-index` and remains isolated from live queries.
 
+Every active live session exposes one explainable work pulse with four independent dimensions: lifecycle, work phase, attention signal, and freshness. Exact sources may populate all four from canonical lifecycle evidence. Experimental observers populate recent activity and freshness only; lifecycle and attention stay explicitly unknown. Freshness is derived from the last structured update using fixed 30-second fresh and 120-second lost-update boundaries. Live renders the full pulse, while Notch renders a compact value from the same model.
+
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries
