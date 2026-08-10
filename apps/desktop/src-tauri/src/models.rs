@@ -760,6 +760,7 @@ pub struct LiveSnapshot {
     pub sessions: Vec<LiveSession>,
     pub completed_sessions: Vec<NotchCompletedSession>,
     pub urgent_session_id: Option<String>,
+    pub attention_queue: Vec<AttentionEvent>,
     pub active_count: u64,
     pub hook_status: HookStatus,
 }
@@ -850,6 +851,7 @@ pub struct AttentionEvent {
     pub source_coverage: String,
     pub rule_version: String,
     pub evidence_count: u64,
+    pub intervention_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -908,6 +910,7 @@ pub struct TaskSummary {
     pub worth_reviewing: bool,
     pub review_reason_keys: Vec<String>,
     pub primary_session_id: Option<String>,
+    pub attention_count: u64,
     pub source_excluded: bool,
 }
 
@@ -968,6 +971,7 @@ pub struct SessionDetail {
     pub file_changes: Vec<FileChange>,
     pub git_evidence: GitEvidence,
     pub capabilities: Vec<String>,
+    pub attention: Vec<AttentionEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -41,6 +41,24 @@ function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; loc
       </div>
       {detail.task ? <div className="task-assignment"><span>{detail.task.title}</span><button onClick={() => split.mutate()} disabled={split.isPending}><Split size={13} />{t("sessions.splitTask")}</button></div> : null}
 
+      {detail.attention.length ? (
+        <section className="replay-section session-attention-section">
+          <header>
+            <div><h3>{t("sessions.attention")}</h3><p>{t("sessions.attentionBody")}</p></div>
+            <span>{detail.attention.length}</span>
+          </header>
+          <div className="session-attention-list">
+            {detail.attention.map((attention) => (
+              <article key={attention.id} className={`state-${attention.state}`}>
+                <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+                <span>{t(`live.attention.state.${attention.state}`)}</span>
+                <small>{t("sessions.attentionEvidence", { evidence: attention.evidenceCount, interventions: attention.interventionCount })}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="replay-section process-section">
         <header><div><h3>{t("sessions.process")}</h3><p>{t("sessions.processBody")}</p></div><span>{detail.phases.reduce((sum, phase) => sum + phase.eventCount, 0)} events</span></header>
         <div className="phase-timeline">

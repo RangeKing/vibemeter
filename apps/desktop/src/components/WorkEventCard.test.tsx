@@ -26,6 +26,7 @@ const baseTask: TaskSummary = {
   verificationState: "not-applicable",
   worthReviewing: false,
   reviewReasonKeys: [],
+  attentionCount: 0,
   sourceExcluded: false,
 };
 

@@ -2867,7 +2867,22 @@ fn snapshot_from_at(
         overlay_attention_pulses(std::slice::from_mut(&mut completed.session), &attention);
     }
     sort_live_sessions(&mut items);
-    let urgent_session_id = items.first().map(|item| item.id.clone());
+    let attention_queue = attention
+        .into_iter()
+        .filter(|event| matches!(event.state.as_str(), "open" | "acknowledged"))
+        .collect::<Vec<_>>();
+    let urgent_session_id = attention_queue
+        .first()
+        .and_then(|attention| {
+            items
+                .iter()
+                .find(|session| {
+                    session.agent == attention.agent
+                        && session.source_session_id == attention.source_session_id
+                })
+                .map(|session| session.id.clone())
+        })
+        .or_else(|| items.first().map(|item| item.id.clone()));
     let active_count = items
         .iter()
         .filter(|item| matches!(item.status.as_str(), "waiting" | "error" | "running"))
@@ -2877,6 +2892,7 @@ fn snapshot_from_at(
         sessions: items,
         completed_sessions,
         urgent_session_id,
+        attention_queue,
         active_count,
         hook_status: hook_status(socket_ready),
     }
@@ -3310,7 +3326,7 @@ fn notify_if_background(database: &Database, session: &LiveSession, status: &str
     if source_is_foreground(session) {
         return;
     }
-    if matches!(status, "waiting" | "error")
+    if matches!(status, "waiting" | "error" | "completed")
         && !database
             .claim_attention_notification(&session.agent, &session.source_session_id, status)
             .unwrap_or(false)
@@ -3800,6 +3816,7 @@ mod tests {
             source_coverage: "exact-lifecycle".into(),
             rule_version: "stuck-detector-1.0.0".into(),
             evidence_count: 3,
+            intervention_count: 0,
         };
 
         overlay_attention_pulses(std::slice::from_mut(&mut session), &[attention]);

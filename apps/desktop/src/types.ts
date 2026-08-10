@@ -290,6 +290,7 @@ export interface LiveSnapshot {
   sessions: LiveSession[];
   completedSessions: NotchCompletedSession[];
   urgentSessionId?: string;
+  attentionQueue: AttentionEvent[];
   activeCount: number;
   hookStatus: HookStatus;
 }
@@ -352,6 +353,7 @@ export interface AttentionEvent {
   sourceCoverage: string;
   ruleVersion: string;
   evidenceCount: number;
+  interventionCount: number;
 }
 
 export interface NotchUiState {
@@ -419,6 +421,7 @@ export interface TaskSummary {
   worthReviewing: boolean;
   reviewReasonKeys: string[];
   primarySessionId?: string;
+  attentionCount: number;
   sourceExcluded: boolean;
 }
 
@@ -477,6 +480,7 @@ export interface SessionDetail extends SessionSummary {
   fileChanges: FileChange[];
   gitEvidence: GitEvidence;
   capabilities: string[];
+  attention: AttentionEvent[];
 }
 
 export interface ComparisonItem {

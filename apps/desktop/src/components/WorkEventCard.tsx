@@ -37,6 +37,11 @@ export function WorkEventCard({ task, locale, selected = false, onSelect, onOpen
       </header>
       <h3>{task.title || task.projectLabel}</h3>
       <p className="task-project">{task.projectLabel || "—"}</p>
+      {task.attentionCount ? (
+        <span className="task-attention-count">
+          <AlertTriangle size={12} />{t("task.attentionCount", { count: task.attentionCount })}
+        </span>
+      ) : null}
       <div className="task-evidence-row">
         <span><strong>{formatCompact(task.filesChanged, locale)}</strong>{t("metrics.files")}</span>
         <span><strong>+{formatCompact(task.linesAdded, locale)} / −{formatCompact(task.linesDeleted, locale)}</strong>{t("metrics.lines")}</span>

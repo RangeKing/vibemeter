@@ -53,6 +53,8 @@ Attention actions use fixed feedback values only: handled, not relevant, not stu
 
 High-confidence stuck detection is derived only from exact canonical evidence. Versioned rules require three matching failures within ten minutes, three matching operation starts without a valid progress fact, or three subagent-start failures. A valid finish, resume, agent stop, or explicit progress fact resolves the episode. Reading/editing repetition, isolated failures, silence, token-only activity, and successful verification are excluded. A user-confirmed “not stuck” response becomes a durable review sample for the quality gate.
 
+The attention queue has one fixed priority: waiting, blocking error, high-confidence stuck, then completion review. Notch collapses to the first item and expands to the full queue. Live shows the current queue plus resolved, ignored, and expired history. Data links episodes and intervention counts back to both tasks and session replay. Completion review is resolved only by acknowledgement or a successful verified jump and never outranks an unresolved wait or error.
+
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries

@@ -30,6 +30,20 @@ import type {
 
 type AttentionFeedback = "handled" | "not-relevant" | "not-stuck" | "snoozed";
 
+const attentionPriority: Record<AttentionEvent["kind"], number> = {
+  waiting: 0,
+  error: 1,
+  stuck: 2,
+  "completion-review": 3,
+};
+
+export function sortAttentionEvents(items: AttentionEvent[]): AttentionEvent[] {
+  return [...items].sort((left, right) =>
+    attentionPriority[left.kind] - attentionPriority[right.kind]
+    || left.openedAt.localeCompare(right.openedAt)
+    || left.id.localeCompare(right.id));
+}
+
 export function AttentionActions({
   kind,
   onFeedback,
@@ -49,6 +63,64 @@ export function AttentionActions({
         </button>
       ))}
     </div>
+  );
+}
+
+export function AttentionQueue({
+  items,
+  onFeedback,
+  onJump,
+}: {
+  items: AttentionEvent[];
+  onFeedback: (id: string, feedback: AttentionFeedback) => void;
+  onJump: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  const visible = sortAttentionEvents(items);
+  if (!visible.length) {
+    return <div className="attention-empty">{t("live.attention.empty")}</div>;
+  }
+  return (
+    <div className="attention-queue">
+      {visible.map((attention) => (
+        <article key={attention.id} className={`kind-${attention.kind}`}>
+          <header>
+            <div>
+              <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+              <small>{attention.projectLabel || agentName(attention.agent)}</small>
+            </div>
+            <span>{t(`live.attention.state.${attention.state}`)}</span>
+          </header>
+          <p>{t(`live.attention.reason.${attention.reasonKey}`, { defaultValue: attention.reasonKey })}</p>
+          <small>{t("live.attention.evidence", { count: attention.evidenceCount })}</small>
+          <footer>
+            <AttentionActions
+              kind={attention.kind}
+              onFeedback={(feedback) => onFeedback(attention.id, feedback)}
+            />
+            <button className="button secondary" onClick={() => onJump(attention.id)}>
+              {t("live.jump")}<ArrowUpRight size={13} />
+            </button>
+          </footer>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function AttentionHistory({ items }: { items: AttentionEvent[] }) {
+  const { t } = useTranslation();
+  if (!items.length) return <div className="attention-empty">{t("live.attention.historyEmpty")}</div>;
+  return (
+    <ul className="attention-history-list">
+      {items.map((attention) => (
+        <li key={attention.id}>
+          <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+          <span>{attention.projectLabel || agentName(attention.agent)}</span>
+          <small>{t(`live.attention.state.${attention.state}`)}</small>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -183,7 +255,6 @@ export function LivePage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const capabilityNames = sourceCapabilityNameGroups(locale === "zh-CN" ? "、" : ", ");
   const setPage = useUiStore((state) => state.setPage);
-  const openSessions = useUiStore((state) => state.openSessions);
   const snapshot = useLiveSnapshot();
   const activity = useQuery({
     queryKey: ["live-activity"],
@@ -194,6 +265,19 @@ export function LivePage({ locale }: { locale: Locale }) {
   if (snapshot.isError || !snapshot.data) return <ErrorState retry={() => void snapshot.refetch()} />;
   const data = snapshot.data;
   const activityData = activity.data;
+  const attention = activityData?.attention ?? [];
+  const currentAttention = attention.filter((item) =>
+    item.state === "open" || item.state === "acknowledged");
+  const attentionHistory = attention.filter((item) =>
+    item.state === "resolved" || item.state === "ignored" || item.state === "expired");
+  const updateAttention = async (id: string, feedback: AttentionFeedback) => {
+    await api.setAttentionFeedback(id, feedback);
+    await Promise.all([activity.refetch(), snapshot.refetch()]);
+  };
+  const jumpToAttention = async (id: string) => {
+    await api.jumpToAttention(id);
+    await Promise.all([activity.refetch(), snapshot.refetch()]);
+  };
 
   return (
     <div className="page live-page">
@@ -238,6 +322,22 @@ export function LivePage({ locale }: { locale: Locale }) {
         )}
       </section>
 
+      <section className="live-workspace attention-workspace">
+        <header className="section-heading">
+          <div><h2>{t("live.attention.queueTitle")}</h2><p>{t("live.attention.queueBody")}</p></div>
+          <span className="panel-kicker">{t("live.priorityOrder")}</span>
+        </header>
+        {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
+          <ErrorState retry={() => void activity.refetch()} />
+        ) : (
+          <AttentionQueue
+            items={currentAttention}
+            onFeedback={(id, feedback) => void updateAttention(id, feedback)}
+            onJump={(id) => void jumpToAttention(id)}
+          />
+        )}
+      </section>
+
       <div className="live-split">
         <section className="live-panel">
           <header>
@@ -251,12 +351,12 @@ export function LivePage({ locale }: { locale: Locale }) {
         </section>
         <section className="live-panel">
           <header>
-            <div><CircleAlert size={16} /><div><h2>{t("live.history")}</h2><p>{t("live.historyBody")}</p></div></div>
+            <div><CircleAlert size={16} /><div><h2>{t("live.attention.historyTitle")}</h2><p>{t("live.attention.historyBody")}</p></div></div>
           </header>
           {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
             <ErrorState retry={() => void activity.refetch()} />
           ) : (
-            <HistoryList items={activityData?.history ?? []} locale={locale} onOpenSession={openSessions} />
+            <AttentionHistory items={attentionHistory} />
           )}
         </section>
       </div>

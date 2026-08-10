@@ -4,8 +4,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
-import type { LiveHistoryItem, LiveSession, LiveTimelinePoint } from "../types";
-import { AttentionActions, HistoryList, LiveSessionCard, TimelineList } from "./LivePage";
+import type { AttentionEvent, LiveHistoryItem, LiveSession, LiveTimelinePoint } from "../types";
+import {
+  AttentionActions,
+  AttentionQueue,
+  HistoryList,
+  LiveSessionCard,
+  sortAttentionEvents,
+  TimelineList,
+} from "./LivePage";
 
 const historyItem: LiveHistoryItem = {
   id: "621",
@@ -179,5 +186,52 @@ describe("Attention actions", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "不是卡住" }));
     expect(onFeedback).toHaveBeenCalledWith("not-stuck");
+  });
+
+  function attention(kind: AttentionEvent["kind"], id: string, openedAt: string): AttentionEvent {
+    return {
+      id,
+      kind,
+      state: "open",
+      reasonKey: kind,
+      agent: "codex",
+      sourceSessionId: `${id}-source`,
+      projectLabel: id,
+      openedAt,
+      latestEvidenceAt: openedAt,
+      expiresAt: "2026-08-11T08:00:00Z",
+      evidenceLevel: kind === "stuck" ? "derived" : "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 3,
+      interventionCount: 0,
+    };
+  }
+
+  it("sorts the multi-session queue by fixed priority with stable ties", () => {
+    const openedAt = "2026-08-10T08:00:00Z";
+    const sorted = sortAttentionEvents([
+      attention("completion-review", "completion", openedAt),
+      attention("stuck", "stuck-b", openedAt),
+      attention("error", "error", openedAt),
+      attention("waiting", "waiting", openedAt),
+      attention("stuck", "stuck-a", openedAt),
+    ]);
+    expect(sorted.map((event) => event.id)).toEqual([
+      "waiting",
+      "error",
+      "stuck-a",
+      "stuck-b",
+      "completion",
+    ]);
+  });
+
+  it("renders an honest empty queue", () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionQueue items={[]} onFeedback={vi.fn()} onJump={vi.fn()} />
+      </I18nextProvider>,
+    );
+    expect(screen.getByText("暂无需要关注的事件")).toBeTruthy();
   });
 });

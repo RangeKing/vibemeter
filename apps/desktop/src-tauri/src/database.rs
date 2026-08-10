@@ -1955,6 +1955,13 @@ fn insert_attention_intervention(
 }
 
 fn expire_attention_events(transaction: &Transaction<'_>, now: &str) -> AppResult<()> {
+    transaction.execute(
+        "UPDATE attention_events
+         SET state='open', snoozed_until=NULL, updated_at=?1
+         WHERE state='snoozed' AND snoozed_until IS NOT NULL
+           AND snoozed_until<=?1 AND expires_at>?1",
+        params![now],
+    )?;
     let expired = {
         let mut statement = transaction.prepare(
             "SELECT id FROM attention_events
@@ -2038,6 +2045,7 @@ fn sync_attention_event(
     let (kind, reason_key) = match canonical.lifecycle_status.as_str() {
         "waiting" => ("waiting", "permission-required"),
         "error" => ("error", "blocking-error"),
+        "completed" => ("completion-review", "completion-review"),
         _ => return Ok(()),
     };
     let existing = transaction
@@ -4239,6 +4247,7 @@ impl Database {
         let changed = transaction.execute(
             "UPDATE attention_events
              SET state=CASE
+                    WHEN ?2='handled' AND ?5='completion-review' THEN 'resolved'
                     WHEN ?2='handled' THEN 'acknowledged'
                     WHEN ?2='snoozed' THEN 'snoozed'
                     ELSE 'ignored' END,
@@ -4247,14 +4256,22 @@ impl Database {
                     ELSE acknowledged_at END,
                  snoozed_until=CASE WHEN ?2='snoozed' THEN ?4 ELSE NULL END,
                  resolved_at=CASE
-                    WHEN ?2 IN('not-relevant','not-stuck') THEN ?3
+                    WHEN ?2 IN('not-relevant','not-stuck')
+                      OR (?2='handled' AND ?5='completion-review') THEN ?3
                     ELSE resolved_at END,
                  resolution_reason=CASE
                     WHEN ?2 IN('not-relevant','not-stuck') THEN 'user-feedback'
+                    WHEN ?2='handled' AND ?5='completion-review' THEN 'acknowledged'
                     ELSE resolution_reason END,
                  feedback=?2, feedback_at=?3, updated_at=?3
              WHERE id=?1 AND state IN('open','acknowledged','snoozed')",
-            params![attention_event_id, feedback, now, snoozed_until],
+            params![
+                attention_event_id,
+                feedback,
+                now,
+                snoozed_until,
+                attention_kind
+            ],
         )?;
         if changed == 0 {
             return Err(AppError::InvalidRequest(
@@ -4303,23 +4320,33 @@ impl Database {
         let now = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
-        let exists = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM attention_events WHERE id=?1)",
-            params![attention_event_id],
-            |row| row.get::<_, i64>(0),
-        )? != 0;
-        if !exists {
+        let attention_kind = transaction
+            .query_row(
+                "SELECT kind FROM attention_events WHERE id=?1",
+                params![attention_event_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(attention_kind) = attention_kind else {
             return Err(AppError::InvalidRequest(
                 "attention event is unavailable".into(),
             ));
-        }
+        };
         if succeeded {
             transaction.execute(
                 "UPDATE attention_events
-                 SET state=CASE WHEN state='open' THEN 'acknowledged' ELSE state END,
-                     acknowledged_at=COALESCE(acknowledged_at, ?2), updated_at=?2
+                 SET state=CASE
+                        WHEN ?3='completion-review' THEN 'resolved'
+                        WHEN state='open' THEN 'acknowledged'
+                        ELSE state END,
+                     acknowledged_at=COALESCE(acknowledged_at, ?2),
+                     resolved_at=CASE WHEN ?3='completion-review' THEN ?2 ELSE resolved_at END,
+                     resolution_reason=CASE
+                        WHEN ?3='completion-review' THEN 'jump-succeeded'
+                        ELSE resolution_reason END,
+                     updated_at=?2
                  WHERE id=?1 AND state IN('open','acknowledged','snoozed')",
-                params![attention_event_id, now],
+                params![attention_event_id, now, attention_kind],
             )?;
         }
         insert_attention_intervention(
@@ -4343,6 +4370,7 @@ impl Database {
         let kind = match status {
             "waiting" => "waiting",
             "error" => "error",
+            "completed" => "completion-review",
             _ => return Ok(false),
         };
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
@@ -4388,15 +4416,17 @@ impl Database {
                         ae.latest_evidence_at, ae.expires_at, ae.resolved_at,
                         ae.evidence_level, ae.source_coverage, ae.rule_version,
                         (SELECT COUNT(*) FROM attention_event_evidence evidence
-                         WHERE evidence.attention_event_id=ae.id)
+                         WHERE evidence.attention_event_id=ae.id),
+                        (SELECT COUNT(*) FROM attention_interventions intervention
+                         WHERE intervention.attention_event_id=ae.id)
                  FROM attention_events ae
                  ORDER BY
-                    CASE ae.state
-                        WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1
-                        WHEN 'snoozed' THEN 2 ELSE 3 END,
                     CASE ae.kind
                         WHEN 'waiting' THEN 0 WHEN 'error' THEN 1
                         WHEN 'stuck' THEN 2 ELSE 3 END,
+                    CASE ae.state
+                        WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1
+                        WHEN 'snoozed' THEN 2 ELSE 3 END,
                     ae.opened_at ASC, ae.id ASC",
             )?;
             statement
@@ -4417,6 +4447,7 @@ impl Database {
                         source_coverage: row.get(12)?,
                         rule_version: row.get(13)?,
                         evidence_count: read_u64(row, 14)?,
+                        intervention_count: read_u64(row, 15)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?
@@ -5227,6 +5258,48 @@ impl Database {
         let git_evidence = query_git_evidence(&connection, id)?;
         let task = query_task_for_session(&connection, id)?;
         let capabilities = capabilities_for_agent(&summary.agent);
+        let source_session_id = connection.query_row(
+            "SELECT source_session_id FROM sessions WHERE id=?1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )?;
+        let attention = {
+            let mut statement = connection.prepare(
+                "SELECT ae.id, ae.kind, ae.state, ae.reason_key, ae.agent,
+                        ae.source_session_id, ae.project_label, ae.opened_at,
+                        ae.latest_evidence_at, ae.expires_at, ae.resolved_at,
+                        ae.evidence_level, ae.source_coverage, ae.rule_version,
+                        (SELECT COUNT(*) FROM attention_event_evidence evidence
+                         WHERE evidence.attention_event_id=ae.id),
+                        (SELECT COUNT(*) FROM attention_interventions intervention
+                         WHERE intervention.attention_event_id=ae.id)
+                 FROM attention_events ae
+                 WHERE ae.agent=?1 AND ae.source_session_id=?2
+                 ORDER BY ae.opened_at DESC, ae.id",
+            )?;
+            statement
+                .query_map(params![summary.agent, source_session_id], |row| {
+                    Ok(AttentionEvent {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        state: row.get(2)?,
+                        reason_key: row.get(3)?,
+                        agent: row.get(4)?,
+                        source_session_id: row.get(5)?,
+                        project_label: row.get(6)?,
+                        opened_at: row.get(7)?,
+                        latest_evidence_at: row.get(8)?,
+                        expires_at: row.get(9)?,
+                        resolved_at: row.get(10)?,
+                        evidence_level: row.get(11)?,
+                        source_coverage: row.get(12)?,
+                        rule_version: row.get(13)?,
+                        evidence_count: read_u64(row, 14)?,
+                        intervention_count: read_u64(row, 15)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         Ok(SessionDetail {
             summary,
             tools,
@@ -5237,6 +5310,7 @@ impl Database {
             file_changes,
             git_evidence,
             capabilities,
+            attention,
         })
     }
 
@@ -7106,6 +7180,12 @@ fn query_tasks(
             (SELECT COALESCE(SUM(s.retries),0) FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id WHERE ts.task_id=t.id),
             (SELECT COALESCE(MAX(fc.modification_count),0) FROM file_changes fc JOIN task_sessions ts ON ts.session_id=fc.session_id WHERE ts.task_id=t.id),
             (SELECT s.id FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id WHERE ts.task_id=t.id ORDER BY s.started_at DESC LIMIT 1),
+            (SELECT COUNT(*) FROM attention_events ae
+             WHERE EXISTS(
+                SELECT 1 FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id
+                WHERE ts.task_id=t.id AND s.agent=ae.agent
+                  AND s.source_session_id=ae.source_session_id
+             )),
             t.source_excluded
          FROM tasks t
          WHERE EXISTS(
@@ -7189,7 +7269,8 @@ fn query_tasks(
                 worth_reviewing: !reasons.is_empty(),
                 review_reason_keys: reasons,
                 primary_session_id: row.get(23)?,
-                source_excluded: row.get::<_, i64>(24)? != 0,
+                attention_count: read_u64(row, 24)?,
+                source_excluded: row.get::<_, i64>(25)? != 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -7337,7 +7418,12 @@ fn session_list_where_clause() -> &'static str {
                 AND files_touched = 0 AND lines_added = 0 AND lines_deleted = 0)
         )
         AND (?8=0 OR errors >= 3 OR retries >= 2
-            OR (active_seconds >= 1800 AND files_touched > 0 AND verification_events = 0))
+            OR (active_seconds >= 1800 AND files_touched > 0 AND verification_events = 0)
+            OR EXISTS(
+                SELECT 1 FROM attention_events ae
+                WHERE ae.agent=sessions.agent
+                  AND ae.source_session_id=sessions.source_session_id
+            ))
         AND (?9=0 OR files_touched > 0)
         AND (?10=0 OR EXISTS(SELECT 1 FROM git_commits gc WHERE gc.session_id=sessions.id))"
 }
@@ -9970,6 +10056,78 @@ mod concurrency_tests {
                 .iter()
                 .all(|attention| attention.source_session_id != "normal-edits")
         );
+    }
+
+    #[test]
+    fn completion_review_never_overrides_waiting_and_resolves_on_acknowledgement_or_jump() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("completion-review.sqlite"))
+            .expect("database should open");
+        let base = Utc::now();
+        let event = |id: &str, name: &str, status: &str, seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: "completion-session".into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(seconds),
+            source_event_fingerprint: None,
+            event_name: name.into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(status.into()),
+        };
+        database
+            .record_observed_live_event(&event("wait", "PermissionRequest", "waiting", 0))
+            .expect("waiting should persist");
+        database
+            .record_observed_live_event(&event("complete", "Stop", "completed", 1))
+            .expect("completion should persist");
+
+        let active = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .filter(|event| matches!(event.state.as_str(), "open" | "acknowledged"))
+            .collect::<Vec<_>>();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].kind, "waiting");
+        assert_eq!(active[1].kind, "completion-review");
+
+        database
+            .set_attention_feedback(&active[1].id, "handled")
+            .expect("completion acknowledgement should persist");
+        let completion = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .find(|event| event.kind == "completion-review")
+            .expect("completion history should remain");
+        assert_eq!(completion.state, "resolved");
+
+        database
+            .record_observed_live_event(&event("progress", "PostToolUse", "running", 2))
+            .expect("progress should close waiting");
+        database
+            .record_observed_live_event(&event("complete-2", "Stop", "completed", 3))
+            .expect("second completion should persist");
+        let second = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .find(|event| event.kind == "completion-review" && event.state == "open")
+            .expect("second completion review should open");
+        database
+            .record_attention_jump(&second.id, true)
+            .expect("successful jump should persist");
+        let second = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .find(|event| event.id == second.id)
+            .expect("second completion history should remain");
+        assert_eq!(second.state, "resolved");
     }
 
     #[test]

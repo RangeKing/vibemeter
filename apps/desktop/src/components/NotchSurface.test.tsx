@@ -91,6 +91,17 @@ describe("Notch session selection", () => {
     expect(pickRightWingSession([running, completed], now + 6_000)?.id).toBe("running");
   });
 
+  it("keeps blocking errors ahead of stuck and stuck ahead of completion review", () => {
+    const now = Date.now();
+    const error = session("error", "error");
+    const stuck = session("stuck", "running");
+    stuck.pulse.attentionSignal.value = "stuck";
+    const completed = session("completed", "completed", "codex", new Date(now - 500).toISOString());
+
+    expect(pickRightWingSession([completed, stuck, error], now)?.id).toBe("error");
+    expect(pickRightWingSession([completed, stuck], now)?.id).toBe("stuck");
+  });
+
   it("does not keep a paused session in the active Notch wing", () => {
     const paused = session("paused", "paused");
     expect(pickRightWingSession([paused], Date.now())).toBeUndefined();

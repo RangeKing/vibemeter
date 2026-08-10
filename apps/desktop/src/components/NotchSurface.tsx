@@ -30,7 +30,7 @@ import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { agentName } from "../lib/format";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
-import type { LiveSession, Locale, NotchUiState } from "../types";
+import type { AttentionEvent, LiveSession, Locale, NotchUiState } from "../types";
 
 const COMPLETION_CUE_MS = 5_000;
 const ACTIVE_STATUSES = new Set<LiveSession["status"]>(["waiting", "error", "running"]);
@@ -267,6 +267,8 @@ export function pickRightWingSession(sessions: LiveSession[], now: number) {
   if (waiting) return waiting;
   const error = sessions.find((session) => session.pulse.attentionSignal.value === "blocking-error");
   if (error) return error;
+  const stuck = sessions.find((session) => session.pulse.attentionSignal.value === "stuck");
+  if (stuck) return stuck;
   const completion = sessions.find(
     (session) =>
       session.pulse.attentionSignal.value === "completion-review" &&
@@ -275,6 +277,13 @@ export function pickRightWingSession(sessions: LiveSession[], now: number) {
   if (completion) return completion;
   return sessions.find((session) => session.pulse.lifecycle.value === "running")
     ?? sessions.find((session) => session.pulse.workPhase.value === "recent-activity");
+}
+
+function attentionVisualStatus(attention?: AttentionEvent) {
+  if (!attention) return "idle";
+  if (attention.kind === "waiting") return "waiting";
+  if (attention.kind === "error" || attention.kind === "stuck") return "error";
+  return "completed";
 }
 
 export function activeProviderCounts(sessions: LiveSession[]) {
@@ -339,6 +348,7 @@ export function expandedHeightForSessions(
     completedExpanded?: boolean;
     completedErrorCount?: number;
     activeErrorCount?: number;
+    attentionCount?: number;
     showClearUndo?: boolean;
   } = {},
 ) {
@@ -346,6 +356,8 @@ export function expandedHeightForSessions(
     (session) => 80 + (session.status === "waiting" || session.status === "error" ? 18 : 0),
   );
   const completedCount = options.completedCount ?? 0;
+  const attentionCount = options.attentionCount ?? 0;
+  if (attentionCount > 0) blockHeights.push(30 + attentionCount * 58);
   if (completedCount > 0) {
     const completedCardsHeight = options.completedExpanded
       ? 7 +
@@ -385,6 +397,8 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const sessionListRef = useRef<HTMLDivElement>(null);
   const pendingActions = useRef(new Set<string>());
   const sessions = snapshot.data?.sessions ?? [];
+  const attentionQueue = snapshot.data?.attentionQueue ?? [];
+  const topAttention = attentionQueue[0];
   const providerCounts = useMemo(() => activeProviderCounts(sessions), [sessions]);
   const activeSessions = providerCounts.active;
   const activeSessionSignature = activeSessions
@@ -404,14 +418,17 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     }
   }, [activeJumpError, activeSessionIds]);
   const rightSession = pickRightWingSession(sessions, now);
-  const hasActivity = activeSessions.length > 0;
+  const hasActivity = activeSessions.length > 0 || attentionQueue.length > 0;
   const singleWingSession = activeSessions.length === 1 ? activeSessions[0] : undefined;
+  const singleWingAttention = !singleWingSession && topAttention ? topAttention : undefined;
   const visibleSessions = activeSessions;
   const codexCount = providerCounts.codex;
   const claudeCount = providerCounts.claudeCode;
   const kimiCodeCount = providerCounts.kimiCode;
   const zcodeCount = providerCounts.zcode;
-  const desiredLeftWingWidth = leftWingWidthForSession(singleWingSession);
+  const desiredLeftWingWidth = leftWingWidthForSession(
+    singleWingSession ?? (singleWingAttention ? { projectLabel: singleWingAttention.projectLabel } : undefined),
+  );
   const desiredExpandedHeight = expandedHeightForSessions(
     visibleSessions,
     notchState.hardwareHeight,
@@ -426,6 +443,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         ? 1
         : 0,
       showClearUndo: Boolean(clearUndo),
+      attentionCount: attentionQueue.length,
     },
   );
   const collapsedInsets = collapsedMorphInsets(
@@ -584,6 +602,20 @@ export function NotchSurface({ locale }: { locale: Locale }) {
       setActiveJumpError(id);
     }
   };
+  const updateAttention = async (
+    id: string,
+    feedback: "handled" | "not-relevant" | "not-stuck" | "snoozed",
+  ) => {
+    await api.setAttentionFeedback(id, feedback);
+    await snapshot.refetch();
+  };
+  const jumpToAttention = async (id: string) => {
+    try {
+      await api.jumpToAttention(id);
+    } finally {
+      await snapshot.refetch();
+    }
+  };
   const removeCompleted = async (id: string) => {
     await api.deleteNotchCompletedSession(id);
     if (completedJumpError === id) setCompletedJumpError(undefined);
@@ -643,10 +675,10 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         tabIndex={showExpandedSurface ? -1 : 0}
       >
         <span className={`notch-wing notch-wing-left${singleWingSession ? "" : " is-multi"}`}>
-          {singleWingSession ? (
-            <span className={`notch-single-project provider-${singleWingSession.agent}`}>
-              <ProviderMark agent={singleWingSession.agent} />
-              <strong>{singleWingSession.projectLabel}</strong>
+          {singleWingSession || singleWingAttention ? (
+            <span className={`notch-single-project provider-${singleWingSession?.agent ?? singleWingAttention?.agent}`}>
+              <ProviderMark agent={(singleWingSession?.agent ?? singleWingAttention?.agent) as LiveSession["agent"]} />
+              <strong>{singleWingSession?.projectLabel ?? singleWingAttention?.projectLabel}</strong>
             </span>
           ) : (
             <span className="notch-provider-cluster">
@@ -658,8 +690,13 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           )}
         </span>
         <span className="notch-hardware" />
-        <span className={`notch-wing notch-wing-right status-${rightSession ? notchPulseStatus(rightSession) : "idle"}`}>
-          {rightSession ? (
+        <span className={`notch-wing notch-wing-right status-${topAttention ? attentionVisualStatus(topAttention) : rightSession ? notchPulseStatus(rightSession) : "idle"}`}>
+          {topAttention ? (
+            <>
+              {topAttention.kind === "completion-review" ? <Check size={11} /> : <CircleAlert size={11} />}
+              <strong>{t(`live.attention.kind.${topAttention.kind}`)}</strong>
+            </>
+          ) : rightSession ? (
             <>
               <AgentActivityGlyph session={rightSession} compact />
               <strong>{notchPhaseLabel(notchPulseValue(rightSession), t)}</strong>
@@ -704,6 +741,25 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           visibleSessions.length || completedSessions.length || clearUndo ? "" : "is-empty"
         }`}
       >
+        {attentionQueue.length ? (
+          <section className="notch-attention-queue">
+            <header><strong>{t("live.attention.queueTitle")}</strong><span>{attentionQueue.length}</span></header>
+            {attentionQueue.map((attention) => (
+              <article key={attention.id} className={`kind-${attention.kind}`}>
+                <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
+                <span>
+                  <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+                  <small>{attention.projectLabel || agentName(attention.agent)}</small>
+                </span>
+                <span className="notch-attention-actions">
+                  <button onClick={() => void updateAttention(attention.id, "handled")}>{t("live.attention.action.handled")}</button>
+                  {attention.kind === "stuck" ? <button onClick={() => void updateAttention(attention.id, "not-stuck")}>{t("live.attention.action.not-stuck")}</button> : null}
+                  <button onClick={() => void jumpToAttention(attention.id)} aria-label={t("live.jump")}><ArrowUpRight size={12} /></button>
+                </span>
+              </article>
+            ))}
+          </section>
+        ) : null}
         {visibleSessions.map((session, index) => {
           const reason =
             activeJumpError === session.id ? t("notch.jumpFailed") : liveReason(session, t);
