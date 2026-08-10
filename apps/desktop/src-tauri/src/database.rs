@@ -4910,9 +4910,6 @@ impl Database {
                     CASE ae.kind
                         WHEN 'waiting' THEN 0 WHEN 'error' THEN 1
                         WHEN 'stuck' THEN 2 ELSE 3 END,
-                    CASE ae.state
-                        WHEN 'open' THEN 0 WHEN 'acknowledged' THEN 1
-                        WHEN 'snoozed' THEN 2 ELSE 3 END,
                     ae.opened_at ASC, ae.id ASC",
             )?;
             statement
@@ -10402,6 +10399,44 @@ mod concurrency_tests {
             "recovered-within-five-minutes".into(),
             "derived-inferred".into()
         )));
+    }
+
+    #[test]
+    fn attention_queue_keeps_older_acknowledged_items_ahead_of_newer_open_items() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("attention-order.sqlite"))
+            .expect("database should open");
+        let connection = database.connect().expect("database should connect");
+        connection
+            .execute_batch(
+                "INSERT INTO attention_events(
+                    id, kind, state, reason_key, agent, source_session_id, project_label,
+                    opened_at, latest_evidence_at, expires_at, evidence_level,
+                    source_coverage, rule_version, updated_at
+                 ) VALUES
+                    ('older-acknowledged', 'waiting', 'acknowledged', 'permission-required',
+                     'codex', 'older-session', 'older', '2026-08-10T08:00:00Z',
+                     '2026-08-10T08:00:00Z', '9999-12-31T23:59:59Z', 'observed',
+                     'exact-lifecycle', 'test', '2026-08-10T08:00:00Z'),
+                    ('newer-open', 'waiting', 'open', 'permission-required',
+                     'codex', 'newer-session', 'newer', '2026-08-10T08:01:00Z',
+                     '2026-08-10T08:01:00Z', '9999-12-31T23:59:59Z', 'observed',
+                     'exact-lifecycle', 'test', '2026-08-10T08:01:00Z');",
+            )
+            .expect("attention fixtures should persist");
+        drop(connection);
+
+        let ordered = database
+            .attention_events_at(
+                DateTime::parse_from_rfc3339("2026-08-10T08:02:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc),
+            )
+            .expect("attention queue should load");
+        assert_eq!(
+            ordered.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            vec!["older-acknowledged", "newer-open"]
+        );
     }
 
     #[test]
