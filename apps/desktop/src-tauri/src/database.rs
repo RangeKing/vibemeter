@@ -459,7 +459,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 26;
+const DATABASE_SCHEMA_VERSION: i64 = 27;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
 
@@ -853,11 +853,9 @@ PRAGMA user_version = 23;
 "#;
 
 const MIGRATION_V24: &str = r#"
-ALTER TABLE canonical_events ADD COLUMN operation_key TEXT;
 CREATE INDEX canonical_events_operation_idx
     ON canonical_events(agent, source_session_id, event_type, operation_key, occurred_at)
     WHERE source='live-hook' AND deleted_at IS NULL AND operation_key IS NOT NULL;
-UPDATE canonical_events SET schema_version=24;
 PRAGMA user_version = 24;
 "#;
 
@@ -876,6 +874,13 @@ CREATE INDEX attention_events_session_idx
 CREATE INDEX attention_events_history_idx
     ON attention_events(state, updated_at DESC, id);
 PRAGMA user_version = 26;
+"#;
+
+const MIGRATION_V27: &str = r#"
+UPDATE canonical_events
+SET schema_version=20
+WHERE schema_version=24;
+PRAGMA user_version = 27;
 "#;
 
 #[derive(Clone)]
@@ -2625,6 +2630,7 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 19 {
         connection.execute_batch(MIGRATION_V19_EXPAND)?;
+        ensure_canonical_operation_key_column(connection)?;
         if version < 16 {
             backfill_history_evidence(connection, &["claude-code", "codex"])?;
         }
@@ -2651,6 +2657,7 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
         connection.execute_batch(MIGRATION_V23)?;
     }
     if version < 24 {
+        ensure_canonical_operation_key_column(connection)?;
         connection.execute_batch(MIGRATION_V24)?;
     }
     if version < 25 {
@@ -2658,6 +2665,22 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 26 {
         connection.execute_batch(MIGRATION_V26)?;
+    }
+    if version < 27 {
+        connection.execute_batch(MIGRATION_V27)?;
+    }
+    Ok(())
+}
+
+fn ensure_canonical_operation_key_column(connection: &Connection) -> AppResult<()> {
+    let present: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('canonical_events')
+         WHERE name='operation_key'",
+        [],
+        |row| row.get(0),
+    )?;
+    if present == 0 {
+        connection.execute_batch("ALTER TABLE canonical_events ADD COLUMN operation_key TEXT;")?;
     }
     Ok(())
 }
@@ -5237,8 +5260,11 @@ impl Database {
     }
 
     pub fn vcti_profile(&self, range: &str) -> AppResult<VctiProfile> {
+        self.vcti_profile_at(range, Utc::now())
+    }
+
+    fn vcti_profile_at(&self, range: &str, now: DateTime<Utc>) -> AppResult<VctiProfile> {
         let connection = self.connect()?;
-        let now = Utc::now();
         let window_days = crate::vcti::window_days_for_range(range);
         let start_timestamp = format!("{}T00:00:00Z", range_start(range));
         let behavior = query_behavior_summary(&connection, &start_timestamp)?;
@@ -8852,7 +8878,12 @@ mod concurrency_tests {
             "models": overview.models,
             "tools": overview.tools,
             "behavior": overview.behavior,
-            "vcti": database.vcti_profile("all").expect("VCTI should load"),
+            "vcti": database.vcti_profile_at(
+                "all",
+                DateTime::parse_from_rfc3339("2026-08-10T12:00:00Z")
+                    .expect("fixed VCTI timestamp")
+                    .with_timezone(&Utc),
+            ).expect("VCTI should load"),
             "recentSessions": overview.recent_sessions,
             "tasks": database.tasks("all").expect("tasks should load"),
             "sessions": database
