@@ -459,7 +459,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 25;
+const DATABASE_SCHEMA_VERSION: i64 = 26;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
 
@@ -870,10 +870,19 @@ CREATE UNIQUE INDEX attention_events_notification_claim_idx
 PRAGMA user_version = 25;
 "#;
 
+const MIGRATION_V26: &str = r#"
+CREATE INDEX attention_events_session_idx
+    ON attention_events(agent, source_session_id, updated_at DESC);
+CREATE INDEX attention_events_history_idx
+    ON attention_events(state, updated_at DESC, id);
+PRAGMA user_version = 26;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
     source_record_receipt_key: Arc<[u8; 32]>,
+    last_attention_maintenance: Arc<Mutex<Option<DateTime<Utc>>>>,
 }
 
 #[derive(Debug)]
@@ -2647,6 +2656,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     if version < 25 {
         connection.execute_batch(MIGRATION_V25)?;
     }
+    if version < 26 {
+        connection.execute_batch(MIGRATION_V26)?;
+    }
     Ok(())
 }
 
@@ -3275,6 +3287,7 @@ impl Database {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             source_record_receipt_key: Arc::new(source_record_receipt_key),
+            last_attention_maintenance: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -4501,6 +4514,156 @@ impl Database {
         Ok(restored as u64)
     }
 
+    fn maintain_attention_events_if_due(&self, now: DateTime<Utc>) -> AppResult<()> {
+        let mut last_maintenance = self.last_attention_maintenance.lock().map_err(|_| {
+            AppError::InvalidRequest("attention maintenance lock was poisoned".into())
+        })?;
+        if last_maintenance
+            .as_ref()
+            .is_some_and(|last| now.signed_duration_since(last.clone()) < Duration::minutes(1))
+        {
+            return Ok(());
+        }
+        let token = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        expire_attention_events(&transaction, &token)?;
+        transaction.commit()?;
+        *last_maintenance = Some(now);
+        Ok(())
+    }
+
+    pub(crate) fn attention_queue_at(&self, now: DateTime<Utc>) -> AppResult<Vec<AttentionEvent>> {
+        let now = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT ae.id, ae.kind,
+                    CASE WHEN ae.state='snoozed' AND ae.snoozed_until<=?1
+                         THEN 'open' ELSE ae.state END,
+                    ae.reason_key, ae.agent, ae.source_session_id, ae.project_label,
+                    ae.opened_at, ae.latest_evidence_at, ae.expires_at, ae.resolved_at,
+                    ae.evidence_level, ae.source_coverage, ae.rule_version,
+                    (SELECT COUNT(*) FROM attention_event_evidence evidence
+                     WHERE evidence.attention_event_id=ae.id),
+                    (SELECT COUNT(*) FROM attention_interventions intervention
+                     WHERE intervention.attention_event_id=ae.id)
+             FROM attention_events ae
+             WHERE ae.expires_at>?1
+               AND (
+                    ae.state IN('open','acknowledged')
+                    OR (ae.state='snoozed' AND ae.snoozed_until<=?1)
+               )
+             ORDER BY
+                CASE ae.kind
+                    WHEN 'waiting' THEN 0 WHEN 'error' THEN 1
+                    WHEN 'stuck' THEN 2 ELSE 3 END,
+                ae.opened_at ASC, ae.id ASC
+             LIMIT 50",
+        )?;
+        Ok(statement
+            .query_map(params![now], |row| {
+                Ok(AttentionEvent {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    state: row.get(2)?,
+                    reason_key: row.get(3)?,
+                    agent: row.get(4)?,
+                    source_session_id: row.get(5)?,
+                    project_label: row.get(6)?,
+                    opened_at: row.get(7)?,
+                    latest_evidence_at: row.get(8)?,
+                    expires_at: row.get(9)?,
+                    resolved_at: row.get(10)?,
+                    evidence_level: row.get(11)?,
+                    source_coverage: row.get(12)?,
+                    rule_version: row.get(13)?,
+                    evidence_count: read_u64(row, 14)?,
+                    intervention_count: read_u64(row, 15)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn attention_history(&self, offset: u64, limit: u64) -> AppResult<Vec<AttentionEvent>> {
+        let limit = limit.clamp(1, 100) as i64;
+        let offset = i64::try_from(offset).unwrap_or(i64::MAX);
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT ae.id, ae.kind, ae.state, ae.reason_key, ae.agent,
+                    ae.source_session_id, ae.project_label, ae.opened_at,
+                    ae.latest_evidence_at, ae.expires_at, ae.resolved_at,
+                    ae.evidence_level, ae.source_coverage, ae.rule_version,
+                    (SELECT COUNT(*) FROM attention_event_evidence evidence
+                     WHERE evidence.attention_event_id=ae.id),
+                    (SELECT COUNT(*) FROM attention_interventions intervention
+                     WHERE intervention.attention_event_id=ae.id)
+             FROM attention_events ae
+             WHERE ae.state IN('resolved','ignored','expired')
+             ORDER BY ae.updated_at DESC, ae.id ASC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        Ok(statement
+            .query_map(params![limit, offset], |row| {
+                Ok(AttentionEvent {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    state: row.get(2)?,
+                    reason_key: row.get(3)?,
+                    agent: row.get(4)?,
+                    source_session_id: row.get(5)?,
+                    project_label: row.get(6)?,
+                    opened_at: row.get(7)?,
+                    latest_evidence_at: row.get(8)?,
+                    expires_at: row.get(9)?,
+                    resolved_at: row.get(10)?,
+                    evidence_level: row.get(11)?,
+                    source_coverage: row.get(12)?,
+                    rule_version: row.get(13)?,
+                    evidence_count: read_u64(row, 14)?,
+                    intervention_count: read_u64(row, 15)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn attention_event(&self, id: &str) -> AppResult<Option<AttentionEvent>> {
+        let connection = self.connect()?;
+        Ok(connection
+            .query_row(
+                "SELECT ae.id, ae.kind, ae.state, ae.reason_key, ae.agent,
+                        ae.source_session_id, ae.project_label, ae.opened_at,
+                        ae.latest_evidence_at, ae.expires_at, ae.resolved_at,
+                        ae.evidence_level, ae.source_coverage, ae.rule_version,
+                        (SELECT COUNT(*) FROM attention_event_evidence evidence
+                         WHERE evidence.attention_event_id=ae.id),
+                        (SELECT COUNT(*) FROM attention_interventions intervention
+                         WHERE intervention.attention_event_id=ae.id)
+                 FROM attention_events ae WHERE ae.id=?1",
+                params![id],
+                |row| {
+                    Ok(AttentionEvent {
+                        id: row.get(0)?,
+                        kind: row.get(1)?,
+                        state: row.get(2)?,
+                        reason_key: row.get(3)?,
+                        agent: row.get(4)?,
+                        source_session_id: row.get(5)?,
+                        project_label: row.get(6)?,
+                        opened_at: row.get(7)?,
+                        latest_evidence_at: row.get(8)?,
+                        expires_at: row.get(9)?,
+                        resolved_at: row.get(10)?,
+                        evidence_level: row.get(11)?,
+                        source_coverage: row.get(12)?,
+                        rule_version: row.get(13)?,
+                        evidence_count: read_u64(row, 14)?,
+                        intervention_count: read_u64(row, 15)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     pub fn attention_events(&self) -> AppResult<Vec<AttentionEvent>> {
         self.attention_events_at(Utc::now())
     }
@@ -4613,9 +4776,7 @@ impl Database {
         feedback: &str,
     ) -> AppResult<AttentionEvent> {
         self.set_attention_feedback_at(attention_event_id, feedback, Utc::now())?;
-        self.attention_events()?
-            .into_iter()
-            .find(|event| event.id == attention_event_id)
+        self.attention_event(attention_event_id)?
             .ok_or_else(|| AppError::InvalidRequest("attention event is unavailable".into()))
     }
 
@@ -4795,8 +4956,8 @@ impl Database {
         };
         let now = Utc::now();
         let claimed_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        let stale_before = (now - Duration::seconds(30))
-            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let stale_before =
+            (now - Duration::seconds(30)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let claim_token = uuid::Uuid::new_v4().to_string();
         let connection = self.connect()?;
         let claimed = connection.execute(
@@ -4830,8 +4991,8 @@ impl Database {
     ) -> AppResult<Option<String>> {
         let claim_token = uuid::Uuid::new_v4().to_string();
         let claimed_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        let stale_before = (now - Duration::seconds(30))
-            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let stale_before =
+            (now - Duration::seconds(30)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let connection = self.connect()?;
         let claimed = connection.execute(
             "UPDATE attention_events
@@ -4843,12 +5004,7 @@ impl Database {
                     OR notification_claimed_at IS NULL
                     OR notification_claimed_at<?4
                )",
-            params![
-                attention_event_id,
-                claim_token,
-                claimed_at,
-                stale_before
-            ],
+            params![attention_event_id, claim_token, claimed_at, stale_before],
         )? > 0;
         Ok(claimed.then_some(claim_token))
     }
@@ -4940,9 +5096,10 @@ impl Database {
     }
 
     pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
-        let attention = self.attention_events()?;
-        let connection = self.connect()?;
         let now = Utc::now();
+        self.maintain_attention_events_if_due(now.clone())?;
+        let attention = self.attention_queue_at(now)?;
+        let connection = self.connect()?;
         let period_start = Local::now()
             .date_naive()
             .and_hms_opt(0, 0, 0)
@@ -10434,8 +10591,98 @@ mod concurrency_tests {
             )
             .expect("attention queue should load");
         assert_eq!(
-            ordered.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ordered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["older-acknowledged", "newer-open"]
+        );
+    }
+
+    #[test]
+    fn attention_reads_are_bounded_and_session_associations_use_the_general_index() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("attention-scale.sqlite"))
+            .expect("database should open");
+        let base = DateTime::parse_from_rfc3339("2026-08-10T08:00:00Z")
+            .expect("base timestamp")
+            .with_timezone(&Utc);
+        let mut connection = database.connect().expect("database should connect");
+        let transaction = connection.transaction().expect("transaction should begin");
+        for index in 0..205 {
+            let timestamp = (base + Duration::seconds(index)).to_rfc3339();
+            transaction
+                .execute(
+                    "INSERT INTO attention_events(
+                        id, kind, state, reason_key, agent, source_session_id, project_label,
+                        opened_at, latest_evidence_at, expires_at, resolved_at,
+                        evidence_level, source_coverage, rule_version, updated_at
+                     ) VALUES(?1, 'error', 'resolved', 'blocking-error', 'codex', ?2, '',
+                              ?3, ?3, ?4, ?3, 'observed', 'exact-lifecycle', 'test', ?3)",
+                    params![
+                        format!("resolved-{index:03}"),
+                        format!("session-{index:03}"),
+                        timestamp,
+                        ATTENTION_UNBOUNDED_EXPIRES_AT
+                    ],
+                )
+                .expect("resolved attention should persist");
+        }
+        for index in 0..2 {
+            let timestamp = (base + Duration::minutes(10 + index)).to_rfc3339();
+            transaction
+                .execute(
+                    "INSERT INTO attention_events(
+                        id, kind, state, reason_key, agent, source_session_id, project_label,
+                        opened_at, latest_evidence_at, expires_at,
+                        evidence_level, source_coverage, rule_version, updated_at
+                     ) VALUES(?1, 'waiting', 'open', 'permission-required', 'codex', ?2, '',
+                              ?3, ?3, ?4, 'observed', 'exact-lifecycle', 'test', ?3)",
+                    params![
+                        format!("active-{index}"),
+                        format!("active-session-{index}"),
+                        timestamp,
+                        ATTENTION_UNBOUNDED_EXPIRES_AT
+                    ],
+                )
+                .expect("active attention should persist");
+        }
+        transaction.commit().expect("fixtures should commit");
+        let query_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM attention_events
+                 WHERE agent='codex' AND source_session_id='session-100'",
+            )
+            .expect("query plan should prepare")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("query plan should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query plan should collect");
+        drop(connection);
+
+        assert!(
+            query_plan
+                .iter()
+                .any(|detail| detail.contains("attention_events_session_idx"))
+        );
+        assert_eq!(
+            database.attention_history(0, 50).expect("first page").len(),
+            50
+        );
+        assert_eq!(
+            database
+                .attention_history(200, 50)
+                .expect("last page")
+                .len(),
+            5
+        );
+        assert_eq!(
+            database
+                .attention_queue_at(base + Duration::minutes(20))
+                .expect("active queue")
+                .len(),
+            2
         );
     }
 

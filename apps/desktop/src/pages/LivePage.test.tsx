@@ -13,6 +13,7 @@ import type {
 } from "../types";
 import {
   AttentionActions,
+  AttentionHistory,
   AttentionQualityGate,
   AttentionQueue,
   HistoryList,
@@ -257,6 +258,22 @@ describe("Attention actions", () => {
 
     expect(screen.getByRole("alert").textContent).toBe("无法返回源会话，关注事件已保留，可稍后重试。");
     expect(screen.getByText("需要你")).toBeTruthy();
+  });
+
+  it("loads attention history in bounded pages", () => {
+    const onLoadMore = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionHistory
+          items={[attention("error", "resolved-error", "2026-08-10T08:00:00Z")]}
+          hasMore
+          onLoadMore={onLoadMore}
+        />
+      </I18nextProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多注意力历史" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
   });
 
   it("keeps the hard quality gate incomplete when local evidence is missing", () => {

@@ -2861,16 +2861,13 @@ fn snapshot_from_at(
     {
         session.pulse = work_pulse_at(session, now);
     }
-    let attention = database.attention_events().unwrap_or_default();
+    let attention = database.attention_queue_at(now).unwrap_or_default();
     overlay_attention_pulses(&mut items, &attention);
     for completed in &mut completed_sessions {
         overlay_attention_pulses(std::slice::from_mut(&mut completed.session), &attention);
     }
     sort_live_sessions(&mut items);
-    let attention_queue = attention
-        .into_iter()
-        .filter(|event| matches!(event.state.as_str(), "open" | "acknowledged"))
-        .collect::<Vec<_>>();
+    let attention_queue = attention;
     let urgent_session_id = attention_queue
         .first()
         .and_then(|attention| {

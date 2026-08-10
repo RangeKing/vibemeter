@@ -146,6 +146,18 @@ async fn get_live_activity(state: State<'_, AppState>) -> AppResult<LiveActivity
 }
 
 #[tauri::command]
+async fn get_attention_history(
+    state: State<'_, AppState>,
+    offset: u64,
+    limit: u64,
+) -> AppResult<Vec<AttentionEvent>> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.attention_history(offset, limit))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
 async fn get_attention_quality_report(
     state: State<'_, AppState>,
 ) -> AppResult<AttentionQualityReport> {
@@ -191,9 +203,7 @@ fn set_attention_feedback(
 fn jump_to_attention(state: State<'_, AppState>, id: String) -> AppResult<()> {
     let attention = state
         .database
-        .attention_events()?
-        .into_iter()
-        .find(|event| event.id == id)
+        .attention_event(&id)?
         .ok_or_else(|| AppError::InvalidRequest("attention event is unavailable".into()))?;
     let Some(session) = state
         .live
@@ -974,6 +984,7 @@ pub fn run() {
             get_phrase_cloud,
             get_live_snapshot,
             get_live_activity,
+            get_attention_history,
             get_attention_quality_report,
             repair_live_hooks,
             uninstall_live_hooks,

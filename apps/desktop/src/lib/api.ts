@@ -34,6 +34,8 @@ export const api = {
   phraseCloud: (range: string) => invoke<PhraseCloudResponse>("get_phrase_cloud", { range }),
   liveSnapshot: () => invoke<LiveSnapshot>("get_live_snapshot"),
   liveActivity: () => invoke<LiveActivityResponse>("get_live_activity"),
+  attentionHistory: (offset: number, limit: number) =>
+    invoke<AttentionEvent[]>("get_attention_history", { offset, limit }),
   attentionQuality: () => invoke<AttentionQualityReport>("get_attention_quality_report"),
   repairLiveHooks: () => invoke<HookStatus>("repair_live_hooks"),
   uninstallLiveHooks: () => invoke<HookStatus>("uninstall_live_hooks"),

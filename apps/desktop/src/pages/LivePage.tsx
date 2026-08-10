@@ -156,19 +156,34 @@ export function AttentionQualityGate({ report }: { report: AttentionQualityRepor
   );
 }
 
-function AttentionHistory({ items }: { items: AttentionEvent[] }) {
+export function AttentionHistory({
+  items,
+  hasMore = false,
+  onLoadMore,
+}: {
+  items: AttentionEvent[];
+  hasMore?: boolean;
+  onLoadMore?: () => void;
+}) {
   const { t } = useTranslation();
   if (!items.length) return <div className="attention-empty">{t("live.attention.historyEmpty")}</div>;
   return (
-    <ul className="attention-history-list">
-      {items.map((attention) => (
-        <li key={attention.id}>
-          <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-          <span>{attention.projectLabel || agentName(attention.agent)}</span>
-          <small>{t(`live.attention.state.${attention.state}`)}</small>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="attention-history-list">
+        {items.map((attention) => (
+          <li key={attention.id}>
+            <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+            <span>{attention.projectLabel || agentName(attention.agent)}</span>
+            <small>{t(`live.attention.state.${attention.state}`)}</small>
+          </li>
+        ))}
+      </ul>
+      {hasMore && onLoadMore ? (
+        <button className="button subtle" onClick={onLoadMore}>
+          {t("live.attention.historyMore")}
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -315,6 +330,12 @@ export function LivePage({ locale }: { locale: Locale }) {
     queryFn: api.attentionQuality,
     refetchInterval: 30_000,
   });
+  const [historyLimit, setHistoryLimit] = useState(50);
+  const attentionHistory = useQuery({
+    queryKey: ["attention-history", historyLimit],
+    queryFn: () => api.attentionHistory(0, historyLimit),
+    refetchInterval: 30_000,
+  });
   if (snapshot.isLoading) return <LoadingState />;
   if (snapshot.isError || !snapshot.data) return <ErrorState retry={() => void snapshot.refetch()} />;
   const data = snapshot.data;
@@ -322,8 +343,6 @@ export function LivePage({ locale }: { locale: Locale }) {
   const attention = activityData?.attention ?? [];
   const currentAttention = attention.filter((item) =>
     item.state === "open" || item.state === "acknowledged");
-  const attentionHistory = attention.filter((item) =>
-    item.state === "resolved" || item.state === "ignored" || item.state === "expired");
   const updateAttention = async (id: string, feedback: AttentionFeedback) => {
     await api.setAttentionFeedback(id, feedback);
     setAttentionJumpErrors((current) => {
@@ -331,7 +350,7 @@ export function LivePage({ locale }: { locale: Locale }) {
       next.delete(id);
       return next;
     });
-    await Promise.all([activity.refetch(), snapshot.refetch()]);
+    await Promise.all([activity.refetch(), snapshot.refetch(), attentionHistory.refetch()]);
   };
   const jumpToAttention = async (id: string) => {
     try {
@@ -344,7 +363,7 @@ export function LivePage({ locale }: { locale: Locale }) {
     } catch {
       setAttentionJumpErrors((current) => new Set(current).add(id));
     } finally {
-      await Promise.all([activity.refetch(), snapshot.refetch()]);
+      await Promise.all([activity.refetch(), snapshot.refetch(), attentionHistory.refetch()]);
     }
   };
 
@@ -424,10 +443,14 @@ export function LivePage({ locale }: { locale: Locale }) {
           <header>
             <div><CircleAlert size={16} /><div><h2>{t("live.attention.historyTitle")}</h2><p>{t("live.attention.historyBody")}</p></div></div>
           </header>
-          {activity.isLoading && !activityData ? <LoadingState /> : activity.isError ? (
-            <ErrorState retry={() => void activity.refetch()} />
+          {attentionHistory.isLoading && !attentionHistory.data ? <LoadingState /> : attentionHistory.isError ? (
+            <ErrorState retry={() => void attentionHistory.refetch()} />
           ) : (
-            <AttentionHistory items={attentionHistory} />
+            <AttentionHistory
+              items={attentionHistory.data ?? []}
+              hasMore={(attentionHistory.data?.length ?? 0) >= historyLimit}
+              onLoadMore={() => setHistoryLimit((current) => current + 50)}
+            />
           )}
         </section>
       </div>
