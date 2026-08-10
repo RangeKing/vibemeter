@@ -459,7 +459,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 24;
+const DATABASE_SCHEMA_VERSION: i64 = 25;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
 
@@ -859,6 +859,15 @@ CREATE INDEX canonical_events_operation_idx
     WHERE source='live-hook' AND deleted_at IS NULL AND operation_key IS NOT NULL;
 UPDATE canonical_events SET schema_version=24;
 PRAGMA user_version = 24;
+"#;
+
+const MIGRATION_V25: &str = r#"
+ALTER TABLE attention_events ADD COLUMN notification_claim_token TEXT;
+ALTER TABLE attention_events ADD COLUMN notification_claimed_at TEXT;
+CREATE UNIQUE INDEX attention_events_notification_claim_idx
+    ON attention_events(notification_claim_token)
+    WHERE notification_claim_token IS NOT NULL;
+PRAGMA user_version = 25;
 "#;
 
 #[derive(Clone)]
@@ -2635,6 +2644,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     if version < 24 {
         connection.execute_batch(MIGRATION_V24)?;
     }
+    if version < 25 {
+        connection.execute_batch(MIGRATION_V25)?;
+    }
     Ok(())
 }
 
@@ -2854,7 +2866,8 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
          WHERE name IN(
             'id','kind','state','reason_key','agent','source_session_id',
             'opened_at','latest_evidence_at','expires_at','resolved_at',
-            'evidence_level','source_coverage','rule_version','updated_at'
+            'evidence_level','source_coverage','rule_version','updated_at',
+            'notification_claim_token','notification_claimed_at'
          )",
         [],
         |row| row.get(0),
@@ -2893,7 +2906,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || history_record_columns != 2
         || diagnostic_envelope_columns != 5
         || attention_feedback_columns != 4
-        || attention_event_columns != 14
+        || attention_event_columns != 16
         || attention_evidence_columns != 4
         || attention_intervention_columns != 6
         || attention_review_columns != 6
@@ -4773,23 +4786,40 @@ impl Database {
         agent: &str,
         source_session_id: &str,
         status: &str,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<String>> {
         let kind = match status {
             "waiting" => "waiting",
             "error" => "error",
             "completed" => "completion-review",
-            _ => return Ok(false),
+            _ => return Ok(None),
         };
-        let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let now = Utc::now();
+        let claimed_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let stale_before = (now - Duration::seconds(30))
+            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let claim_token = uuid::Uuid::new_v4().to_string();
         let connection = self.connect()?;
-        Ok(connection.execute(
+        let claimed = connection.execute(
             "UPDATE attention_events
-             SET notification_sent_at=?1, updated_at=?1
-             WHERE agent=?2 AND source_session_id=?3 AND kind=?4
+             SET notification_claim_token=?1, notification_claimed_at=?2, updated_at=?2
+             WHERE agent=?3 AND source_session_id=?4 AND kind=?5
                AND state IN('open','acknowledged','snoozed')
-               AND notification_sent_at IS NULL",
-            params![now, agent, source_session_id, kind],
-        )? > 0)
+               AND notification_sent_at IS NULL
+               AND (
+                    notification_claim_token IS NULL
+                    OR notification_claimed_at IS NULL
+                    OR notification_claimed_at<?6
+               )",
+            params![
+                claim_token,
+                claimed_at,
+                agent,
+                source_session_id,
+                kind,
+                stale_before
+            ],
+        )? > 0;
+        Ok(claimed.then_some(claim_token))
     }
 
     #[cfg(test)]
@@ -4797,17 +4827,66 @@ impl Database {
         &self,
         attention_event_id: &str,
         now: DateTime<Utc>,
+    ) -> AppResult<Option<String>> {
+        let claim_token = uuid::Uuid::new_v4().to_string();
+        let claimed_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let stale_before = (now - Duration::seconds(30))
+            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let connection = self.connect()?;
+        let claimed = connection.execute(
+            "UPDATE attention_events
+             SET notification_claim_token=?2, notification_claimed_at=?3, updated_at=?3
+             WHERE id=?1 AND state IN('open','acknowledged','snoozed')
+               AND notification_sent_at IS NULL
+               AND (
+                    notification_claim_token IS NULL
+                    OR notification_claimed_at IS NULL
+                    OR notification_claimed_at<?4
+               )",
+            params![
+                attention_event_id,
+                claim_token,
+                claimed_at,
+                stale_before
+            ],
+        )? > 0;
+        Ok(claimed.then_some(claim_token))
+    }
+
+    pub fn confirm_attention_notification(&self, claim_token: &str) -> AppResult<bool> {
+        self.confirm_attention_notification_at(claim_token, Utc::now())
+    }
+
+    fn confirm_attention_notification_at(
+        &self,
+        claim_token: &str,
+        now: DateTime<Utc>,
     ) -> AppResult<bool> {
+        let delivered_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let connection = self.connect()?;
         Ok(connection.execute(
             "UPDATE attention_events
-             SET notification_sent_at=?2, updated_at=?2
-             WHERE id=?1 AND state IN('open','acknowledged','snoozed')
+             SET notification_sent_at=?2,
+                 notification_claim_token=NULL,
+                 notification_claimed_at=NULL,
+                 updated_at=?2
+             WHERE notification_claim_token=?1
                AND notification_sent_at IS NULL",
-            params![
-                attention_event_id,
-                now.to_rfc3339_opts(SecondsFormat::AutoSi, true)
-            ],
+            params![claim_token, delivered_at],
+        )? > 0)
+    }
+
+    pub fn release_attention_notification(&self, claim_token: &str) -> AppResult<bool> {
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let connection = self.connect()?;
+        Ok(connection.execute(
+            "UPDATE attention_events
+             SET notification_claim_token=NULL,
+                 notification_claimed_at=NULL,
+                 updated_at=?2
+             WHERE notification_claim_token=?1
+               AND notification_sent_at IS NULL",
+            params![claim_token, now],
         )? > 0)
     }
 
@@ -10208,15 +10287,59 @@ mod concurrency_tests {
             .id
             .clone();
 
-        assert!(
+        let first_claim = database
+            .claim_attention_notification_at(&attention_id, base + Duration::seconds(1))
+            .expect("first notification should be claimed")
+            .expect("claim token should be returned");
+        let connection = database.connect().expect("database should connect");
+        let sent_before_confirmation = connection
+            .query_row(
+                "SELECT notification_sent_at FROM attention_events WHERE id=?1",
+                params![attention_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("notification state should load");
+        assert_eq!(sent_before_confirmation, None);
+        drop(connection);
+        assert_eq!(
             database
-                .claim_attention_notification_at(&attention_id, base + Duration::seconds(1))
-                .expect("first notification should be claimed")
+                .attention_quality_report()
+                .expect("quality report should load")
+                .notification_samples,
+            0
         );
         assert!(
-            !database
+            database
                 .claim_attention_notification_at(&attention_id, base + Duration::seconds(2))
                 .expect("duplicate notification should be rejected")
+                .is_none()
+        );
+        assert!(
+            database
+                .release_attention_notification(&first_claim)
+                .expect("failed notification should release its claim")
+        );
+        let retry_claim = database
+            .claim_attention_notification_at(&attention_id, base + Duration::seconds(3))
+            .expect("released notification should be claimable")
+            .expect("retry claim token should be returned");
+        assert!(
+            database
+                .confirm_attention_notification_at(&retry_claim, base + Duration::seconds(4))
+                .expect("successful delivery should be confirmed")
+        );
+        assert_eq!(
+            database
+                .attention_quality_report()
+                .expect("confirmed quality report should load")
+                .notification_samples,
+            1
+        );
+        assert!(
+            database
+                .claim_attention_notification_at(&attention_id, base + Duration::seconds(5))
+                .expect("confirmed notification should not be claimable")
+                .is_none()
         );
         assert!(
             database

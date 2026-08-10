@@ -3326,13 +3326,12 @@ fn notify_if_background(database: &Database, session: &LiveSession, status: &str
     if source_is_foreground(session) {
         return;
     }
-    if matches!(status, "waiting" | "error" | "completed")
-        && !database
-            .claim_attention_notification(&session.agent, &session.source_session_id, status)
-            .unwrap_or(false)
-    {
+    let Some(claim_token) = database
+        .claim_attention_notification(&session.agent, &session.source_session_id, status)
+        .unwrap_or(None)
+    else {
         return;
-    }
+    };
     let body = if status == "waiting" {
         format!("{} needs your attention.", provider_label(&session.agent))
     } else if status == "completed" {
@@ -3342,9 +3341,23 @@ fn notify_if_background(database: &Database, session: &LiveSession, status: &str
     };
     let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!("display notification \"{escaped}\" with title \"VibeMeter\"");
-    let _ = Command::new("/usr/bin/osascript")
+    let delivered = Command::new("/usr/bin/osascript")
         .args(["-e", &script])
-        .status();
+        .status()
+        .is_ok_and(|result| result.success());
+    if delivered {
+        if database
+            .confirm_attention_notification(&claim_token)
+            .is_err()
+        {
+            eprintln!("VibeMeter could not confirm a delivered attention notification");
+        }
+    } else if database
+        .release_attention_notification(&claim_token)
+        .is_err()
+    {
+        eprintln!("VibeMeter could not release a failed attention notification claim");
+    }
 }
 
 fn notification_allowed_for_origin(session: &LiveSession, status: &str) -> bool {
