@@ -1031,8 +1031,7 @@ fn canonical_operation_key(
         safe_private_signal(
             &payload,
             &["error_code", "error_type", "failure_type", "failure_code"],
-        )
-        .unwrap_or_else(|| "generic".into())
+        )?
     } else {
         String::new()
     };
@@ -2141,6 +2140,91 @@ fn expire_attention_events(transaction: &Transaction<'_>, now: &str) -> AppResul
     Ok(())
 }
 
+fn owned_attention_match(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+    kind: &str,
+    evidence_ids: &[String],
+) -> AppResult<Option<String>> {
+    for evidence_id in evidence_ids {
+        let existing = transaction
+            .query_row(
+                "SELECT ae.id
+                 FROM attention_events ae
+                 JOIN attention_event_evidence evidence
+                   ON evidence.attention_event_id=ae.id
+                 WHERE ae.agent=?1 AND ae.source_session_id=?2 AND ae.kind=?3
+                   AND evidence.canonical_event_id=?4
+                   AND (
+                        ae.feedback IS NOT NULL OR ae.acknowledged_at IS NOT NULL
+                        OR ae.notification_sent_at IS NOT NULL
+                        OR EXISTS(
+                            SELECT 1 FROM attention_interventions intervention
+                            WHERE intervention.attention_event_id=ae.id
+                              AND intervention.kind IN('feedback','jump')
+                        )
+                        OR EXISTS(
+                            SELECT 1 FROM attention_review_samples review
+                            WHERE review.attention_event_id=ae.id
+                        )
+                   )
+                 ORDER BY ae.updated_at DESC, ae.id LIMIT 1",
+                params![
+                    canonical.agent,
+                    canonical.source_session_id,
+                    kind,
+                    evidence_id
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if existing.is_some() {
+            return Ok(existing);
+        }
+    }
+    if kind == "stuck" {
+        return Ok(None);
+    }
+    Ok(transaction
+        .query_row(
+            "SELECT ae.id
+             FROM attention_events ae
+             JOIN attention_event_evidence evidence ON evidence.attention_event_id=ae.id
+             JOIN canonical_events prior ON prior.id=evidence.canonical_event_id
+             WHERE ae.agent=?1 AND ae.source_session_id=?2 AND ae.kind=?3
+               AND prior.occurred_at>=?4
+               AND (
+                    ae.feedback IS NOT NULL OR ae.acknowledged_at IS NOT NULL
+                    OR ae.notification_sent_at IS NOT NULL
+                    OR EXISTS(
+                        SELECT 1 FROM attention_interventions intervention
+                        WHERE intervention.attention_event_id=ae.id
+                          AND intervention.kind IN('feedback','jump')
+                    )
+                    OR EXISTS(
+                        SELECT 1 FROM attention_review_samples review
+                        WHERE review.attention_event_id=ae.id
+                    )
+               )
+               AND NOT EXISTS(
+                    SELECT 1 FROM canonical_events progress
+                    WHERE progress.source='live-hook' AND progress.deleted_at IS NULL
+                      AND progress.agent=?1 AND progress.source_session_id=?2
+                      AND progress.lifecycle_status IN('idle','running')
+                      AND progress.occurred_at>?4 AND progress.occurred_at<prior.occurred_at
+               )
+             ORDER BY prior.occurred_at, ae.id LIMIT 1",
+            params![
+                canonical.agent,
+                canonical.source_session_id,
+                kind,
+                canonical.occurred_at
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?)
+}
+
 fn sync_attention_event(
     transaction: &Transaction<'_>,
     canonical: &CanonicalLiveEvent,
@@ -2216,6 +2300,16 @@ fn sync_attention_event(
             |row| row.get::<_, String>(0),
         )
         .optional()?;
+    let existing = if existing.is_some() {
+        existing
+    } else {
+        owned_attention_match(
+            transaction,
+            canonical,
+            kind,
+            std::slice::from_ref(&canonical.id),
+        )?
+    };
     let attention_id = existing.unwrap_or_else(|| {
         format!(
             "attention-{}",
@@ -2345,6 +2439,15 @@ fn upsert_stuck_attention(
             |row| row.get::<_, String>(0),
         )
         .optional()?;
+    let evidence_ids = evidence
+        .iter()
+        .map(|(canonical_event_id, _)| canonical_event_id.clone())
+        .collect::<Vec<_>>();
+    let existing = if existing.is_some() {
+        existing
+    } else {
+        owned_attention_match(transaction, canonical, "stuck", &evidence_ids)?
+    };
     let attention_id = existing.unwrap_or_else(|| {
         format!(
             "attention-{}",
@@ -2552,6 +2655,31 @@ fn replay_session_attention(
     transaction: &Transaction<'_>,
     canonical: &CanonicalLiveEvent,
 ) -> AppResult<()> {
+    transaction.execute(
+        "DELETE FROM attention_events
+         WHERE agent=?1 AND source_session_id=?2
+           AND feedback IS NULL AND acknowledged_at IS NULL
+           AND notification_sent_at IS NULL
+           AND NOT EXISTS(
+                SELECT 1 FROM attention_interventions intervention
+                WHERE intervention.attention_event_id=attention_events.id
+                  AND intervention.kind IN('feedback','jump')
+           )
+           AND NOT EXISTS(
+                SELECT 1 FROM attention_review_samples review
+                WHERE review.attention_event_id=attention_events.id
+           )",
+        params![canonical.agent, canonical.source_session_id],
+    )?;
+    transaction.execute(
+        "DELETE FROM attention_event_evidence
+         WHERE attention_event_id IN(
+            SELECT id FROM attention_events
+            WHERE agent=?1 AND source_session_id=?2
+              AND state IN('open','acknowledged','snoozed')
+         )",
+        params![canonical.agent, canonical.source_session_id],
+    )?;
     let events = {
         let mut statement = transaction.prepare(
             "SELECT id, source_event_id, source_sequence, event_fingerprint, dedup_key,
@@ -2597,6 +2725,23 @@ fn replay_session_attention(
         sync_attention_event(transaction, &event)?;
         sync_stuck_detection(transaction, &event)?;
     }
+    transaction.execute(
+        "UPDATE attention_events
+         SET state='resolved', resolved_at=?1,
+             resolution_reason='replay-invalidated', updated_at=?2
+         WHERE agent=?3 AND source_session_id=?4
+           AND state IN('open','acknowledged','snoozed')
+           AND NOT EXISTS(
+                SELECT 1 FROM attention_event_evidence evidence
+                WHERE evidence.attention_event_id=attention_events.id
+           )",
+        params![
+            canonical.occurred_at,
+            canonical.observed_at,
+            canonical.agent,
+            canonical.source_session_id
+        ],
+    )?;
     Ok(())
 }
 
@@ -11015,6 +11160,25 @@ mod concurrency_tests {
                 })
                 .expect("distinct operation should persist");
         }
+        for index in 0..3 {
+            let occurred_at = (base + Duration::seconds(60 + index)).to_rfc3339();
+            database
+                .record_observed_live_event(&ObservedLiveEvent {
+                    occurred_at: occurred_at.clone(),
+                    observed_at: occurred_at,
+                    agent: "codex".into(),
+                    source_session_id: "unclassified-failures".into(),
+                    source_event_id: Some(format!("unclassified-{index}")),
+                    source_sequence: Some(index),
+                    source_event_fingerprint: None,
+                    event_name: "PostToolUseFailure".into(),
+                    project_label: "project".into(),
+                    payload_json: r#"{"payload":{"tool_name":"Bash"}}"#.into(),
+                    status: "error".into(),
+                    phase: Some("verifying".into()),
+                })
+                .expect("unclassified failure should persist without a stuck identity");
+        }
 
         assert!(
             database
@@ -11097,6 +11261,118 @@ mod concurrency_tests {
         };
 
         assert_eq!(summarize(&shuffled), summarize(&ordered));
+    }
+
+    #[test]
+    fn out_of_order_progress_rebuilds_stuck_state_without_reopening_user_reviews() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("stuck-replay.sqlite"))
+            .expect("database should open");
+        let base = Utc::now() - Duration::minutes(1);
+        let event = |session: &str,
+                     id: &str,
+                     name: &str,
+                     status: &str,
+                     occurred_seconds: i64,
+                     observed_seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(occurred_seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(observed_seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: session.into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(occurred_seconds),
+            source_event_fingerprint: None,
+            event_name: name.into(),
+            project_label: "project".into(),
+            payload_json: r#"{"payload":{"tool_name":"Bash","error_code":"exit"}}"#.into(),
+            status: status.into(),
+            phase: Some("verifying".into()),
+        };
+
+        for item in [
+            event("invalidated-loop", "start-1", "PreToolUse", "running", 1, 1),
+            event("invalidated-loop", "start-3", "PreToolUse", "running", 3, 3),
+            event("invalidated-loop", "start-4", "PreToolUse", "running", 4, 4),
+        ] {
+            database
+                .record_observed_live_event(&item)
+                .expect("initial loop evidence should persist");
+        }
+        assert!(
+            database
+                .attention_queue_at(Utc::now())
+                .expect("queue")
+                .iter()
+                .any(
+                    |attention| attention.source_session_id == "invalidated-loop"
+                        && attention.kind == "stuck"
+                )
+        );
+        database
+            .record_observed_live_event(&event(
+                "invalidated-loop",
+                "finish-2",
+                "PostToolUse",
+                "running",
+                2,
+                5,
+            ))
+            .expect("late progress should trigger replay");
+        assert!(
+            database
+                .attention_queue_at(Utc::now())
+                .expect("queue")
+                .iter()
+                .all(
+                    |attention| attention.source_session_id != "invalidated-loop"
+                        || attention.kind != "stuck"
+                )
+        );
+
+        for seconds in 1..=3 {
+            database
+                .record_observed_live_event(&event(
+                    "reviewed-failure",
+                    &format!("failure-{seconds}"),
+                    "PostToolUseFailure",
+                    "error",
+                    seconds,
+                    seconds,
+                ))
+                .expect("failure should persist");
+        }
+        let reviewed = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .find(|attention| {
+                attention.source_session_id == "reviewed-failure" && attention.kind == "stuck"
+            })
+            .expect("three failures should create stuck attention");
+        database
+            .set_attention_feedback(&reviewed.id, "not-stuck")
+            .expect("review should persist");
+        database
+            .record_observed_live_event(&event(
+                "reviewed-failure",
+                "failure-0",
+                "PostToolUseFailure",
+                "error",
+                0,
+                4,
+            ))
+            .expect("earlier failure should replay the reviewed chain");
+        let reviewed_rows = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .filter(|attention| {
+                attention.source_session_id == "reviewed-failure" && attention.kind == "stuck"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reviewed_rows.len(), 1);
+        assert_eq!(reviewed_rows[0].id, reviewed.id);
+        assert_eq!(reviewed_rows[0].state, "ignored");
     }
 
     #[test]
