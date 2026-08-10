@@ -41,6 +41,7 @@ The copy uses SQLite online backup, followed by integrity and schema checks. The
 - Schema 25: separates notification claims from confirmed system delivery. Failed delivery releases its short-lived claim, and only confirmed delivery contributes to the attention latency quality gate.
 - Schema 26: adds bounded attention-history and general session-association indexes. Notch snapshots read only the active queue, while expired-state maintenance is throttled and history is loaded in pages.
 - Schema 27: repairs databases that briefly stored the database migration number in the canonical event schema field; canonical event records remain on protocol schema 20.
+- Schema 28: replaces the generic state-first attention-history index with a terminal-keyed index that matches the paged review order without an additional full-history sort.
 - Parser 6.1.0: scans complete local user/agent text, filters code, paths, secrets, and punctuation-only noise, then retains only ranked derived phrase counts without storing source text.
 - VCTI algorithm 1.3.0: incorporates bounded waiting/error/completion signals from long-term live metrics.
 
@@ -52,7 +53,7 @@ Schema 19 uses an expand, verify, contract migration on a staged database copy. 
 
 Historical reindexing publishes one transaction at a time. Existing canonical facts are marked, the new generation is rebuilt by stable source identity, and matching facts are reactivated before commit. A parse, write, or confirmation failure rolls the whole transaction back, so the previously visible generation remains usable. Removed source records stay as tombstones and recover the same canonical identity if they reappear. User-edited reviews, manual work-unit membership, attention feedback, and VCTI snapshots are outside the replaceable source generation and are not overwritten by reindexing.
 
-Schemas 20–27 use the same staged-copy migration and rollback boundary as schema 19. A database is installed only after the latest schema version and integrity checks pass; an interrupted migration keeps the previous database and its validated rollback artifact available for recovery.
+Schemas 20–28 use the same staged-copy migration and rollback boundary as schema 19. A database is installed only after the latest schema version and integrity checks pass; an interrupted migration keeps the previous database and its validated rollback artifact available for recovery.
 
 ## Hook boundary
 

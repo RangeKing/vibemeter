@@ -459,7 +459,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 27;
+const DATABASE_SCHEMA_VERSION: i64 = 28;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
 
@@ -881,6 +881,17 @@ UPDATE canonical_events
 SET schema_version=20
 WHERE schema_version=24;
 PRAGMA user_version = 27;
+"#;
+
+const MIGRATION_V28: &str = r#"
+DROP INDEX attention_events_history_idx;
+CREATE INDEX attention_events_terminal_history_idx
+    ON attention_events(
+        (state IN('resolved','ignored','expired')),
+        updated_at DESC,
+        id ASC
+    );
+PRAGMA user_version = 28;
 "#;
 
 #[derive(Clone)]
@@ -2814,6 +2825,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     if version < 27 {
         connection.execute_batch(MIGRATION_V27)?;
     }
+    if version < 28 {
+        connection.execute_batch(MIGRATION_V28)?;
+    }
     Ok(())
 }
 
@@ -4725,8 +4739,7 @@ impl Database {
                 CASE ae.kind
                     WHEN 'waiting' THEN 0 WHEN 'error' THEN 1
                     WHEN 'stuck' THEN 2 ELSE 3 END,
-                ae.opened_at ASC, ae.id ASC
-             LIMIT 50",
+                ae.opened_at ASC, ae.id ASC",
         )?;
         Ok(statement
             .query_map(params![now], |row| {
@@ -4765,8 +4778,8 @@ impl Database {
                      WHERE evidence.attention_event_id=ae.id),
                     (SELECT COUNT(*) FROM attention_interventions intervention
                      WHERE intervention.attention_event_id=ae.id)
-             FROM attention_events ae
-             WHERE ae.state IN('resolved','ignored','expired')
+             FROM attention_events ae INDEXED BY attention_events_terminal_history_idx
+             WHERE (ae.state IN('resolved','ignored','expired'))=1
              ORDER BY ae.updated_at DESC, ae.id ASC
              LIMIT ?1 OFFSET ?2",
         )?;
@@ -6084,7 +6097,7 @@ impl Database {
                          WHERE evidence.attention_event_id=ae.id),
                         (SELECT COUNT(*) FROM attention_interventions intervention
                          WHERE intervention.attention_event_id=ae.id)
-                 FROM attention_events ae
+                 FROM attention_events ae INDEXED BY attention_events_session_idx
                  WHERE ae.agent=?1 AND ae.source_session_id=?2
                  ORDER BY ae.opened_at DESC, ae.id",
             )?;
@@ -7991,7 +8004,7 @@ fn query_tasks(
             (SELECT COALESCE(SUM(s.retries),0) FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id WHERE ts.task_id=t.id),
             (SELECT COALESCE(MAX(fc.modification_count),0) FROM file_changes fc JOIN task_sessions ts ON ts.session_id=fc.session_id WHERE ts.task_id=t.id),
             (SELECT s.id FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id WHERE ts.task_id=t.id ORDER BY s.started_at DESC LIMIT 1),
-            (SELECT COUNT(*) FROM attention_events ae
+            (SELECT COUNT(*) FROM attention_events ae INDEXED BY attention_events_session_idx
              WHERE EXISTS(
                 SELECT 1 FROM sessions s JOIN task_sessions ts ON ts.session_id=s.id
                 WHERE ts.task_id=t.id AND s.agent=ae.agent
@@ -8231,7 +8244,7 @@ fn session_list_where_clause() -> &'static str {
         AND (?8=0 OR errors >= 3 OR retries >= 2
             OR (active_seconds >= 1800 AND files_touched > 0 AND verification_events = 0)
             OR EXISTS(
-                SELECT 1 FROM attention_events ae
+                SELECT 1 FROM attention_events ae INDEXED BY attention_events_session_idx
                 WHERE ae.agent=sessions.agent
                   AND ae.source_session_id=sessions.source_session_id
             ))
@@ -10804,7 +10817,7 @@ mod concurrency_tests {
                 )
                 .expect("resolved attention should persist");
         }
-        for index in 0..2 {
+        for index in 0..60 {
             let timestamp = (base + Duration::minutes(10 + index)).to_rfc3339();
             transaction
                 .execute(
@@ -10827,7 +10840,7 @@ mod concurrency_tests {
         let query_plan = connection
             .prepare(
                 "EXPLAIN QUERY PLAN
-                 SELECT id FROM attention_events
+                 SELECT id FROM attention_events INDEXED BY attention_events_session_idx
                  WHERE agent='codex' AND source_session_id='session-100'",
             )
             .expect("query plan should prepare")
@@ -10835,12 +10848,36 @@ mod concurrency_tests {
             .expect("query plan should load")
             .collect::<Result<Vec<_>, _>>()
             .expect("query plan should collect");
+        let history_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM attention_events INDEXED BY attention_events_terminal_history_idx
+                 WHERE (state IN('resolved','ignored','expired'))=1
+                 ORDER BY updated_at DESC, id ASC LIMIT 50 OFFSET 50",
+            )
+            .expect("history query plan should prepare")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("history query plan should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("history query plan should collect");
         drop(connection);
 
         assert!(
             query_plan
                 .iter()
-                .any(|detail| detail.contains("attention_events_session_idx"))
+                .any(|detail| detail.contains("attention_events_session_idx")),
+            "unexpected session query plan: {query_plan:?}"
+        );
+        assert!(
+            history_plan
+                .iter()
+                .any(|detail| { detail.contains("attention_events_terminal_history_idx") }),
+            "unexpected history query plan: {history_plan:?}"
+        );
+        assert!(
+            history_plan
+                .iter()
+                .all(|detail| !detail.contains("USE TEMP B-TREE"))
         );
         assert_eq!(
             database.attention_history(0, 50).expect("first page").len(),
@@ -10858,7 +10895,7 @@ mod concurrency_tests {
                 .attention_queue_at(base + Duration::minutes(20))
                 .expect("active queue")
                 .len(),
-            2
+            60
         );
     }
 

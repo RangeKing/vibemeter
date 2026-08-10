@@ -20,6 +20,7 @@ import {
   LiveSessionCard,
   sortAttentionEvents,
   TimelineList,
+  attentionHistoryNextOffset,
 } from "./LivePage";
 
 const historyItem: LiveHistoryItem = {
@@ -274,6 +275,14 @@ describe("Attention actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "加载更多注意力历史" }));
     expect(onLoadMore).toHaveBeenCalledOnce();
+  });
+
+  it("advances history offsets beyond one hundred rows", () => {
+    const page = Array.from({ length: 51 }, (_, index) =>
+      attention("error", `history-${index}`, `2026-08-10T08:00:${String(index).padStart(2, "0")}Z`));
+    expect(attentionHistoryNextOffset(page, [page])).toBe(50);
+    expect(attentionHistoryNextOffset(page, [page, page])).toBe(100);
+    expect(attentionHistoryNextOffset(page.slice(0, 50), [page, page, page])).toBeUndefined();
   });
 
   it("keeps the hard quality gate incomplete when local evidence is missing", () => {

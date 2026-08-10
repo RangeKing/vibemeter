@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { useState } from "react";
 import {
@@ -44,6 +44,13 @@ export function sortAttentionEvents(items: AttentionEvent[]): AttentionEvent[] {
     attentionPriority[left.kind] - attentionPriority[right.kind]
     || left.openedAt.localeCompare(right.openedAt)
     || left.id.localeCompare(right.id));
+}
+
+export function attentionHistoryNextOffset(
+  lastPage: AttentionEvent[],
+  pages: AttentionEvent[][],
+): number | undefined {
+  return lastPage.length > 50 ? pages.length * 50 : undefined;
 }
 
 export function AttentionActions({
@@ -330,10 +337,11 @@ export function LivePage({ locale }: { locale: Locale }) {
     queryFn: api.attentionQuality,
     refetchInterval: 30_000,
   });
-  const [historyLimit, setHistoryLimit] = useState(50);
-  const attentionHistory = useQuery({
-    queryKey: ["attention-history", historyLimit],
-    queryFn: () => api.attentionHistory(0, historyLimit),
+  const attentionHistory = useInfiniteQuery({
+    queryKey: ["attention-history"],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => api.attentionHistory(pageParam, 51),
+    getNextPageParam: attentionHistoryNextOffset,
     refetchInterval: 30_000,
   });
   if (snapshot.isLoading) return <LoadingState />;
@@ -447,9 +455,9 @@ export function LivePage({ locale }: { locale: Locale }) {
             <ErrorState retry={() => void attentionHistory.refetch()} />
           ) : (
             <AttentionHistory
-              items={attentionHistory.data ?? []}
-              hasMore={(attentionHistory.data?.length ?? 0) >= historyLimit}
-              onLoadMore={() => setHistoryLimit((current) => current + 50)}
+              items={attentionHistory.data?.pages.flatMap((page) => page.slice(0, 50)) ?? []}
+              hasMore={attentionHistory.hasNextPage}
+              onLoadMore={() => void attentionHistory.fetchNextPage()}
             />
           )}
         </section>
