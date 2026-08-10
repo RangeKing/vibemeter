@@ -4543,7 +4543,7 @@ impl Database {
         })?;
         if last_maintenance
             .as_ref()
-            .is_some_and(|last| now.signed_duration_since(last.clone()) < Duration::minutes(1))
+            .is_some_and(|last| now.signed_duration_since(*last) < Duration::minutes(1))
         {
             return Ok(());
         }
@@ -5120,7 +5120,7 @@ impl Database {
 
     pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
         let now = Utc::now();
-        self.maintain_attention_events_if_due(now.clone())?;
+        self.maintain_attention_events_if_due(now)?;
         let attention = self.attention_queue_at(now)?;
         let connection = self.connect()?;
         let period_start = Local::now()
