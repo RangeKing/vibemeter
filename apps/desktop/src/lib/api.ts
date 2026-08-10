@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  AttentionEvent,
   ComparisonItem,
   DiagnosticClearResult,
   DiagnosticRetentionStatus,
@@ -35,6 +36,9 @@ export const api = {
   repairLiveHooks: () => invoke<HookStatus>("repair_live_hooks"),
   uninstallLiveHooks: () => invoke<HookStatus>("uninstall_live_hooks"),
   jumpToLiveSession: (id: string) => invoke<void>("jump_to_live_session", { id }),
+  setAttentionFeedback: (id: string, feedback: "handled" | "not-relevant" | "not-stuck" | "snoozed") =>
+    invoke<AttentionEvent>("set_attention_feedback", { id, feedback }),
+  jumpToAttention: (id: string) => invoke<void>("jump_to_attention", { id }),
   markNotchSessionsSeen: (ids: string[]) => invoke<void>("mark_notch_sessions_seen", { ids }),
   jumpToNotchCompletedSession: (id: string) =>
     invoke<void>("jump_to_notch_completed_session", { id }),

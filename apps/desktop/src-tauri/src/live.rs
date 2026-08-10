@@ -429,7 +429,7 @@ impl LiveMonitor {
                         && let Some(active) =
                             snapshot.sessions.iter().find(|item| item.id == session_id)
                     {
-                        notify_if_background(active, status);
+                        notify_if_background(&transcript_database, active, status);
                     }
                 }
                 prune_transcript_watches(&transcript_watches, &transcript_sessions);
@@ -515,7 +515,7 @@ impl LiveMonitor {
                     let _ = external_app.emit("live-update", &snapshot);
                     for (id, status) in transitions {
                         if let Some(active) = snapshot.sessions.iter().find(|item| item.id == id) {
-                            notify_if_background(active, &status);
+                            notify_if_background(&external_database, active, &status);
                         }
                     }
                 }
@@ -588,7 +588,11 @@ impl LiveMonitor {
                             .iter()
                             .find(|item| item.id == transitioned_session_id)
                     {
-                        notify_if_background(active, transition.as_deref().unwrap_or_default());
+                        notify_if_background(
+                            &database,
+                            active,
+                            transition.as_deref().unwrap_or_default(),
+                        );
                     }
                 }
             }
@@ -612,6 +616,17 @@ impl LiveMonitor {
             .read()
             .ok()
             .and_then(|sessions| sessions.get(id).cloned())
+    }
+
+    pub fn session_for_source(&self, agent: &str, source_session_id: &str) -> Option<LiveSession> {
+        self.sessions.read().ok().and_then(|sessions| {
+            sessions
+                .values()
+                .find(|session| {
+                    session.agent == agent && session.source_session_id == source_session_id
+                })
+                .cloned()
+        })
     }
 
     pub fn mark_notch_sessions_seen(&self, ids: &[String]) -> AppResult<()> {
@@ -3263,11 +3278,18 @@ fn compare_live_timestamps(left: &str, right: &str) -> std::cmp::Ordering {
         .unwrap_or_else(|| left.cmp(right))
 }
 
-fn notify_if_background(session: &LiveSession, status: &str) {
+fn notify_if_background(database: &Database, session: &LiveSession, status: &str) {
     if !notification_allowed_for_origin(session, status) {
         return;
     }
     if source_is_foreground(session) {
+        return;
+    }
+    if matches!(status, "waiting" | "error")
+        && !database
+            .claim_attention_notification(&session.agent, &session.source_session_id, status)
+            .unwrap_or(false)
+    {
         return;
     }
     let body = if status == "waiting" {

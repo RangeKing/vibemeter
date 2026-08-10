@@ -22,11 +22,12 @@ mod vcti;
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    ComparisonItem, DiagnosticClearResult, DiagnosticRetentionStatus, ExportRequest, ExportResult,
-    HookStatus, IndexStatus, InsightsResponse, LiveActivityResponse, LiveSnapshot, MenuBarSnapshot,
-    NotchClearResult, OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl,
-    ProviderUsage, SavePlaybookRequest, SessionDetail, SessionListFilters, SessionsResponse,
-    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
+    AttentionEvent, ComparisonItem, DiagnosticClearResult, DiagnosticRetentionStatus,
+    ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse, LiveActivityResponse,
+    LiveSnapshot, MenuBarSnapshot, NotchClearResult, OverviewResponse, PhraseCloudResponse,
+    PlaybookItem, ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail,
+    SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus,
+    TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -165,6 +166,39 @@ fn jump_to_live_session(state: State<'_, AppState>, id: String) -> AppResult<()>
         .session(&id)
         .ok_or_else(|| AppError::InvalidRequest("live session is no longer active".into()))?;
     live::jump_to_session(&session)
+}
+
+#[tauri::command]
+fn set_attention_feedback(
+    state: State<'_, AppState>,
+    id: String,
+    feedback: String,
+) -> AppResult<AttentionEvent> {
+    state.database.set_attention_feedback(&id, &feedback)
+}
+
+#[tauri::command]
+fn jump_to_attention(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    let attention = state
+        .database
+        .attention_events()?
+        .into_iter()
+        .find(|event| event.id == id)
+        .ok_or_else(|| AppError::InvalidRequest("attention event is unavailable".into()))?;
+    let Some(session) = state
+        .live
+        .session_for_source(&attention.agent, &attention.source_session_id)
+    else {
+        state.database.record_attention_jump(&id, false)?;
+        return Err(AppError::InvalidRequest(
+            "attention source is no longer active".into(),
+        ));
+    };
+    if let Err(error) = live::jump_to_session(&session) {
+        state.database.record_attention_jump(&id, false)?;
+        return Err(error);
+    }
+    state.database.record_attention_jump(&id, true)
 }
 
 #[tauri::command]
@@ -933,6 +967,8 @@ pub fn run() {
             repair_live_hooks,
             uninstall_live_hooks,
             jump_to_live_session,
+            set_attention_feedback,
+            jump_to_attention,
             mark_notch_sessions_seen,
             jump_to_notch_completed_session,
             delete_notch_completed_session,

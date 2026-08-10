@@ -20,12 +20,37 @@ import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
 import type {
+  AttentionEvent,
   LiveHistoryItem,
   LiveSession,
   LiveTimelinePoint,
   Locale,
   WorkPulseDimension,
 } from "../types";
+
+type AttentionFeedback = "handled" | "not-relevant" | "not-stuck" | "snoozed";
+
+export function AttentionActions({
+  kind,
+  onFeedback,
+}: {
+  kind: AttentionEvent["kind"];
+  onFeedback: (feedback: AttentionFeedback) => void;
+}) {
+  const { t } = useTranslation();
+  const choices: AttentionFeedback[] = kind === "stuck"
+    ? ["handled", "not-relevant", "not-stuck", "snoozed"]
+    : ["handled", "not-relevant", "snoozed"];
+  return (
+    <div className="attention-actions">
+      {choices.map((choice) => (
+        <button key={choice} className="button subtle" onClick={() => onFeedback(choice)}>
+          {t(`live.attention.action.${choice}`)}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 function liveReason(session: LiveSession, t: TFunction): string | undefined {
   const attention = session.pulse.attentionSignal.value;

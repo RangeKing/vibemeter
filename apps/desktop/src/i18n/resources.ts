@@ -215,6 +215,14 @@ export const enUS = {
     recentActions: "Recent actions",
     structuredOnly: "Structured status only · no raw prompt shown",
     jump: "Jump to source",
+    attention: {
+      action: {
+        handled: "Handled",
+        "not-relevant": "Not relevant",
+        "not-stuck": "Not stuck",
+        snoozed: "Snooze",
+      },
+    },
     privacyTitle: "Raw live envelopes are discarded by default.",
     privacyBody: "Only explicitly enabled diagnostics keeps encrypted raw envelopes for seven days. Long-term history uses normalized evidence. Live hooks and observers never approve a request or send a prompt.",
     origin: { cli: "CLI", desktop: "Desktop", unknown: "Source" },
@@ -1021,6 +1029,14 @@ export const zhCN = {
     recentActions: "最近动作",
     structuredOnly: "仅展示结构化状态 · 不显示原始 Prompt",
     jump: "返回源会话",
+    attention: {
+      action: {
+        handled: "已处理",
+        "not-relevant": "与我无关",
+        "not-stuck": "不是卡住",
+        snoozed: "稍后提醒",
+      },
+    },
     privacyTitle: "默认不保存原始实时信封。",
     privacyBody: "只有用户主动开启诊断后，原始信封才会加密保留七天；长期历史使用规范证据。实时 Hook 与本机观察器不会批准请求，也不会发送提示词。",
     origin: { cli: "命令行", desktop: "桌面端", unknown: "来源" },

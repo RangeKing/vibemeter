@@ -5,7 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
 import type { LiveHistoryItem, LiveSession, LiveTimelinePoint } from "../types";
-import { HistoryList, LiveSessionCard, TimelineList } from "./LivePage";
+import { AttentionActions, HistoryList, LiveSessionCard, TimelineList } from "./LivePage";
 
 const historyItem: LiveHistoryItem = {
   id: "621",
@@ -157,5 +157,27 @@ describe("Live work pulse", () => {
     expect(screen.getAllByText("未知")).toHaveLength(2);
     expect(screen.queryByText("错误")).toBeNull();
     expect(screen.getByLabelText("最近动作").children).toHaveLength(0);
+  });
+});
+
+describe("Attention actions", () => {
+  beforeAll(async () => {
+    await i18n.changeLanguage("zh-CN");
+  });
+
+  afterEach(cleanup);
+
+  it("offers only fixed feedback choices and no free-text control", () => {
+    const onFeedback = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionActions kind="stuck" onFeedback={onFeedback} />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getAllByRole("button")).toHaveLength(4);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "不是卡住" }));
+    expect(onFeedback).toHaveBeenCalledWith("not-stuck");
   });
 });

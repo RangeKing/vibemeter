@@ -458,7 +458,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 20;
+const DATABASE_SCHEMA_VERSION: i64 = 21;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -802,6 +802,23 @@ CREATE INDEX attention_event_evidence_canonical_idx
     ON attention_event_evidence(canonical_event_id);
 UPDATE canonical_events SET schema_version=20;
 PRAGMA user_version = 20;
+"#;
+
+const MIGRATION_V21: &str = r#"
+CREATE TABLE attention_interventions (
+    id TEXT PRIMARY KEY,
+    attention_event_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN('feedback','jump','recovery','inferred')),
+    outcome TEXT NOT NULL,
+    evidence_level TEXT NOT NULL CHECK(evidence_level IN(
+        'user-confirmed','recovery-observed','derived-inferred'
+    )),
+    occurred_at TEXT NOT NULL,
+    FOREIGN KEY(attention_event_id) REFERENCES attention_events(id) ON DELETE CASCADE
+);
+CREATE INDEX attention_interventions_event_idx
+    ON attention_interventions(attention_event_id, occurred_at);
+PRAGMA user_version = 21;
 "#;
 
 #[derive(Clone)]
@@ -1887,6 +1904,66 @@ fn rebuild_activity_cycles(
     Ok(())
 }
 
+fn insert_attention_intervention(
+    transaction: &Transaction<'_>,
+    attention_event_id: &str,
+    kind: &str,
+    outcome: &str,
+    evidence_level: &str,
+    occurred_at: &str,
+) -> AppResult<()> {
+    let id = format!(
+        "intervention-{}",
+        crate::privacy::stable_hash(&format!(
+            "{attention_event_id}|{kind}|{outcome}|{occurred_at}"
+        ))
+    );
+    transaction.execute(
+        "INSERT OR IGNORE INTO attention_interventions(
+            id, attention_event_id, kind, outcome, evidence_level, occurred_at
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            id,
+            attention_event_id,
+            kind,
+            outcome,
+            evidence_level,
+            occurred_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn expire_attention_events(transaction: &Transaction<'_>, now: &str) -> AppResult<()> {
+    let expired = {
+        let mut statement = transaction.prepare(
+            "SELECT id FROM attention_events
+             WHERE state IN('open','acknowledged','snoozed') AND expires_at<=?1",
+        )?;
+        statement
+            .query_map(params![now], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    transaction.execute(
+        "UPDATE attention_events
+         SET state='expired', resolved_at=COALESCE(resolved_at, ?1),
+             resolution_reason='expired', updated_at=?1
+         WHERE state IN('open','acknowledged','snoozed') AND expires_at<=?1",
+        params![now],
+    )?;
+    for attention_id in expired {
+        insert_attention_intervention(
+            transaction,
+            &attention_id,
+            "inferred",
+            "expired",
+            "derived-inferred",
+            now,
+        )?;
+    }
+    Ok(())
+}
+
 fn sync_attention_event(
     transaction: &Transaction<'_>,
     canonical: &CanonicalLiveEvent,
@@ -1895,15 +1972,23 @@ fn sync_attention_event(
         return Ok(());
     }
     let now = &canonical.observed_at;
-    transaction.execute(
-        "UPDATE attention_events
-         SET state='expired', resolved_at=COALESCE(resolved_at, ?1),
-             resolution_reason='expired', updated_at=?1
-         WHERE state IN('open','acknowledged','snoozed') AND expires_at<=?1",
-        params![now],
-    )?;
+    expire_attention_events(transaction, now)?;
 
     if matches!(canonical.lifecycle_status.as_str(), "idle" | "running") {
+        let resolved = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM attention_events
+                 WHERE agent=?1 AND source_session_id=?2
+                   AND kind IN('waiting','error')
+                   AND state IN('open','acknowledged','snoozed')",
+            )?;
+            statement
+                .query_map(
+                    params![canonical.agent, canonical.source_session_id],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         transaction.execute(
             "UPDATE attention_events
              SET state='resolved', resolved_at=?1, resolution_reason='progress', updated_at=?2
@@ -1917,6 +2002,16 @@ fn sync_attention_event(
                 canonical.source_session_id
             ],
         )?;
+        for attention_id in resolved {
+            insert_attention_intervention(
+                transaction,
+                &attention_id,
+                "recovery",
+                "progress",
+                "recovery-observed",
+                &canonical.occurred_at,
+            )?;
+        }
         return Ok(());
     }
 
@@ -2030,6 +2125,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 20 {
         connection.execute_batch(MIGRATION_V20)?;
+    }
+    if version < 21 {
+        connection.execute_batch(MIGRATION_V21)?;
     }
     Ok(())
 }
@@ -2261,6 +2359,12 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let attention_intervention_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('attention_interventions')
+         WHERE name IN('id','attention_event_id','kind','outcome','evidence_level','occurred_at')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 15
@@ -2273,6 +2377,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || attention_feedback_columns != 4
         || attention_event_columns != 14
         || attention_evidence_columns != 4
+        || attention_intervention_columns != 6
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -3382,6 +3487,7 @@ impl Database {
                  DELETE FROM vcti_profile_snapshots;
                  DELETE FROM diagnostic_live_envelopes;
                  DELETE FROM activity_cycles;
+                 DELETE FROM attention_interventions;
                  DELETE FROM attention_event_evidence;
                  DELETE FROM attention_events;
                  DELETE FROM attention_feedback;
@@ -3794,17 +3900,183 @@ impl Database {
         self.attention_events_at(Utc::now())
     }
 
+    pub fn set_attention_feedback(
+        &self,
+        attention_event_id: &str,
+        feedback: &str,
+    ) -> AppResult<AttentionEvent> {
+        self.set_attention_feedback_at(attention_event_id, feedback, Utc::now())?;
+        self.attention_events()?
+            .into_iter()
+            .find(|event| event.id == attention_event_id)
+            .ok_or_else(|| AppError::InvalidRequest("attention event is unavailable".into()))
+    }
+
+    fn set_attention_feedback_at(
+        &self,
+        attention_event_id: &str,
+        feedback: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<()> {
+        if !matches!(
+            feedback,
+            "handled" | "not-relevant" | "not-stuck" | "snoozed"
+        ) {
+            return Err(AppError::InvalidRequest(
+                "attention feedback must use a fixed choice".into(),
+            ));
+        }
+        let now = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let snoozed_until = DateTime::parse_from_rfc3339(&now)
+            .map(|value| {
+                (value.with_timezone(&Utc) + Duration::minutes(15))
+                    .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+            })
+            .unwrap_or_else(|_| now.clone());
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let exists = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attention_events WHERE id=?1)",
+            params![attention_event_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0;
+        if !exists {
+            return Err(AppError::InvalidRequest(
+                "attention event is unavailable".into(),
+            ));
+        }
+        let changed = transaction.execute(
+            "UPDATE attention_events
+             SET state=CASE
+                    WHEN ?2='handled' THEN 'acknowledged'
+                    WHEN ?2='snoozed' THEN 'snoozed'
+                    ELSE 'ignored' END,
+                 acknowledged_at=CASE
+                    WHEN ?2 IN('handled','snoozed') THEN ?3
+                    ELSE acknowledged_at END,
+                 snoozed_until=CASE WHEN ?2='snoozed' THEN ?4 ELSE NULL END,
+                 resolved_at=CASE
+                    WHEN ?2 IN('not-relevant','not-stuck') THEN ?3
+                    ELSE resolved_at END,
+                 resolution_reason=CASE
+                    WHEN ?2 IN('not-relevant','not-stuck') THEN 'user-feedback'
+                    ELSE resolution_reason END,
+                 feedback=?2, feedback_at=?3, updated_at=?3
+             WHERE id=?1 AND state IN('open','acknowledged','snoozed')",
+            params![attention_event_id, feedback, now, snoozed_until],
+        )?;
+        if changed == 0 {
+            return Err(AppError::InvalidRequest(
+                "resolved attention cannot be changed".into(),
+            ));
+        }
+        insert_attention_intervention(
+            &transaction,
+            attention_event_id,
+            "feedback",
+            feedback,
+            "user-confirmed",
+            &now,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn record_attention_jump(
+        &self,
+        attention_event_id: &str,
+        succeeded: bool,
+    ) -> AppResult<()> {
+        self.record_attention_jump_at(attention_event_id, succeeded, Utc::now())
+    }
+
+    fn record_attention_jump_at(
+        &self,
+        attention_event_id: &str,
+        succeeded: bool,
+        now: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let now = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let exists = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM attention_events WHERE id=?1)",
+            params![attention_event_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0;
+        if !exists {
+            return Err(AppError::InvalidRequest(
+                "attention event is unavailable".into(),
+            ));
+        }
+        if succeeded {
+            transaction.execute(
+                "UPDATE attention_events
+                 SET state=CASE WHEN state='open' THEN 'acknowledged' ELSE state END,
+                     acknowledged_at=COALESCE(acknowledged_at, ?2), updated_at=?2
+                 WHERE id=?1 AND state IN('open','acknowledged','snoozed')",
+                params![attention_event_id, now],
+            )?;
+        }
+        insert_attention_intervention(
+            &transaction,
+            attention_event_id,
+            "jump",
+            if succeeded { "succeeded" } else { "failed" },
+            "user-confirmed",
+            &now,
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn claim_attention_notification(
+        &self,
+        agent: &str,
+        source_session_id: &str,
+        status: &str,
+    ) -> AppResult<bool> {
+        let kind = match status {
+            "waiting" => "waiting",
+            "error" => "error",
+            _ => return Ok(false),
+        };
+        let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let connection = self.connect()?;
+        Ok(connection.execute(
+            "UPDATE attention_events
+             SET notification_sent_at=?1, updated_at=?1
+             WHERE agent=?2 AND source_session_id=?3 AND kind=?4
+               AND state IN('open','acknowledged','snoozed')
+               AND notification_sent_at IS NULL",
+            params![now, agent, source_session_id, kind],
+        )? > 0)
+    }
+
+    #[cfg(test)]
+    fn claim_attention_notification_at(
+        &self,
+        attention_event_id: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        let connection = self.connect()?;
+        Ok(connection.execute(
+            "UPDATE attention_events
+             SET notification_sent_at=?2, updated_at=?2
+             WHERE id=?1 AND state IN('open','acknowledged','snoozed')
+               AND notification_sent_at IS NULL",
+            params![
+                attention_event_id,
+                now.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+            ],
+        )? > 0)
+    }
+
     fn attention_events_at(&self, now: DateTime<Utc>) -> AppResult<Vec<AttentionEvent>> {
         let now = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
-        transaction.execute(
-            "UPDATE attention_events
-             SET state='expired', resolved_at=COALESCE(resolved_at, ?1),
-                 resolution_reason='expired', updated_at=?1
-             WHERE state IN('open','acknowledged','snoozed') AND expires_at<=?1",
-            params![now],
-        )?;
+        expire_attention_events(&transaction, &now)?;
         let events = {
             let mut statement = transaction.prepare(
                 "SELECT ae.id, ae.kind, ae.state, ae.reason_key, ae.agent,
@@ -9056,6 +9328,113 @@ mod concurrency_tests {
         assert_eq!(attention[0].agent, "codex");
         assert_eq!(attention[0].state, "expired");
         assert_eq!(attention[0].evidence_count, 1);
+    }
+
+    #[test]
+    fn attention_actions_are_fixed_auditable_and_never_resolve_on_acknowledgement_alone() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("attention-actions.sqlite"))
+            .expect("database should open");
+        let base = DateTime::parse_from_rfc3339("2026-08-10T08:00:00Z")
+            .expect("base timestamp")
+            .with_timezone(&Utc);
+        let event = |id: &str, status: &str, seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: "action-session".into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(seconds),
+            source_event_fingerprint: None,
+            event_name: if status == "waiting" {
+                "PermissionRequest".into()
+            } else {
+                "PostToolUse".into()
+            },
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(if status == "waiting" {
+                "needs-you".into()
+            } else {
+                "editing".into()
+            }),
+        };
+        database
+            .record_observed_live_event(&event("wait", "waiting", 0))
+            .expect("wait should persist");
+        let attention_id = database
+            .attention_events_at(base + Duration::seconds(1))
+            .expect("attention should load")[0]
+            .id
+            .clone();
+
+        assert!(
+            database
+                .claim_attention_notification_at(&attention_id, base + Duration::seconds(1))
+                .expect("first notification should be claimed")
+        );
+        assert!(
+            !database
+                .claim_attention_notification_at(&attention_id, base + Duration::seconds(2))
+                .expect("duplicate notification should be rejected")
+        );
+        assert!(
+            database
+                .set_attention_feedback_at(&attention_id, "free text", base + Duration::seconds(3))
+                .is_err()
+        );
+        database
+            .set_attention_feedback_at(&attention_id, "handled", base + Duration::seconds(4))
+            .expect("fixed feedback should persist");
+        let acknowledged = database
+            .attention_events_at(base + Duration::seconds(5))
+            .expect("acknowledged attention should load");
+        assert_eq!(acknowledged[0].state, "acknowledged");
+        assert_eq!(acknowledged[0].resolved_at, None);
+
+        database
+            .record_attention_jump_at(&attention_id, false, base + Duration::seconds(6))
+            .expect("failed jump should be recorded");
+        assert_eq!(
+            database
+                .attention_events_at(base + Duration::seconds(7))
+                .expect("attention should remain")[0]
+                .state,
+            "acknowledged"
+        );
+        database
+            .record_observed_live_event(&event("progress", "running", 8))
+            .expect("observed progress should resolve attention");
+
+        let connection = database.connect().expect("database should connect");
+        let interventions = connection
+            .prepare(
+                "SELECT kind, outcome, evidence_level FROM attention_interventions
+                 WHERE attention_event_id=?1 ORDER BY occurred_at, kind",
+            )
+            .expect("interventions should prepare")
+            .query_map(params![attention_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("interventions should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("interventions should collect");
+        assert!(interventions.contains(&(
+            "feedback".into(),
+            "handled".into(),
+            "user-confirmed".into()
+        )));
+        assert!(interventions.contains(&("jump".into(), "failed".into(), "user-confirmed".into())));
+        assert!(interventions.contains(&(
+            "recovery".into(),
+            "progress".into(),
+            "recovery-observed".into()
+        )));
     }
 
     #[test]

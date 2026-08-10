@@ -325,6 +325,8 @@ select { padding-right: 28px; }
 .live-session-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 16px; }
 .live-session-card > footer > span { color: var(--faint); font-size: var(--font-caption); }
 .live-session-card > footer .button { min-height: 29px; padding-inline: 10px; font-size: var(--font-caption); }
+.attention-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.attention-actions .button { min-height: 28px; padding-inline: 9px; font-size: var(--font-caption); }
 .live-empty { display: flex; min-height: 230px; align-items: center; justify-content: center; gap: 24px; border: 1px dashed var(--line-strong); border-radius: 16px; background: color-mix(in srgb, var(--surface) 78%, transparent); text-align: left; }
 .live-empty h3 { margin: 0 0 5px; font-family: var(--serif); font-size: 23px; }
 .live-empty p { max-width: 470px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }

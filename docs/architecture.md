@@ -49,6 +49,8 @@ Every active live session exposes one explainable work pulse with four independe
 
 Exact waiting and error facts open persistent attention episodes. Repeated canonical facts attach as evidence to the same unresolved episode; acknowledged and snoozed episodes remain unresolved until canonical progress resumes. Unresolved episodes expire after 24 hours. Episode identity, evidence links, rule version, evidence level, and source coverage live in SQLite so restart and replay do not duplicate alerts.
 
+Attention actions use fixed feedback values only: handled, not relevant, not stuck, or snoozed. A successful jump acknowledges an episode but does not resolve waiting or error; a failed jump records an intervention and preserves the episode. Notifications are atomically claimed once per episode after the foreground-source check. Intervention records distinguish user-confirmed feedback and jumps, observed recovery, and inferred expiry.
+
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries
