@@ -458,7 +458,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 21;
+const DATABASE_SCHEMA_VERSION: i64 = 22;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -821,6 +821,23 @@ CREATE INDEX attention_interventions_event_idx
 PRAGMA user_version = 21;
 "#;
 
+const MIGRATION_V22: &str = r#"
+CREATE TABLE attention_review_samples (
+    id TEXT PRIMARY KEY,
+    attention_event_id TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK(verdict IN('not-stuck','not-relevant','handled')),
+    rule_version TEXT NOT NULL,
+    evidence_level TEXT NOT NULL DEFAULT 'user-confirmed'
+        CHECK(evidence_level='user-confirmed'),
+    created_at TEXT NOT NULL,
+    UNIQUE(attention_event_id, verdict),
+    FOREIGN KEY(attention_event_id) REFERENCES attention_events(id) ON DELETE CASCADE
+);
+CREATE INDEX attention_review_samples_rule_idx
+    ON attention_review_samples(rule_version, verdict, created_at);
+PRAGMA user_version = 22;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -858,6 +875,9 @@ struct CanonicalLiveEvent {
 
 fn canonical_event_kind(event: &ObservedLiveEvent) -> (&'static str, &'static str, &'static str) {
     if event.status == "error" {
+        if event.event_name == "SubagentStart" {
+            return ("agent.error", "AgentStartError", "error");
+        }
         return if matches!(
             event.event_name.as_str(),
             "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
@@ -2080,6 +2100,258 @@ fn sync_attention_event(
     Ok(())
 }
 
+fn valid_stuck_progress(canonical: &CanonicalLiveEvent) -> bool {
+    canonical.lifecycle_status == "running"
+        && matches!(
+            canonical.event_type.as_str(),
+            "tool.finish" | "lifecycle.resume" | "agent.stop" | "activity.progress"
+        )
+}
+
+fn resolve_stuck_attention(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    let resolved = {
+        let mut statement = transaction.prepare(
+            "SELECT id FROM attention_events
+             WHERE agent=?1 AND source_session_id=?2 AND kind='stuck'
+               AND state IN('open','acknowledged','snoozed')",
+        )?;
+        statement
+            .query_map(
+                params![canonical.agent, canonical.source_session_id],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    transaction.execute(
+        "UPDATE attention_events
+         SET state='resolved', resolved_at=?1, resolution_reason='progress', updated_at=?2
+         WHERE agent=?3 AND source_session_id=?4 AND kind='stuck'
+           AND state IN('open','acknowledged','snoozed')",
+        params![
+            canonical.occurred_at,
+            canonical.observed_at,
+            canonical.agent,
+            canonical.source_session_id
+        ],
+    )?;
+    for attention_id in resolved {
+        insert_attention_intervention(
+            transaction,
+            &attention_id,
+            "recovery",
+            "progress",
+            "recovery-observed",
+            &canonical.occurred_at,
+        )?;
+    }
+    Ok(())
+}
+
+fn upsert_stuck_attention(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+    reason_key: &str,
+    evidence: &[(String, String)],
+) -> AppResult<()> {
+    if evidence.len() < 3 {
+        return Ok(());
+    }
+    let existing = transaction
+        .query_row(
+            "SELECT id FROM attention_events
+             WHERE agent=?1 AND source_session_id=?2 AND kind='stuck'
+               AND state IN('open','acknowledged','snoozed') LIMIT 1",
+            params![canonical.agent, canonical.source_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let attention_id = existing.unwrap_or_else(|| {
+        format!(
+            "attention-{}",
+            crate::privacy::stable_hash(&format!("stuck|{}", canonical.id))
+        )
+    });
+    let opened_at = evidence
+        .first()
+        .map(|(_, occurred_at)| occurred_at.as_str())
+        .unwrap_or(&canonical.occurred_at);
+    let expires_at = DateTime::parse_from_rfc3339(&canonical.observed_at)
+        .map(|opened| {
+            (opened.with_timezone(&Utc) + Duration::hours(24))
+                .to_rfc3339_opts(SecondsFormat::AutoSi, true)
+        })
+        .unwrap_or_else(|_| canonical.observed_at.clone());
+    transaction.execute(
+        "INSERT INTO attention_events(
+            id, kind, state, reason_key, agent, source_session_id, project_label,
+            opened_at, latest_evidence_at, expires_at, resolved_at, resolution_reason,
+            evidence_level, source_coverage, rule_version, updated_at
+         ) VALUES(?1, 'stuck', 'open', ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL,
+                  'derived', 'exact-lifecycle', 'stuck-detector-1.0.0', ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            latest_evidence_at=excluded.latest_evidence_at,
+            project_label=excluded.project_label,
+            updated_at=excluded.updated_at",
+        params![
+            attention_id,
+            reason_key,
+            canonical.agent,
+            canonical.source_session_id,
+            canonical.project_label,
+            opened_at,
+            canonical.occurred_at,
+            expires_at,
+            canonical.observed_at,
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE attention_events
+         SET latest_evidence_at=MAX(latest_evidence_at, ?1), updated_at=?2
+         WHERE id=?3",
+        params![canonical.occurred_at, canonical.observed_at, attention_id],
+    )?;
+    for (canonical_event_id, observed_at) in evidence {
+        transaction.execute(
+            "INSERT OR IGNORE INTO attention_event_evidence(
+                attention_event_id, canonical_event_id, role, observed_at
+             ) VALUES(?1, ?2, 'stuck-signal', ?3)",
+            params![attention_id, canonical_event_id, observed_at],
+        )?;
+    }
+    Ok(())
+}
+
+fn latest_stuck_progress_at(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+    window_start: &str,
+) -> AppResult<String> {
+    Ok(transaction
+        .query_row(
+            "SELECT MAX(occurred_at) FROM canonical_events
+             WHERE source='live-hook' AND deleted_at IS NULL
+               AND agent=?1 AND source_session_id=?2
+               AND event_type IN(
+                   'tool.finish','lifecycle.resume','agent.stop','activity.progress'
+               ) AND occurred_at>=?3 AND occurred_at<=?4",
+            params![
+                canonical.agent,
+                canonical.source_session_id,
+                window_start,
+                canonical.occurred_at
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )?
+        .unwrap_or_else(|| window_start.to_string()))
+}
+
+fn sync_stuck_detection(
+    transaction: &Transaction<'_>,
+    canonical: &CanonicalLiveEvent,
+) -> AppResult<()> {
+    if !canonical.exact_lifecycle {
+        return Ok(());
+    }
+    if valid_stuck_progress(canonical) {
+        return resolve_stuck_attention(transaction, canonical);
+    }
+    let occurred = DateTime::parse_from_rfc3339(&canonical.occurred_at)
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now());
+    let window_start =
+        (occurred - Duration::minutes(10)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
+    let evidence_start = latest_stuck_progress_at(transaction, canonical, &window_start)?;
+
+    if canonical.event_type == "agent.error" {
+        let evidence = {
+            let mut statement = transaction.prepare(
+                "SELECT id, occurred_at FROM canonical_events
+                 WHERE source='live-hook' AND deleted_at IS NULL
+                   AND agent=?1 AND source_session_id=?2
+                   AND event_type='agent.error' AND occurred_at>?3 AND occurred_at<=?4
+                 ORDER BY occurred_at DESC, id DESC LIMIT 3",
+            )?;
+            let mut rows = statement
+                .query_map(
+                    params![
+                        canonical.agent,
+                        canonical.source_session_id,
+                        evidence_start,
+                        canonical.occurred_at
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.reverse();
+            rows
+        };
+        return upsert_stuck_attention(transaction, canonical, "subagent-start-failure", &evidence);
+    }
+
+    if canonical.lifecycle_status == "error" {
+        let evidence = {
+            let mut statement = transaction.prepare(
+                "SELECT id, occurred_at FROM canonical_events
+                 WHERE source='live-hook' AND deleted_at IS NULL
+                   AND agent=?1 AND source_session_id=?2
+                   AND lifecycle_status='error' AND event_type=?3 AND live_phase=?4
+                   AND occurred_at>?5 AND occurred_at<=?6
+                 ORDER BY occurred_at DESC, id DESC LIMIT 3",
+            )?;
+            let mut rows = statement
+                .query_map(
+                    params![
+                        canonical.agent,
+                        canonical.source_session_id,
+                        canonical.event_type,
+                        canonical.live_phase,
+                        evidence_start,
+                        canonical.occurred_at
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.reverse();
+            rows
+        };
+        return upsert_stuck_attention(transaction, canonical, "repeated-failure", &evidence);
+    }
+
+    if canonical.event_type == "tool.start"
+        && !matches!(canonical.live_phase.as_str(), "reading" | "editing")
+    {
+        let evidence = {
+            let mut statement = transaction.prepare(
+                "SELECT id, occurred_at FROM canonical_events
+                 WHERE source='live-hook' AND deleted_at IS NULL
+                   AND agent=?1 AND source_session_id=?2
+                   AND event_type='tool.start' AND live_phase=?3
+                   AND occurred_at>?4 AND occurred_at<=?5
+                 ORDER BY occurred_at DESC, id DESC LIMIT 3",
+            )?;
+            let mut rows = statement
+                .query_map(
+                    params![
+                        canonical.agent,
+                        canonical.source_session_id,
+                        canonical.live_phase,
+                        evidence_start,
+                        canonical.occurred_at
+                    ],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.reverse();
+            rows
+        };
+        upsert_stuck_attention(transaction, canonical, "repeated-operation-loop", &evidence)?;
+    }
+    Ok(())
+}
+
 fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<()> {
     for (target_version, migration) in [
         (1, MIGRATION_V1),
@@ -2128,6 +2400,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 21 {
         connection.execute_batch(MIGRATION_V21)?;
+    }
+    if version < 22 {
+        connection.execute_batch(MIGRATION_V22)?;
     }
     Ok(())
 }
@@ -2365,6 +2640,12 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let attention_review_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('attention_review_samples')
+         WHERE name IN('id','attention_event_id','verdict','rule_version','evidence_level','created_at')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 15
@@ -2378,6 +2659,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || attention_event_columns != 14
         || attention_evidence_columns != 4
         || attention_intervention_columns != 6
+        || attention_review_columns != 6
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -3487,6 +3769,7 @@ impl Database {
                  DELETE FROM vcti_profile_snapshots;
                  DELETE FROM diagnostic_live_envelopes;
                  DELETE FROM activity_cycles;
+                 DELETE FROM attention_review_samples;
                  DELETE FROM attention_interventions;
                  DELETE FROM attention_event_evidence;
                  DELETE FROM attention_events;
@@ -3651,6 +3934,7 @@ impl Database {
         {
             update_activity_cycles(&transaction, canonical)?;
             sync_attention_event(&transaction, canonical)?;
+            sync_stuck_detection(&transaction, canonical)?;
         }
         if canonical_inserted {
             transaction.execute(
@@ -3935,14 +4219,21 @@ impl Database {
             .unwrap_or_else(|_| now.clone());
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
-        let exists = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM attention_events WHERE id=?1)",
-            params![attention_event_id],
-            |row| row.get::<_, i64>(0),
-        )? != 0;
-        if !exists {
+        let attention_kind = transaction
+            .query_row(
+                "SELECT kind FROM attention_events WHERE id=?1",
+                params![attention_event_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(attention_kind) = attention_kind else {
             return Err(AppError::InvalidRequest(
                 "attention event is unavailable".into(),
+            ));
+        };
+        if feedback == "not-stuck" && attention_kind != "stuck" {
+            return Err(AppError::InvalidRequest(
+                "not-stuck feedback requires a stuck attention event".into(),
             ));
         }
         let changed = transaction.execute(
@@ -3978,6 +4269,19 @@ impl Database {
             "user-confirmed",
             &now,
         )?;
+        if feedback == "not-stuck" {
+            let id = format!(
+                "attention-review-{}",
+                crate::privacy::stable_hash(&format!("{attention_event_id}|not-stuck"))
+            );
+            transaction.execute(
+                "INSERT OR IGNORE INTO attention_review_samples(
+                    id, attention_event_id, verdict, rule_version, evidence_level, created_at
+                 ) SELECT ?1, id, 'not-stuck', rule_version, 'user-confirmed', ?3
+                   FROM attention_events WHERE id=?2",
+                params![id, attention_event_id, now],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -9435,6 +9739,237 @@ mod concurrency_tests {
             "progress".into(),
             "recovery-observed".into()
         )));
+    }
+
+    #[test]
+    fn stuck_detection_requires_three_bounded_failures_and_progress_resolves_it() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("stuck-detection.sqlite"))
+            .expect("database should open");
+        let base = Utc::now();
+        let event =
+            |id: &str, name: &str, status: &str, phase: &str, seconds: i64| ObservedLiveEvent {
+                occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+                observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+                agent: "codex".into(),
+                source_session_id: "stuck-session".into(),
+                source_event_id: Some(id.into()),
+                source_sequence: Some(seconds),
+                source_event_fingerprint: None,
+                event_name: name.into(),
+                project_label: "project".into(),
+                payload_json: "{}".into(),
+                status: status.into(),
+                phase: Some(phase.into()),
+            };
+
+        for index in 0..2 {
+            database
+                .record_observed_live_event(&event(
+                    &format!("failure-{index}"),
+                    "PostToolUseFailure",
+                    "error",
+                    "verifying",
+                    index * 60,
+                ))
+                .expect("bounded failure should persist");
+        }
+        assert!(
+            database
+                .attention_events()
+                .expect("attention should load")
+                .iter()
+                .all(|event| event.kind != "stuck")
+        );
+        database
+            .record_observed_live_event(&event(
+                "failure-2",
+                "PostToolUseFailure",
+                "error",
+                "verifying",
+                120,
+            ))
+            .expect("third failure should persist");
+
+        let stuck = database
+            .attention_events()
+            .expect("stuck attention should load")
+            .into_iter()
+            .find(|attention| attention.kind == "stuck")
+            .expect("three failures should create stuck attention");
+        assert_eq!(stuck.reason_key, "repeated-failure");
+        assert_eq!(stuck.evidence_level, "derived");
+        assert_eq!(stuck.source_coverage, "exact-lifecycle");
+        assert_eq!(stuck.rule_version, "stuck-detector-1.0.0");
+        assert_eq!(stuck.evidence_count, 3);
+
+        database
+            .record_observed_live_event(&event(
+                "progress",
+                "PostToolUse",
+                "running",
+                "verifying",
+                180,
+            ))
+            .expect("valid progress should persist");
+        let resolved = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .find(|attention| attention.id == stuck.id)
+            .expect("stuck history should remain");
+        assert_eq!(resolved.state, "resolved");
+
+        for index in 0..3 {
+            database
+                .record_observed_live_event(&event(
+                    &format!("read-{index}"),
+                    "PreToolUse",
+                    "running",
+                    "reading",
+                    200 + index * 10,
+                ))
+                .expect("repeated reads should persist");
+        }
+        let stuck_count = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .filter(|attention| attention.kind == "stuck")
+            .count();
+        assert_eq!(stuck_count, 1, "repeated reads must not create stuck");
+
+        for index in 0..3 {
+            database
+                .record_observed_live_event(&event(
+                    &format!("review-failure-{index}"),
+                    "PostToolUseFailure",
+                    "error",
+                    "verifying",
+                    300 + index * 60,
+                ))
+                .expect("review failure should persist");
+        }
+        let review_stuck = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .find(|attention| attention.kind == "stuck" && attention.state == "open")
+            .expect("new evidence after progress should open a new stuck episode");
+        database
+            .set_attention_feedback(&review_stuck.id, "not-stuck")
+            .expect("not-stuck review should persist");
+        let review_count = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT COUNT(*) FROM attention_review_samples
+                 WHERE attention_event_id=?1 AND verdict='not-stuck'",
+                params![review_stuck.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("review sample should load");
+        assert_eq!(review_count, 1);
+    }
+
+    #[test]
+    fn stuck_detector_covers_operation_loops_and_subagent_failures_without_common_false_positives()
+    {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("stuck-rules.sqlite"))
+            .expect("database should open");
+        let base = Utc::now();
+        let event =
+            |session: &str, id: &str, name: &str, status: &str, phase: &str, seconds: i64| {
+                ObservedLiveEvent {
+                    occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+                    observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+                    agent: "claude-code".into(),
+                    source_session_id: session.into(),
+                    source_event_id: Some(id.into()),
+                    source_sequence: Some(seconds),
+                    source_event_fingerprint: None,
+                    event_name: name.into(),
+                    project_label: "project".into(),
+                    payload_json: "{}".into(),
+                    status: status.into(),
+                    phase: Some(phase.into()),
+                }
+            };
+
+        for index in 0..3 {
+            database
+                .record_observed_live_event(&event(
+                    "operation-loop",
+                    &format!("loop-{index}"),
+                    "PreToolUse",
+                    "running",
+                    "running-tool",
+                    index * 30,
+                ))
+                .expect("operation loop should persist");
+            database
+                .record_observed_live_event(&event(
+                    "subagent-failure",
+                    &format!("subagent-{index}"),
+                    "SubagentStart",
+                    "error",
+                    "running-tool",
+                    120 + index * 30,
+                ))
+                .expect("subagent failure should persist");
+            database
+                .record_observed_live_event(&event(
+                    "normal-edits",
+                    &format!("edit-{index}"),
+                    "PreToolUse",
+                    "running",
+                    "editing",
+                    240 + index * 30,
+                ))
+                .expect("normal edits should persist");
+        }
+        database
+            .record_observed_live_event(&event(
+                "normal-edits",
+                "test-pass",
+                "PostToolUse",
+                "running",
+                "verifying",
+                340,
+            ))
+            .expect("successful verification should persist");
+        database
+            .record_observed_live_event(&event(
+                "normal-edits",
+                "token-anomaly",
+                "TokenUsage",
+                "running",
+                "thinking",
+                350,
+            ))
+            .expect("token activity should persist");
+
+        let stuck = database
+            .attention_events()
+            .expect("attention should load")
+            .into_iter()
+            .filter(|attention| attention.kind == "stuck")
+            .collect::<Vec<_>>();
+        assert_eq!(stuck.len(), 2);
+        assert!(stuck.iter().any(|attention| {
+            attention.source_session_id == "operation-loop"
+                && attention.reason_key == "repeated-operation-loop"
+        }));
+        assert!(stuck.iter().any(|attention| {
+            attention.source_session_id == "subagent-failure"
+                && attention.reason_key == "subagent-start-failure"
+        }));
+        assert!(
+            stuck
+                .iter()
+                .all(|attention| attention.source_session_id != "normal-edits")
+        );
     }
 
     #[test]

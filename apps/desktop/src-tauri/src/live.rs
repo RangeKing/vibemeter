@@ -2,8 +2,8 @@ use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::live_sources;
 use crate::models::{
-    HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession, LiveSnapshot,
-    NotchCompletedSession, ObservedLiveEvent, WorkPulse, WorkPulseDimension,
+    AttentionEvent, HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession,
+    LiveSnapshot, NotchCompletedSession, ObservedLiveEvent, WorkPulse, WorkPulseDimension,
 };
 use crate::providers::{codex_binary, write_json_line};
 use crate::source_capabilities::{SourceLiveCapability, source_capabilities};
@@ -2861,6 +2861,11 @@ fn snapshot_from_at(
     {
         session.pulse = work_pulse_at(session, now);
     }
+    let attention = database.attention_events().unwrap_or_default();
+    overlay_attention_pulses(&mut items, &attention);
+    for completed in &mut completed_sessions {
+        overlay_attention_pulses(std::slice::from_mut(&mut completed.session), &attention);
+    }
     sort_live_sessions(&mut items);
     let urgent_session_id = items.first().map(|item| item.id.clone());
     let active_count = items
@@ -2874,6 +2879,26 @@ fn snapshot_from_at(
         urgent_session_id,
         active_count,
         hook_status: hook_status(socket_ready),
+    }
+}
+
+fn overlay_attention_pulses(sessions: &mut [LiveSession], attention: &[AttentionEvent]) {
+    for session in sessions {
+        let has_stuck = attention.iter().any(|event| {
+            event.kind == "stuck"
+                && matches!(event.state.as_str(), "open" | "acknowledged")
+                && event.agent == session.agent
+                && event.source_session_id == session.source_session_id
+        });
+        if has_stuck && session.pulse.attention_signal.value.as_deref() == Some("none") {
+            session.pulse.attention_signal = WorkPulseDimension {
+                availability: "available".into(),
+                value: Some("stuck".into()),
+                evidence_level: "derived".into(),
+                source_coverage: "exact".into(),
+                age_seconds: None,
+            };
+        }
     }
 }
 
@@ -3749,6 +3774,41 @@ mod tests {
             experimental.pulse.freshness.value.as_deref(),
             Some("lost-update")
         );
+    }
+
+    #[test]
+    fn high_confidence_stuck_attention_overlays_a_running_exact_pulse() {
+        let mut session = jump_test_session("codex", "desktop", None);
+        session.id = "stuck-live".into();
+        session.source_session_id = "stuck-source".into();
+        session.status = "running".into();
+        session.phase = "running-tool".into();
+        session.pulse = work_pulse_at(&session, Utc::now());
+        let attention = crate::models::AttentionEvent {
+            id: "attention-stuck".into(),
+            kind: "stuck".into(),
+            state: "open".into(),
+            reason_key: "repeated-operation-loop".into(),
+            agent: "codex".into(),
+            source_session_id: "stuck-source".into(),
+            project_label: "vibemeter".into(),
+            opened_at: Utc::now().to_rfc3339(),
+            latest_evidence_at: Utc::now().to_rfc3339(),
+            expires_at: (Utc::now() + Duration::hours(24)).to_rfc3339(),
+            resolved_at: None,
+            evidence_level: "derived".into(),
+            source_coverage: "exact-lifecycle".into(),
+            rule_version: "stuck-detector-1.0.0".into(),
+            evidence_count: 3,
+        };
+
+        overlay_attention_pulses(std::slice::from_mut(&mut session), &[attention]);
+
+        assert_eq!(
+            session.pulse.attention_signal.value.as_deref(),
+            Some("stuck")
+        );
+        assert_eq!(session.pulse.attention_signal.evidence_level, "derived");
     }
 
     #[test]

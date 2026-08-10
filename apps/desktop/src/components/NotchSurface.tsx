@@ -241,7 +241,7 @@ export function AgentActivityGlyph({
   const status = session ? notchPulseStatus(session) : "idle";
   const phase = session ? notchPulseValue(session) : "ready";
   let Icon = Gauge;
-  if (status === "waiting" || status === "error") Icon = CircleAlert;
+  if (status === "waiting" || status === "error" || phase === "stuck") Icon = CircleAlert;
   else if (status === "paused") Icon = CirclePause;
   else if (status === "completed") Icon = Check;
   else if (phase === "planning") Icon = ListTree;

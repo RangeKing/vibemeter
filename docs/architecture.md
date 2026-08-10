@@ -51,6 +51,8 @@ Exact waiting and error facts open persistent attention episodes. Repeated canon
 
 Attention actions use fixed feedback values only: handled, not relevant, not stuck, or snoozed. A successful jump acknowledges an episode but does not resolve waiting or error; a failed jump records an intervention and preserves the episode. Notifications are atomically claimed once per episode after the foreground-source check. Intervention records distinguish user-confirmed feedback and jumps, observed recovery, and inferred expiry.
 
+High-confidence stuck detection is derived only from exact canonical evidence. Versioned rules require three matching failures within ten minutes, three matching operation starts without a valid progress fact, or three subagent-start failures. A valid finish, resume, agent stop, or explicit progress fact resolves the episode. Reading/editing repetition, isolated failures, silence, token-only activity, and successful verification are excluded. A user-confirmed “not stuck” response becomes a durable review sample for the quality gate.
+
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries
