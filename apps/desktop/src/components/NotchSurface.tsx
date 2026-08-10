@@ -160,6 +160,46 @@ function ProviderCount({
   );
 }
 
+export function NotchAttentionQueue({
+  items,
+  jumpErrorId,
+  onFeedback,
+  onJump,
+}: {
+  items: AttentionEvent[];
+  jumpErrorId?: string;
+  onFeedback: (
+    id: string,
+    feedback: "handled" | "not-relevant" | "not-stuck" | "snoozed",
+  ) => void;
+  onJump: (id: string) => void;
+}) {
+  const { t } = useTranslation();
+  if (!items.length) return null;
+  return (
+    <section className="notch-attention-queue">
+      <header><strong>{t("live.attention.queueTitle")}</strong><span>{items.length}</span></header>
+      {items.map((attention) => (
+        <article key={attention.id} className={`kind-${attention.kind}`}>
+          <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
+          <span>
+            <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+            <small>{attention.projectLabel || agentName(attention.agent)}</small>
+          </span>
+          <span className="notch-attention-actions">
+            <button onClick={() => onFeedback(attention.id, "handled")}>{t("live.attention.action.handled")}</button>
+            {attention.kind === "stuck" ? <button onClick={() => onFeedback(attention.id, "not-stuck")}>{t("live.attention.action.not-stuck")}</button> : null}
+            <button onClick={() => onJump(attention.id)} aria-label={t("live.jump")}><ArrowUpRight size={12} /></button>
+          </span>
+          {jumpErrorId === attention.id ? (
+            <p className="notch-attention-error" role="alert">{t("live.attention.jumpFailed")}</p>
+          ) : null}
+        </article>
+      ))}
+    </section>
+  );
+}
+
 function liveActionKey(action: LiveSession["actions"][number]): string {
   return `${action.occurredAt}:${action.kind}:${action.label}`;
 }
@@ -348,6 +388,7 @@ export function expandedHeightForSessions(
     completedExpanded?: boolean;
     completedErrorCount?: number;
     activeErrorCount?: number;
+    attentionErrorCount?: number;
     attentionCount?: number;
     showClearUndo?: boolean;
   } = {},
@@ -357,7 +398,9 @@ export function expandedHeightForSessions(
   );
   const completedCount = options.completedCount ?? 0;
   const attentionCount = options.attentionCount ?? 0;
-  if (attentionCount > 0) blockHeights.push(30 + attentionCount * 58);
+  if (attentionCount > 0) {
+    blockHeights.push(30 + attentionCount * 58 + (options.attentionErrorCount ?? 0) * 18);
+  }
   if (completedCount > 0) {
     const completedCardsHeight = options.completedExpanded
       ? 7 +
@@ -390,6 +433,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const [completedExpanded, setCompletedExpanded] = useState(true);
   const [sessionListScrollable, setSessionListScrollable] = useState(false);
   const [activeJumpError, setActiveJumpError] = useState<string>();
+  const [attentionJumpError, setAttentionJumpError] = useState<string>();
   const [completedJumpError, setCompletedJumpError] = useState<string>();
   const [clearUndo, setClearUndo] = useState<{ token: string; count: number }>();
   const lastActivity = useRef<boolean | undefined>(undefined);
@@ -417,6 +461,11 @@ export function NotchSurface({ locale }: { locale: Locale }) {
       setActiveJumpError(undefined);
     }
   }, [activeJumpError, activeSessionIds]);
+  useEffect(() => {
+    if (attentionJumpError && !attentionQueue.some((item) => item.id === attentionJumpError)) {
+      setAttentionJumpError(undefined);
+    }
+  }, [attentionJumpError, attentionQueue]);
   const rightSession = pickRightWingSession(sessions, now);
   const hasActivity = activeSessions.length > 0 || attentionQueue.length > 0;
   const singleWingSession = activeSessions.length === 1 ? activeSessions[0] : undefined;
@@ -444,6 +493,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         : 0,
       showClearUndo: Boolean(clearUndo),
       attentionCount: attentionQueue.length,
+      attentionErrorCount: attentionJumpError ? 1 : 0,
     },
   );
   const collapsedInsets = collapsedMorphInsets(
@@ -612,6 +662,9 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const jumpToAttention = async (id: string) => {
     try {
       await api.jumpToAttention(id);
+      setAttentionJumpError(undefined);
+    } catch {
+      setAttentionJumpError(id);
     } finally {
       await snapshot.refetch();
     }
@@ -741,25 +794,12 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           visibleSessions.length || completedSessions.length || clearUndo ? "" : "is-empty"
         }`}
       >
-        {attentionQueue.length ? (
-          <section className="notch-attention-queue">
-            <header><strong>{t("live.attention.queueTitle")}</strong><span>{attentionQueue.length}</span></header>
-            {attentionQueue.map((attention) => (
-              <article key={attention.id} className={`kind-${attention.kind}`}>
-                <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
-                <span>
-                  <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-                  <small>{attention.projectLabel || agentName(attention.agent)}</small>
-                </span>
-                <span className="notch-attention-actions">
-                  <button onClick={() => void updateAttention(attention.id, "handled")}>{t("live.attention.action.handled")}</button>
-                  {attention.kind === "stuck" ? <button onClick={() => void updateAttention(attention.id, "not-stuck")}>{t("live.attention.action.not-stuck")}</button> : null}
-                  <button onClick={() => void jumpToAttention(attention.id)} aria-label={t("live.jump")}><ArrowUpRight size={12} /></button>
-                </span>
-              </article>
-            ))}
-          </section>
-        ) : null}
+        <NotchAttentionQueue
+          items={attentionQueue}
+          jumpErrorId={attentionJumpError}
+          onFeedback={(id, feedback) => void updateAttention(id, feedback)}
+          onJump={(id) => void jumpToAttention(id)}
+        />
         {visibleSessions.map((session, index) => {
           const reason =
             activeJumpError === session.id ? t("notch.jumpFailed") : liveReason(session, t);

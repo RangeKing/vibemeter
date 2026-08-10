@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
+import { useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -69,10 +70,12 @@ export function AttentionActions({
 
 export function AttentionQueue({
   items,
+  jumpErrors = new Set(),
   onFeedback,
   onJump,
 }: {
   items: AttentionEvent[];
+  jumpErrors?: ReadonlySet<string>;
   onFeedback: (id: string, feedback: AttentionFeedback) => void;
   onJump: (id: string) => void;
 }) {
@@ -94,6 +97,9 @@ export function AttentionQueue({
           </header>
           <p>{t(`live.attention.reason.${attention.reasonKey}`, { defaultValue: attention.reasonKey })}</p>
           <small>{t("live.attention.evidence", { count: attention.evidenceCount })}</small>
+          {jumpErrors.has(attention.id) ? (
+            <p className="attention-jump-error" role="alert">{t("live.attention.jumpFailed")}</p>
+          ) : null}
           <footer>
             <AttentionActions
               kind={attention.kind}
@@ -298,6 +304,7 @@ export function LivePage({ locale }: { locale: Locale }) {
   const capabilityNames = sourceCapabilityNameGroups(locale === "zh-CN" ? "、" : ", ");
   const setPage = useUiStore((state) => state.setPage);
   const snapshot = useLiveSnapshot();
+  const [attentionJumpErrors, setAttentionJumpErrors] = useState<ReadonlySet<string>>(new Set());
   const activity = useQuery({
     queryKey: ["live-activity"],
     queryFn: api.liveActivity,
@@ -319,11 +326,26 @@ export function LivePage({ locale }: { locale: Locale }) {
     item.state === "resolved" || item.state === "ignored" || item.state === "expired");
   const updateAttention = async (id: string, feedback: AttentionFeedback) => {
     await api.setAttentionFeedback(id, feedback);
+    setAttentionJumpErrors((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
     await Promise.all([activity.refetch(), snapshot.refetch()]);
   };
   const jumpToAttention = async (id: string) => {
-    await api.jumpToAttention(id);
-    await Promise.all([activity.refetch(), snapshot.refetch()]);
+    try {
+      await api.jumpToAttention(id);
+      setAttentionJumpErrors((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    } catch {
+      setAttentionJumpErrors((current) => new Set(current).add(id));
+    } finally {
+      await Promise.all([activity.refetch(), snapshot.refetch()]);
+    }
   };
 
   return (
@@ -379,6 +401,7 @@ export function LivePage({ locale }: { locale: Locale }) {
         ) : (
           <AttentionQueue
             items={currentAttention}
+            jumpErrors={attentionJumpErrors}
             onFeedback={(id, feedback) => void updateAttention(id, feedback)}
             onJump={(id) => void jumpToAttention(id)}
           />

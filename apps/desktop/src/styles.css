@@ -343,6 +343,7 @@ select { padding-right: 28px; }
 .attention-queue > article > header > div { display: grid; gap: 3px; }
 .attention-queue > article > header small, .attention-queue > article > small { color: var(--muted); }
 .attention-queue > article > p { margin: 0; color: var(--text-subtle); font-size: var(--font-caption); }
+.attention-queue > article > .attention-jump-error { color: var(--red); }
 .attention-history-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
 .attention-history-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 9px 10px; border-bottom: 1px solid var(--line); }
 .attention-history-list li span { color: var(--muted); font-size: var(--font-caption); }
@@ -369,6 +370,7 @@ select { padding-right: 28px; }
 .notch-attention-queue > article small { overflow: hidden; color: rgba(255,255,255,.56); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .notch-attention-actions { display: flex; gap: 4px; }
 .notch-attention-actions button { min-height: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: rgba(255,255,255,.09); color: white; font-size: 9px; }
+.notch-attention-queue .notch-attention-error { grid-column: 1 / -1; margin: 0; color: #ff8f8f; font-size: 9px; }
 .live-empty { display: flex; min-height: 230px; align-items: center; justify-content: center; gap: 24px; border: 1px dashed var(--line-strong); border-radius: 16px; background: color-mix(in srgb, var(--surface) 78%, transparent); text-align: left; }
 .live-empty h3 { margin: 0 0 5px; font-family: var(--serif); font-size: 23px; }
 .live-empty p { max-width: 470px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }

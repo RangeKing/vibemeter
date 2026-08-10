@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import type { LiveSession } from "../types";
+// @vitest-environment jsdom
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { I18nextProvider } from "react-i18next";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import i18n from "../i18n";
+import type { AttentionEvent, LiveSession } from "../types";
 import {
   activeProviderCounts,
   collapsedMorphInsets,
@@ -8,10 +13,17 @@ import {
   formatLiveElapsed,
   liveElapsedEnd,
   leftWingWidthForSession,
+  NotchAttentionQueue,
   notchPulseValue,
   notchVisibleActions,
   pickRightWingSession,
 } from "./NotchSurface";
+
+beforeAll(async () => {
+  await i18n.changeLanguage("zh-CN");
+});
+
+afterEach(cleanup);
 
 function session(
   id: string,
@@ -50,6 +62,39 @@ function session(
 }
 
 describe("Notch session selection", () => {
+  it("shows the retained attention item when its jump fails", () => {
+    const attention: AttentionEvent = {
+      id: "attention-jump-failed",
+      kind: "waiting",
+      state: "open",
+      reasonKey: "permission-required",
+      agent: "codex",
+      sourceSessionId: "source-session",
+      projectLabel: "VibeMeter",
+      openedAt: "2026-08-10T08:00:00Z",
+      latestEvidenceAt: "2026-08-10T08:00:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 1,
+      interventionCount: 0,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[attention]}
+          jumpErrorId={attention.id}
+          onFeedback={vi.fn()}
+          onJump={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe("无法返回源会话，关注事件已保留，可稍后重试。");
+    expect(screen.getByText("VibeMeter")).toBeTruthy();
+  });
+
   it("formats a live conversation duration instead of a wall-clock timestamp", () => {
     const startedAt = "2026-07-26T00:00:00Z";
     expect(formatLiveElapsed(startedAt, Date.parse("2026-07-26T00:03:07Z"))).toBe("3:07");

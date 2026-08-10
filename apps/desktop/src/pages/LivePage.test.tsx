@@ -242,6 +242,23 @@ describe("Attention actions", () => {
     expect(screen.getByText("暂无需要关注的事件")).toBeTruthy();
   });
 
+  it("keeps the attention event visible and shows a jump failure", () => {
+    const event = attention("waiting", "jump-failed", "2026-08-10T08:00:00Z");
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionQueue
+          items={[event]}
+          jumpErrors={new Set([event.id])}
+          onFeedback={vi.fn()}
+          onJump={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe("无法返回源会话，关注事件已保留，可稍后重试。");
+    expect(screen.getByText("需要你")).toBeTruthy();
+  });
+
   it("keeps the hard quality gate incomplete when local evidence is missing", () => {
     const report: AttentionQualityReport = {
       reviewedSamples: 0,
