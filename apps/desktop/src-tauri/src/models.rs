@@ -854,6 +854,26 @@ pub struct AttentionEvent {
     pub intervention_count: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionQualityReport {
+    pub reviewed_samples: u64,
+    pub stuck_precision: Option<f64>,
+    pub feedback_samples: u64,
+    pub false_positive_rate: Option<f64>,
+    pub notification_samples: u64,
+    pub notification_p95_seconds: Option<f64>,
+    pub jump_attempts: u64,
+    pub jump_success_rate: Option<f64>,
+    pub real_app_verified: bool,
+    pub required_samples: u64,
+    pub required_precision: f64,
+    pub maximum_false_positive_rate: f64,
+    pub maximum_notification_p95_seconds: f64,
+    pub required_jump_success_rate: f64,
+    pub passed: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionsResponse {

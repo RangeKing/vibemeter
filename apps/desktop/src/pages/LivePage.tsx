@@ -21,6 +21,7 @@ import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
 import type {
   AttentionEvent,
+  AttentionQualityReport,
   LiveHistoryItem,
   LiveSession,
   LiveTimelinePoint,
@@ -105,6 +106,47 @@ export function AttentionQueue({
         </article>
       ))}
     </div>
+  );
+}
+
+function percentage(value: number | null): string | null {
+  return value === null ? null : `${Math.round(value * 1_000) / 10}%`;
+}
+
+export function AttentionQualityGate({ report }: { report: AttentionQualityReport }) {
+  const { t } = useTranslation();
+  const unavailable = t("live.pulse.notRecorded");
+  const stuckPrecision = percentage(report.stuckPrecision);
+  const falsePositiveRate = percentage(report.falsePositiveRate);
+  const jumpSuccessRate = percentage(report.jumpSuccessRate);
+  return (
+    <aside className={`attention-quality state-${report.passed ? "passed" : "incomplete"}`}>
+      <header>
+        <div>
+          <strong>{t("live.attention.qualityTitle")}</strong>
+          <small>{t("live.attention.qualityBody")}</small>
+        </div>
+        <span>{t(report.passed ? "live.attention.qualityPassed" : "live.attention.qualityIncomplete")}</span>
+      </header>
+      <dl>
+        <div><dt>{t("live.attention.reviewedSamples")}</dt><dd>{report.reviewedSamples} / {report.requiredSamples}</dd></div>
+        <div><dt>{t("live.attention.stuckPrecision")}</dt><dd>{stuckPrecision ?? unavailable}</dd></div>
+        <div>
+          <dt>{t("live.attention.falsePositiveRate")}</dt>
+          <dd>{falsePositiveRate === null
+            ? unavailable
+            : t("live.attention.rateWithSamples", { rate: falsePositiveRate, count: report.feedbackSamples })}</dd>
+        </div>
+        <div>
+          <dt>{t("live.attention.notificationLatency")}</dt>
+          <dd>{report.notificationP95Seconds === null
+            ? unavailable
+            : t("live.attention.seconds", { value: report.notificationP95Seconds.toFixed(2) })}</dd>
+        </div>
+        <div><dt>{t("live.attention.jumpSuccessRate")}</dt><dd>{jumpSuccessRate ?? unavailable}</dd></div>
+        <div><dt>{t("live.attention.realAppCheck")}</dt><dd>{t(report.realAppVerified ? "live.attention.verified" : "live.attention.notVerified")}</dd></div>
+      </dl>
+    </aside>
   );
 }
 
@@ -261,6 +303,11 @@ export function LivePage({ locale }: { locale: Locale }) {
     queryFn: api.liveActivity,
     refetchInterval: 5_000,
   });
+  const quality = useQuery({
+    queryKey: ["attention-quality"],
+    queryFn: api.attentionQuality,
+    refetchInterval: 30_000,
+  });
   if (snapshot.isLoading) return <LoadingState />;
   if (snapshot.isError || !snapshot.data) return <ErrorState retry={() => void snapshot.refetch()} />;
   const data = snapshot.data;
@@ -336,6 +383,7 @@ export function LivePage({ locale }: { locale: Locale }) {
             onJump={(id) => void jumpToAttention(id)}
           />
         )}
+        {quality.data ? <AttentionQualityGate report={quality.data} /> : null}
       </section>
 
       <div className="live-split">

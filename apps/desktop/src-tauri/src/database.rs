@@ -1,15 +1,16 @@
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    AgentKind, AttentionEvent, BehaviorSignals, BehaviorSummary, CanonicalEvent, ComparisonItem,
-    CoverageNotice, DailyUsagePoint, DistributionItem, EvidenceReference, FileChange,
-    FileChangeAccumulator, GitCommitEvidence, GitEvidence, GitFileStat, HourlyUsagePoint,
-    IndexStatus, InsightItem, InsightStat, InsightsResponse, LiveActivityResponse,
-    LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint, NotchClearResult,
-    NotchCompletedSession, ObservedLiveEvent, OverviewResponse, OverviewTotals, PARSER_VERSION,
-    ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem, PhraseCloudResponse,
-    PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase, ProjectControl, Provenance,
-    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionSummary, SessionsResponse,
-    SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    AgentKind, AttentionEvent, AttentionQualityReport, BehaviorSignals, BehaviorSummary,
+    CanonicalEvent, ComparisonItem, CoverageNotice, DailyUsagePoint, DistributionItem,
+    EvidenceReference, FileChange, FileChangeAccumulator, GitCommitEvidence, GitEvidence,
+    GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat, InsightsResponse,
+    LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint,
+    NotchClearResult, NotchCompletedSession, ObservedLiveEvent, OverviewResponse, OverviewTotals,
+    PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem,
+    PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase,
+    ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
+    SessionSummary, SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary,
+    TokenUsage, VctiProfile,
 };
 use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
@@ -458,7 +459,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 22;
+const DATABASE_SCHEMA_VERSION: i64 = 23;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 
 const MIGRATION_V14: &str = r#"
@@ -836,6 +837,18 @@ CREATE TABLE attention_review_samples (
 CREATE INDEX attention_review_samples_rule_idx
     ON attention_review_samples(rule_version, verdict, created_at);
 PRAGMA user_version = 22;
+"#;
+
+const MIGRATION_V23: &str = r#"
+CREATE TABLE attention_quality_checks (
+    name TEXT PRIMARY KEY CHECK(name IN(
+        'duplicate-suppression','foreground-silence','privacy-surface'
+    )),
+    passed INTEGER NOT NULL CHECK(passed IN(0,1)),
+    measured_at TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+);
+PRAGMA user_version = 23;
 "#;
 
 #[derive(Clone)]
@@ -2412,6 +2425,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     if version < 22 {
         connection.execute_batch(MIGRATION_V22)?;
     }
+    if version < 23 {
+        connection.execute_batch(MIGRATION_V23)?;
+    }
     Ok(())
 }
 
@@ -2654,6 +2670,12 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let attention_quality_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('attention_quality_checks')
+         WHERE name IN('name','passed','measured_at','detail')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 15
@@ -2668,6 +2690,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || attention_evidence_columns != 4
         || attention_intervention_columns != 6
         || attention_review_columns != 6
+        || attention_quality_columns != 4
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -2941,6 +2964,71 @@ fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
         recover_schema_migration_state(path)?;
     }
     migration_result
+}
+
+struct AttentionQualityEvidence {
+    reviewed_samples: u64,
+    true_positive_samples: u64,
+    false_positive_samples: u64,
+    feedback_samples: u64,
+    irrelevant_feedback_samples: u64,
+    notification_latencies: Vec<f64>,
+    jump_successes: u64,
+    jump_failures: u64,
+    real_app_verified: bool,
+}
+
+fn evaluate_attention_quality(evidence: AttentionQualityEvidence) -> AttentionQualityReport {
+    const REQUIRED_SAMPLES: u64 = 100;
+    const REQUIRED_PRECISION: f64 = 0.90;
+    const MAXIMUM_FALSE_POSITIVE_RATE: f64 = 0.10;
+    const MAXIMUM_NOTIFICATION_P95_SECONDS: f64 = 2.0;
+    const REQUIRED_JUMP_SUCCESS_RATE: f64 = 0.95;
+
+    let classified_samples = evidence.true_positive_samples + evidence.false_positive_samples;
+    let stuck_precision = (classified_samples > 0)
+        .then_some(evidence.true_positive_samples as f64 / classified_samples as f64);
+    let false_positive_rate = (evidence.feedback_samples > 0)
+        .then_some(evidence.irrelevant_feedback_samples as f64 / evidence.feedback_samples as f64);
+    let mut notification_latencies = evidence.notification_latencies;
+    notification_latencies.retain(|latency| latency.is_finite() && *latency >= 0.0);
+    notification_latencies.sort_by(f64::total_cmp);
+    let notification_samples = notification_latencies.len() as u64;
+    let notification_p95_seconds = if notification_latencies.is_empty() {
+        None
+    } else {
+        let rank = ((notification_latencies.len() as f64 * 0.95).ceil() as usize)
+            .saturating_sub(1)
+            .min(notification_latencies.len() - 1);
+        notification_latencies.get(rank).copied()
+    };
+    let jump_attempts = evidence.jump_successes + evidence.jump_failures;
+    let jump_success_rate =
+        (jump_attempts > 0).then_some(evidence.jump_successes as f64 / jump_attempts as f64);
+    let passed = evidence.reviewed_samples >= REQUIRED_SAMPLES
+        && stuck_precision.is_some_and(|value| value >= REQUIRED_PRECISION)
+        && false_positive_rate.is_some_and(|value| value <= MAXIMUM_FALSE_POSITIVE_RATE)
+        && notification_p95_seconds.is_some_and(|value| value < MAXIMUM_NOTIFICATION_P95_SECONDS)
+        && jump_success_rate.is_some_and(|value| value >= REQUIRED_JUMP_SUCCESS_RATE)
+        && evidence.real_app_verified;
+
+    AttentionQualityReport {
+        reviewed_samples: evidence.reviewed_samples,
+        stuck_precision,
+        feedback_samples: evidence.feedback_samples,
+        false_positive_rate,
+        notification_samples,
+        notification_p95_seconds,
+        jump_attempts,
+        jump_success_rate,
+        real_app_verified: evidence.real_app_verified,
+        required_samples: REQUIRED_SAMPLES,
+        required_precision: REQUIRED_PRECISION,
+        maximum_false_positive_rate: MAXIMUM_FALSE_POSITIVE_RATE,
+        maximum_notification_p95_seconds: MAXIMUM_NOTIFICATION_P95_SECONDS,
+        required_jump_success_rate: REQUIRED_JUMP_SUCCESS_RATE,
+        passed,
+    }
 }
 
 impl Database {
@@ -3777,6 +3865,7 @@ impl Database {
                  DELETE FROM vcti_profile_snapshots;
                  DELETE FROM diagnostic_live_envelopes;
                  DELETE FROM activity_cycles;
+                 DELETE FROM attention_quality_checks;
                  DELETE FROM attention_review_samples;
                  DELETE FROM attention_interventions;
                  DELETE FROM attention_event_evidence;
@@ -4192,6 +4281,108 @@ impl Database {
         self.attention_events_at(Utc::now())
     }
 
+    pub fn attention_quality_report(&self) -> AppResult<AttentionQualityReport> {
+        let connection = self.connect()?;
+        let (reviewed_samples, true_positive_samples, false_positive_samples) = connection
+            .query_row(
+                "WITH latest AS (
+                    SELECT verdict,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY attention_event_id
+                               ORDER BY created_at DESC, id DESC
+                           ) AS rank
+                    FROM attention_review_samples
+                 )
+                 SELECT COUNT(*),
+                        COALESCE(SUM(CASE WHEN verdict='handled' THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN verdict IN('not-relevant','not-stuck')
+                                          THEN 1 ELSE 0 END), 0)
+                 FROM latest WHERE rank=1",
+                [],
+                |row| Ok((read_u64(row, 0)?, read_u64(row, 1)?, read_u64(row, 2)?)),
+            )?;
+        let (feedback_samples, irrelevant_feedback_samples) = connection.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN feedback IN('not-relevant','not-stuck')
+                                      THEN 1 ELSE 0 END), 0)
+             FROM attention_events
+             WHERE feedback IN('handled','not-relevant','not-stuck')",
+            [],
+            |row| Ok((read_u64(row, 0)?, read_u64(row, 1)?)),
+        )?;
+        let mut notification_statement = connection.prepare(
+            "SELECT opened_at, notification_sent_at
+             FROM attention_events
+             WHERE notification_sent_at IS NOT NULL",
+        )?;
+        let notification_pairs = notification_statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(notification_statement);
+        let notification_latencies = notification_pairs
+            .into_iter()
+            .filter_map(|(opened_at, sent_at)| {
+                let opened_at = DateTime::parse_from_rfc3339(&opened_at).ok()?;
+                let sent_at = DateTime::parse_from_rfc3339(&sent_at).ok()?;
+                let milliseconds = sent_at.signed_duration_since(opened_at).num_milliseconds();
+                (milliseconds >= 0).then_some(milliseconds as f64 / 1_000.0)
+            })
+            .collect::<Vec<_>>();
+        let (jump_successes, jump_failures) = connection.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN outcome='succeeded' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN outcome='failed' THEN 1 ELSE 0 END), 0)
+             FROM attention_interventions WHERE kind='jump'",
+            [],
+            |row| Ok((read_u64(row, 0)?, read_u64(row, 1)?)),
+        )?;
+        let passed_real_app_checks: u64 = connection.query_row(
+            "SELECT COUNT(*) FROM attention_quality_checks WHERE passed=1",
+            [],
+            |row| read_u64(row, 0),
+        )?;
+
+        Ok(evaluate_attention_quality(AttentionQualityEvidence {
+            reviewed_samples,
+            true_positive_samples,
+            false_positive_samples,
+            feedback_samples,
+            irrelevant_feedback_samples,
+            notification_latencies,
+            jump_successes,
+            jump_failures,
+            real_app_verified: passed_real_app_checks == 3,
+        }))
+    }
+
+    pub fn record_attention_quality_check(&self, name: &str, passed: bool) -> AppResult<()> {
+        if !matches!(
+            name,
+            "duplicate-suppression" | "foreground-silence" | "privacy-surface"
+        ) {
+            return Err(AppError::InvalidRequest(
+                "attention quality check must use a fixed name".into(),
+            ));
+        }
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO attention_quality_checks(name, passed, measured_at, detail)
+             VALUES (?1, ?2, ?3, '')
+             ON CONFLICT(name) DO UPDATE SET
+                passed=excluded.passed,
+                measured_at=excluded.measured_at,
+                detail=''",
+            params![
+                name,
+                if passed { 1 } else { 0 },
+                Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true)
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn set_attention_feedback(
         &self,
         attention_event_id: &str,
@@ -4286,17 +4477,22 @@ impl Database {
             "user-confirmed",
             &now,
         )?;
-        if feedback == "not-stuck" {
+        if attention_kind == "stuck" && matches!(feedback, "handled" | "not-relevant" | "not-stuck")
+        {
+            transaction.execute(
+                "DELETE FROM attention_review_samples WHERE attention_event_id=?1",
+                params![attention_event_id],
+            )?;
             let id = format!(
                 "attention-review-{}",
-                crate::privacy::stable_hash(&format!("{attention_event_id}|not-stuck"))
+                crate::privacy::stable_hash(&format!("{attention_event_id}|{feedback}"))
             );
             transaction.execute(
                 "INSERT OR IGNORE INTO attention_review_samples(
                     id, attention_event_id, verdict, rule_version, evidence_level, created_at
-                 ) SELECT ?1, id, 'not-stuck', rule_version, 'user-confirmed', ?3
+                 ) SELECT ?1, id, ?3, rule_version, 'user-confirmed', ?4
                    FROM attention_events WHERE id=?2",
-                params![id, attention_event_id, now],
+                params![id, attention_event_id, feedback, now],
             )?;
         }
         transaction.commit()?;
@@ -10128,6 +10324,57 @@ mod concurrency_tests {
             .find(|event| event.id == second.id)
             .expect("second completion history should remain");
         assert_eq!(second.state, "resolved");
+    }
+
+    #[test]
+    fn attention_quality_gate_is_hard_and_reports_honest_missing_samples() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("attention-quality.sqlite"))
+            .expect("database should open");
+        let empty = database
+            .attention_quality_report()
+            .expect("quality report should load");
+        assert_eq!(empty.reviewed_samples, 0);
+        assert_eq!(empty.stuck_precision, None);
+        assert_eq!(empty.jump_success_rate, None);
+        assert!(!empty.passed);
+
+        for name in [
+            "duplicate-suppression",
+            "foreground-silence",
+            "privacy-surface",
+        ] {
+            database
+                .record_attention_quality_check(name, true)
+                .expect("real app check should persist");
+        }
+        let verified = database
+            .attention_quality_report()
+            .expect("verified report should load");
+        assert!(verified.real_app_verified);
+        assert!(!verified.passed, "missing field samples must still fail");
+        assert!(
+            database
+                .record_attention_quality_check("untrusted-check", true)
+                .is_err()
+        );
+
+        let passing = evaluate_attention_quality(AttentionQualityEvidence {
+            reviewed_samples: 100,
+            true_positive_samples: 90,
+            false_positive_samples: 10,
+            feedback_samples: 100,
+            irrelevant_feedback_samples: 10,
+            notification_latencies: vec![0.4; 100],
+            jump_successes: 95,
+            jump_failures: 5,
+            real_app_verified: true,
+        });
+        assert_eq!(passing.stuck_precision, Some(0.9));
+        assert_eq!(passing.false_positive_rate, Some(0.1));
+        assert_eq!(passing.notification_p95_seconds, Some(0.4));
+        assert_eq!(passing.jump_success_rate, Some(0.95));
+        assert!(passing.passed);
     }
 
     #[test]

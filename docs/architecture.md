@@ -55,6 +55,8 @@ High-confidence stuck detection is derived only from exact canonical evidence. V
 
 The attention queue has one fixed priority: waiting, blocking error, high-confidence stuck, then completion review. Notch collapses to the first item and expands to the full queue. Live shows the current queue plus resolved, ignored, and expired history. Data links episodes and intervention counts back to both tasks and session replay. Completion review is resolved only by acknowledgement or a successful verified jump and never outranks an unresolved wait or error.
 
+The local attention quality gate is deliberately hard. It requires at least 100 user-reviewed stuck samples, at least 90% precision, no more than 10% irrelevant or false-positive feedback, notification latency below two seconds at the 95th percentile, at least 95% verified jump success, and three real-app checks covering duplicate suppression, foreground silence, and privacy surfaces. Missing observations remain unavailable and the gate stays incomplete; development fixtures never count as real acceptance evidence.
+
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
 
 ## Data boundaries

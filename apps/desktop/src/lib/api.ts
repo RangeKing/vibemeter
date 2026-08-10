@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   AttentionEvent,
+  AttentionQualityReport,
   ComparisonItem,
   DiagnosticClearResult,
   DiagnosticRetentionStatus,
@@ -33,6 +34,7 @@ export const api = {
   phraseCloud: (range: string) => invoke<PhraseCloudResponse>("get_phrase_cloud", { range }),
   liveSnapshot: () => invoke<LiveSnapshot>("get_live_snapshot"),
   liveActivity: () => invoke<LiveActivityResponse>("get_live_activity"),
+  attentionQuality: () => invoke<AttentionQualityReport>("get_attention_quality_report"),
   repairLiveHooks: () => invoke<HookStatus>("repair_live_hooks"),
   uninstallLiveHooks: () => invoke<HookStatus>("uninstall_live_hooks"),
   jumpToLiveSession: (id: string) => invoke<void>("jump_to_live_session", { id }),

@@ -356,6 +356,24 @@ export interface AttentionEvent {
   interventionCount: number;
 }
 
+export interface AttentionQualityReport {
+  reviewedSamples: number;
+  stuckPrecision: number | null;
+  feedbackSamples: number;
+  falsePositiveRate: number | null;
+  notificationSamples: number;
+  notificationP95Seconds: number | null;
+  jumpAttempts: number;
+  jumpSuccessRate: number | null;
+  realAppVerified: boolean;
+  requiredSamples: number;
+  requiredPrecision: number;
+  maximumFalsePositiveRate: number;
+  maximumNotificationP95Seconds: number;
+  requiredJumpSuccessRate: number;
+  passed: boolean;
+}
+
 export interface NotchUiState {
   available: boolean;
   enabled: boolean;

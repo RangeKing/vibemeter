@@ -4,9 +4,16 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
-import type { AttentionEvent, LiveHistoryItem, LiveSession, LiveTimelinePoint } from "../types";
+import type {
+  AttentionEvent,
+  AttentionQualityReport,
+  LiveHistoryItem,
+  LiveSession,
+  LiveTimelinePoint,
+} from "../types";
 import {
   AttentionActions,
+  AttentionQualityGate,
   AttentionQueue,
   HistoryList,
   LiveSessionCard,
@@ -233,5 +240,34 @@ describe("Attention actions", () => {
       </I18nextProvider>,
     );
     expect(screen.getByText("暂无需要关注的事件")).toBeTruthy();
+  });
+
+  it("keeps the hard quality gate incomplete when local evidence is missing", () => {
+    const report: AttentionQualityReport = {
+      reviewedSamples: 0,
+      stuckPrecision: null,
+      feedbackSamples: 0,
+      falsePositiveRate: null,
+      notificationSamples: 0,
+      notificationP95Seconds: null,
+      jumpAttempts: 0,
+      jumpSuccessRate: null,
+      realAppVerified: false,
+      requiredSamples: 100,
+      requiredPrecision: 0.9,
+      maximumFalsePositiveRate: 0.1,
+      maximumNotificationP95Seconds: 2,
+      requiredJumpSuccessRate: 0.95,
+      passed: false,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionQualityGate report={report} />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("验收未完成")).toBeTruthy();
+    expect(screen.getByText("0 / 100")).toBeTruthy();
+    expect(screen.getAllByText("未记录").length).toBeGreaterThanOrEqual(3);
   });
 });

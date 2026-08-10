@@ -22,12 +22,12 @@ mod vcti;
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    AttentionEvent, ComparisonItem, DiagnosticClearResult, DiagnosticRetentionStatus,
-    ExportRequest, ExportResult, HookStatus, IndexStatus, InsightsResponse, LiveActivityResponse,
-    LiveSnapshot, MenuBarSnapshot, NotchClearResult, OverviewResponse, PhraseCloudResponse,
-    PlaybookItem, ProjectControl, ProviderUsage, SavePlaybookRequest, SessionDetail,
-    SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus,
-    TaskSummary, VctiProfile,
+    AttentionEvent, AttentionQualityReport, ComparisonItem, DiagnosticClearResult,
+    DiagnosticRetentionStatus, ExportRequest, ExportResult, HookStatus, IndexStatus,
+    InsightsResponse, LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, NotchClearResult,
+    OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl, ProviderUsage,
+    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionsResponse, SharePreview,
+    ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use chrono::Utc;
@@ -143,6 +143,16 @@ async fn get_live_activity(state: State<'_, AppState>) -> AppResult<LiveActivity
         })
         .collect();
     Ok(activity)
+}
+
+#[tauri::command]
+async fn get_attention_quality_report(
+    state: State<'_, AppState>,
+) -> AppResult<AttentionQualityReport> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.attention_quality_report())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
 
 #[tauri::command]
@@ -964,6 +974,7 @@ pub fn run() {
             get_phrase_cloud,
             get_live_snapshot,
             get_live_activity,
+            get_attention_quality_report,
             repair_live_hooks,
             uninstall_live_hooks,
             jump_to_live_session,
