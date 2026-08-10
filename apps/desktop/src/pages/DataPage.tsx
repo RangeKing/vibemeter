@@ -236,6 +236,11 @@ export function DataPage({ locale }: { locale: Locale }) {
   useEffect(() => {
     setHeatmapIndex(0);
   }, [isToday, daily.length, hourlyActivity.length]);
+  const cursorAccountUsage = providers.data?.find((provider) => provider.provider === "cursor")?.accountUsage ?? undefined;
+  const cursorAccountSummary = useMemo(
+    () => cursorAccountUsage ? summarizeProviderAccountUsage(cursorAccountUsage, range, referenceTime) : undefined,
+    [cursorAccountUsage, range, referenceTime],
+  );
   const activateHeatmap = (index: number) => {
     setHeatmapIndex(index);
     requestAnimationFrame(() => focusHeatmapIndex(heatmapRef.current, index));
@@ -274,11 +279,6 @@ export function DataPage({ locale }: { locale: Locale }) {
     });
   };
   const rangeText = t(`ranges.${range}`);
-  const cursorAccountUsage = providers.data?.find((provider) => provider.provider === "cursor")?.accountUsage ?? undefined;
-  const cursorAccountSummary = useMemo(
-    () => cursorAccountUsage ? summarizeProviderAccountUsage(cursorAccountUsage, range, referenceTime) : undefined,
-    [cursorAccountUsage, range, referenceTime],
-  );
   const agentTokenText = (agent: string, value: number) => agent === "cursor"
     ? cursorDashboardEnabled
       ? cursorAccountSummary
