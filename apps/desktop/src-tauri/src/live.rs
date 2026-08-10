@@ -2862,7 +2862,10 @@ fn snapshot_from_at(
     {
         session.pulse = work_pulse_at(session, now);
     }
-    let attention = database.attention_queue_at(now).unwrap_or_default();
+    let (attention, attention_available) = match database.attention_queue_at(now) {
+        Ok(attention) => (attention, true),
+        Err(_) => (Vec::new(), false),
+    };
     overlay_attention_pulses(&mut items, &attention);
     for completed in &mut completed_sessions {
         overlay_attention_pulses(std::slice::from_mut(&mut completed.session), &attention);
@@ -2890,6 +2893,7 @@ fn snapshot_from_at(
         sessions: items,
         completed_sessions,
         urgent_session_id,
+        attention_available,
         attention_queue,
         active_count,
         hook_status: hook_status(socket_ready),
@@ -3823,6 +3827,23 @@ mod tests {
             experimental.pulse.freshness.value.as_deref(),
             Some("lost-update")
         );
+    }
+
+    #[test]
+    fn snapshot_reports_attention_unavailable_when_the_queue_cannot_be_read() {
+        let temporary = tempdir().expect("tempdir");
+        let database_path = temporary.path().join("unavailable-attention.sqlite");
+        let database = Database::open(database_path.clone()).expect("database should open");
+        Connection::open(database_path)
+            .expect("second connection should open")
+            .execute_batch("DROP TABLE attention_events")
+            .expect("attention reads should become unavailable");
+        let sessions = Arc::new(RwLock::new(HashMap::new()));
+
+        let snapshot = snapshot_from_at(&sessions, true, Vec::new(), &database, Utc::now());
+
+        assert!(!snapshot.attention_available);
+        assert!(snapshot.attention_queue.is_empty());
     }
 
     #[test]

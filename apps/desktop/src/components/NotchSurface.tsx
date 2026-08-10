@@ -162,11 +162,13 @@ function ProviderCount({
 
 export function NotchAttentionQueue({
   items,
+  available = true,
   jumpErrorId,
   onFeedback,
   onJump,
 }: {
   items: AttentionEvent[];
+  available?: boolean;
   jumpErrorId?: string;
   onFeedback: (
     id: string,
@@ -175,6 +177,16 @@ export function NotchAttentionQueue({
   onJump: (id: string) => void;
 }) {
   const { t } = useTranslation();
+  if (!available) {
+    return (
+      <section className="notch-attention-queue is-unavailable">
+        <header><strong>{t("live.attention.queueTitle")}</strong></header>
+        <p className="notch-attention-unavailable" role="alert">
+          {t("live.attention.unavailable")}
+        </p>
+      </section>
+    );
+  }
   if (!items.length) return null;
   return (
     <section className="notch-attention-queue">
@@ -796,6 +808,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
       >
         <NotchAttentionQueue
           items={attentionQueue}
+          available={snapshot.data?.attentionAvailable !== false}
           jumpErrorId={attentionJumpError}
           onFeedback={(id, feedback) => void updateAttention(id, feedback)}
           onJump={(id) => void jumpToAttention(id)}

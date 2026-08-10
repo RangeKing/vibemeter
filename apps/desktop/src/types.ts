@@ -290,6 +290,7 @@ export interface LiveSnapshot {
   sessions: LiveSession[];
   completedSessions: NotchCompletedSession[];
   urgentSessionId?: string;
+  attentionAvailable: boolean;
   attentionQueue: AttentionEvent[];
   activeCount: number;
   hookStatus: HookStatus;

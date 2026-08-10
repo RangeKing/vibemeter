@@ -371,6 +371,7 @@ select { padding-right: 28px; }
 .notch-attention-actions { display: flex; gap: 4px; }
 .notch-attention-actions button { min-height: 24px; padding: 0 6px; border: 0; border-radius: 6px; background: rgba(255,255,255,.09); color: white; font-size: 9px; }
 .notch-attention-queue .notch-attention-error { grid-column: 1 / -1; margin: 0; color: #ff8f8f; font-size: 9px; }
+.notch-attention-unavailable { margin: 0; padding: 8px; border: 1px solid rgba(255,143,143,.24); border-radius: 8px; background: rgba(255,86,86,.08); color: #ffb0b0; font-size: 10px; line-height: 1.45; }
 .live-empty { display: flex; min-height: 230px; align-items: center; justify-content: center; gap: 24px; border: 1px dashed var(--line-strong); border-radius: 16px; background: color-mix(in srgb, var(--surface) 78%, transparent); text-align: left; }
 .live-empty h3 { margin: 0 0 5px; font-family: var(--serif); font-size: 23px; }
 .live-empty p { max-width: 470px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }

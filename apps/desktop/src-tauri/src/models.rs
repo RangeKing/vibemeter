@@ -760,6 +760,7 @@ pub struct LiveSnapshot {
     pub sessions: Vec<LiveSession>,
     pub completed_sessions: Vec<NotchCompletedSession>,
     pub urgent_session_id: Option<String>,
+    pub attention_available: bool,
     pub attention_queue: Vec<AttentionEvent>,
     pub active_count: u64,
     pub hook_status: HookStatus,

@@ -224,6 +224,7 @@ export const enUS = {
       historyBody: "Resolved, ignored, and expired episodes remain reviewable.",
       historyEmpty: "No resolved attention episodes yet",
       historyMore: "Load more attention history",
+      unavailable: "Attention status is temporarily unavailable. Existing evidence was not cleared.",
       jumpFailed: "Could not return to the source session. The attention event was kept so you can retry.",
       evidence: "{{count}} evidence records",
       kind: {
@@ -1088,6 +1089,7 @@ export const zhCN = {
       historyBody: "已解决、已忽略和已过期的事件仍可复核。",
       historyEmpty: "还没有已结束的注意力事件",
       historyMore: "加载更多注意力历史",
+      unavailable: "注意力状态暂时不可用，现有证据未被清空。",
       jumpFailed: "无法返回源会话，关注事件已保留，可稍后重试。",
       evidence: "{{count}} 条证据",
       kind: {

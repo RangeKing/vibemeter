@@ -62,6 +62,23 @@ function session(
 }
 
 describe("Notch session selection", () => {
+  it("shows an honest unavailable state instead of an empty attention queue", () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[]}
+          available={false}
+          onFeedback={vi.fn()}
+          onJump={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "注意力状态暂时不可用，现有证据未被清空。",
+    );
+  });
+
   it("shows the retained attention item when its jump fails", () => {
     const attention: AttentionEvent = {
       id: "attention-jump-failed",
