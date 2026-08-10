@@ -3381,6 +3381,15 @@ fn migrate_schema_on_copy(path: &Path) -> AppResult<()> {
     migration_result
 }
 
+fn retry_startup_database_open(
+    mut open: impl FnMut() -> AppResult<Database>,
+) -> AppResult<Database> {
+    match open() {
+        Ok(database) => Ok(database),
+        Err(_) => open(),
+    }
+}
+
 struct AttentionQualityEvidence {
     reviewed_samples: u64,
     true_positive_samples: u64,
@@ -3447,6 +3456,10 @@ fn evaluate_attention_quality(evidence: AttentionQualityEvidence) -> AttentionQu
 }
 
 impl Database {
+    pub fn open_for_startup(path: PathBuf) -> AppResult<Self> {
+        retry_startup_database_open(|| Self::open(path.clone()))
+    }
+
     pub fn open(path: PathBuf) -> AppResult<Self> {
         crate::adapters::database_history::clear_snapshot_artifacts()?;
         if let Some(parent) = path.parent() {
@@ -12699,6 +12712,36 @@ mod concurrency_tests {
         drop(marker_lock);
         recover_interrupted_schema_migration(&path).expect("stale marker should recover");
         assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn startup_database_open_retries_once_after_a_recovered_migration_error() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("startup-retry.sqlite");
+        create_v13_live_database(&path, false);
+        let mut attempts = 0;
+
+        let database = retry_startup_database_open(|| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(AppError::InvalidRequest(
+                    "simulated recovered migration error".into(),
+                ))
+            } else {
+                Database::open(path.clone())
+            }
+        })
+        .expect("the recovered database should open on the retry");
+
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            database
+                .connect()
+                .expect("database should connect")
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .expect("version should read"),
+            DATABASE_SCHEMA_VERSION
+        );
     }
 
     #[test]

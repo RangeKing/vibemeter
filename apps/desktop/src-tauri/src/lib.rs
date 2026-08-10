@@ -842,7 +842,7 @@ pub fn run() {
                 .unwrap_or(migration::prepare_database(&data_dir)?);
             #[cfg(not(debug_assertions))]
             let database_path = migration::prepare_database(&data_dir)?;
-            let database = Database::open(database_path.clone())?;
+            let database = Database::open_for_startup(database_path.clone())?;
             let index_status = Arc::new(RwLock::new(IndexStatus::default()));
             let providers = ProviderStore::new(data_dir.join("ProviderProbe"))?;
             let diagnostics = diagnostics::DiagnosticRetention::new(
