@@ -8075,6 +8075,11 @@ mod concurrency_tests {
         connection
             .execute_batch(
                 "DROP INDEX canonical_events_live_project_idx;
+                 DROP TABLE IF EXISTS attention_quality_checks;
+                 DROP TABLE IF EXISTS attention_review_samples;
+                 DROP TABLE IF EXISTS attention_interventions;
+                 DROP TABLE IF EXISTS attention_event_evidence;
+                 DROP TABLE IF EXISTS attention_events;
                  DROP TABLE attention_feedback;
                  ALTER TABLE canonical_events DROP COLUMN source_event_fingerprint;
                  ALTER TABLE canonical_events DROP COLUMN event_duration_ms;",
@@ -8143,6 +8148,11 @@ mod concurrency_tests {
                     event_name, project_label, payload_json, status
                    FROM live_events_v14;
                  DROP TABLE live_events_v14;
+                 DROP TABLE attention_quality_checks;
+                 DROP TABLE attention_review_samples;
+                 DROP TABLE attention_interventions;
+                 DROP TABLE attention_event_evidence;
+                 DROP TABLE attention_events;
                  DROP TABLE activity_cycles;
                  DROP TABLE attention_feedback;
                  DROP TABLE canonical_events;
