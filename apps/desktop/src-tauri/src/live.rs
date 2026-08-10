@@ -38,6 +38,7 @@ const MANAGED_MARKER: &str = "vibemeter_hook.py";
 const CODEX_PROBE_TTL: StdDuration = StdDuration::from_secs(20);
 const WORK_PULSE_FRESH_SECONDS: u64 = 30;
 const WORK_PULSE_LOST_UPDATE_SECONDS: u64 = 120;
+const ATTENTION_NOTIFICATION_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 const CLAUDE_HOOKS: &[(&str, Option<&str>, Option<u64>)] = &[
     ("SessionStart", None, None),
     ("UserPromptSubmit", None, None),
@@ -3338,10 +3339,7 @@ fn notify_if_background(database: &Database, session: &LiveSession, status: &str
     };
     let escaped = body.replace('\\', "\\\\").replace('"', "\\\"");
     let script = format!("display notification \"{escaped}\" with title \"VibeMeter\"");
-    let delivered = Command::new("/usr/bin/osascript")
-        .args(["-e", &script])
-        .status()
-        .is_ok_and(|result| result.success());
+    let delivered = run_notification_script(&script);
     if delivered {
         if database
             .confirm_attention_notification(&claim_token)
@@ -3354,6 +3352,31 @@ fn notify_if_background(database: &Database, session: &LiveSession, status: &str
         .is_err()
     {
         eprintln!("VibeMeter could not release a failed attention notification claim");
+    }
+}
+
+fn run_notification_script(script: &str) -> bool {
+    let Ok(mut child) = Command::new("/usr/bin/osascript")
+        .args(["-e", script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = Instant::now() + ATTENTION_NOTIFICATION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(StdDuration::from_millis(10));
+            }
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
     }
 }
 
@@ -5189,5 +5212,15 @@ mod tests {
         experimental.pulse.lifecycle.availability = "unknown".into();
         experimental.pulse.lifecycle.value = None;
         assert!(!notification_allowed_for_origin(&experimental, "error"));
+    }
+
+    #[test]
+    fn notification_timeout_finishes_before_a_claim_can_expire() {
+        assert!(
+            ATTENTION_NOTIFICATION_TIMEOUT
+                < StdDuration::from_secs(
+                    crate::database::ATTENTION_NOTIFICATION_LEASE_SECONDS as u64,
+                )
+        );
     }
 }

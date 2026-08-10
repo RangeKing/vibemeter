@@ -461,6 +461,7 @@ const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
 const DATABASE_SCHEMA_VERSION: i64 = 28;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
+pub(crate) const ATTENTION_NOTIFICATION_LEASE_SECONDS: i64 = 5 * 60;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
 
 const MIGRATION_V14: &str = r#"
@@ -5137,8 +5138,8 @@ impl Database {
         };
         let now = Utc::now();
         let claimed_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        let stale_before =
-            (now - Duration::seconds(30)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let stale_before = (now - Duration::seconds(ATTENTION_NOTIFICATION_LEASE_SECONDS))
+            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let claim_token = uuid::Uuid::new_v4().to_string();
         let connection = self.connect()?;
         let claimed = connection.execute(
@@ -5172,8 +5173,8 @@ impl Database {
     ) -> AppResult<Option<String>> {
         let claim_token = uuid::Uuid::new_v4().to_string();
         let claimed_at = now.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        let stale_before =
-            (now - Duration::seconds(30)).to_rfc3339_opts(SecondsFormat::AutoSi, true);
+        let stale_before = (now - Duration::seconds(ATTENTION_NOTIFICATION_LEASE_SECONDS))
+            .to_rfc3339_opts(SecondsFormat::AutoSi, true);
         let connection = self.connect()?;
         let claimed = connection.execute(
             "UPDATE attention_events
@@ -10785,6 +10786,61 @@ mod concurrency_tests {
                 .map(|item| item.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["older-acknowledged", "newer-open"]
+        );
+    }
+
+    #[test]
+    fn notification_claims_cannot_be_stolen_while_system_delivery_is_in_flight() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("notification-lease.sqlite"))
+            .expect("database should open");
+        let base = DateTime::parse_from_rfc3339("2026-08-10T08:00:00Z")
+            .expect("base timestamp")
+            .with_timezone(&Utc);
+        database
+            .connect()
+            .expect("database should connect")
+            .execute(
+                "INSERT INTO attention_events(
+                    id, kind, state, reason_key, agent, source_session_id, project_label,
+                    opened_at, latest_evidence_at, expires_at, evidence_level,
+                    source_coverage, rule_version, updated_at
+                 ) VALUES('notification-lease', 'waiting', 'open', 'permission-required',
+                          'codex', 'lease-session', '', ?1, ?1, ?2,
+                          'observed', 'exact-lifecycle', 'test', ?1)",
+                params![base.to_rfc3339(), ATTENTION_UNBOUNDED_EXPIRES_AT],
+            )
+            .expect("attention should persist");
+
+        let first = database
+            .claim_attention_notification_at("notification-lease", base)
+            .expect("first claim")
+            .expect("first token");
+        assert!(
+            database
+                .claim_attention_notification_at(
+                    "notification-lease",
+                    base + Duration::seconds(31),
+                )
+                .expect("early retry")
+                .is_none()
+        );
+        let replacement = database
+            .claim_attention_notification_at(
+                "notification-lease",
+                base + Duration::seconds(ATTENTION_NOTIFICATION_LEASE_SECONDS + 1),
+            )
+            .expect("stale retry")
+            .expect("replacement token");
+        assert!(
+            !database
+                .confirm_attention_notification_at(&first, base + Duration::seconds(302))
+                .expect("old confirmation should be rejected")
+        );
+        assert!(
+            database
+                .confirm_attention_notification_at(&replacement, base + Duration::seconds(303))
+                .expect("replacement confirmation should succeed")
         );
     }
 
