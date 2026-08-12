@@ -576,6 +576,26 @@ export interface VctiTrendPoint {
   dominantType?: string;
 }
 
+export interface VctiIdentityInput {
+  id: string;
+  available: boolean;
+}
+
+export interface VctiIdentityPath {
+  d: string;
+  strokeWidth: number;
+  opacity: number;
+}
+
+export interface VctiIdentityVisual {
+  algorithmVersion: string;
+  version: string;
+  range: string;
+  available: boolean;
+  inputs: VctiIdentityInput[];
+  paths: VctiIdentityPath[];
+}
+
 export interface VctiProfile {
   status: "collecting" | "preview" | "stable" | "high-confidence";
   algorithmVersion: string;
@@ -596,6 +616,7 @@ export interface VctiProfile {
   badges: VctiBadge[];
   evidence: VctiEvidenceItem[];
   trend: VctiTrendPoint[];
+  identityVisual: VctiIdentityVisual;
   behavior: BehaviorSummary;
   missingCapabilities: string[];
   structureAnalysisEnabled: boolean;

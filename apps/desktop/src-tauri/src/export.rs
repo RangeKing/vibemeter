@@ -4,7 +4,7 @@ use crate::export_localization as loc;
 use crate::models::{
     ComparisonItem, ExportRequest, ExportResult, IndexStatus, OverviewResponse,
     PhraseCloudResponse, SessionDetail, SharePreview, ShareRenderRequest, VctiEvidenceItem,
-    VctiProfile,
+    VctiIdentityVisual, VctiProfile,
 };
 use crate::privacy;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -712,32 +712,31 @@ fn render_vcti_card(
     );
     panel(svg, margin, panel_y, panel_width, panel_height, palette);
 
-    let avatar_size = if landscape {
+    let visual_size = if landscape {
         (panel_height * 0.48).min(panel_width * 0.27).max(260.0)
     } else {
         (panel_width * 0.36)
             .min(panel_height * 0.30)
             .clamp(300.0, 760.0)
     };
-    let avatar_x = margin + 48.0;
-    let avatar_y = panel_y + 62.0;
-    render_vcti_avatar(
+    let visual_x = margin + 48.0;
+    let visual_y = panel_y + 62.0;
+    render_vcti_identity_visual(
         svg,
-        avatar_x,
-        avatar_y,
-        avatar_size,
-        code,
-        guild,
+        visual_x,
+        visual_y,
+        visual_size,
         accent,
         palette,
+        &profile.identity_visual,
     );
 
-    let identity_x = avatar_x + avatar_size + 62.0;
+    let identity_x = visual_x + visual_size + 62.0;
     let identity_width = width as f64 - margin - identity_x - 38.0;
     text(
         svg,
         identity_x,
-        avatar_y + 34.0,
+        visual_y + 34.0,
         30.0,
         690,
         accent,
@@ -747,7 +746,7 @@ fn render_vcti_card(
     text(
         svg,
         identity_x,
-        avatar_y + 146.0,
+        visual_y + 146.0,
         if landscape { 112.0 } else { 96.0 },
         760,
         palette.text,
@@ -757,7 +756,7 @@ fn render_vcti_card(
     text_block_display(
         svg,
         identity_x,
-        avatar_y + 228.0,
+        visual_y + 228.0,
         identity_width,
         if landscape { 58.0 } else { 52.0 },
         700,
@@ -768,7 +767,7 @@ fn render_vcti_card(
     text_block(
         svg,
         identity_x,
-        avatar_y + 330.0,
+        visual_y + 330.0,
         identity_width,
         if landscape { 30.0 } else { 28.0 },
         500,
@@ -776,7 +775,7 @@ fn render_vcti_card(
         tagline,
         3,
     );
-    let badge_y = avatar_y + avatar_size - 46.0;
+    let badge_y = visual_y + visual_size - 46.0;
     let mut badge_x = identity_x;
     for badge in profile.badges.iter().take(2) {
         let label = format!("{} · {}", badge.code, vcti_badge_name(locale, &badge.code));
@@ -807,7 +806,7 @@ fn render_vcti_card(
     let scores_y = if landscape {
         panel_y + panel_height * 0.58
     } else {
-        avatar_y + avatar_size + 82.0
+        visual_y + visual_size + 82.0
     };
     let scores = profile.scores.iter().take(6).collect::<Vec<_>>();
     let gap = 18.0;
@@ -1261,140 +1260,52 @@ fn vcti_range_caption(locale: &str, range: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_vcti_avatar(
+fn render_vcti_identity_visual(
     svg: &mut String,
     x: f64,
     y: f64,
     size: f64,
-    code: &str,
-    guild: &str,
     accent: &str,
     palette: Palette,
+    visual: &VctiIdentityVisual,
 ) {
-    let clip_id = "vcti-avatar-clip";
-    write!(
-        svg,
-        "<defs><clipPath id=\"{clip_id}\"><rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{size:.1}\" height=\"{size:.1}\" rx=\"{radius:.1}\"/></clipPath></defs>",
-        radius = size * 0.12,
-    )
-    .ok();
     rect(
         svg,
         x,
         y,
         size,
         size,
-        size * 0.12,
-        if palette.dark { "#111318" } else { "#F2EEE5" },
+        size * 0.5,
+        if palette.dark { "#101115" } else { "#F4F1EA" },
         None,
     );
-    let zoom = 1.2;
+    circle(
+        svg,
+        x + size * 0.5,
+        y + size * 0.5,
+        size * 0.37,
+        "none",
+        None,
+    );
+    let scale = size / 100.0;
     write!(
         svg,
-        "<g clip-path=\"url(#{clip_id})\"><image href=\"{}\" x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" preserveAspectRatio=\"none\"/></g>",
-        vcti_avatar_data_uri(code, guild),
-        x - size * (zoom - 1.0) / 2.0,
-        y - size * (zoom - 1.0) / 2.0,
-        size * zoom,
-        size * zoom,
+        "<g data-vcti-visual-version=\"{}\" transform=\"translate({x:.2} {y:.2}) scale({scale:.4})\">",
+        xml(&visual.version),
     )
     .ok();
-    rect(svg, x, y, size, size, size * 0.12, "none", Some(accent));
-    let unit = size / 100.0;
-    let code_width = (measure_text(code, 6.3 * unit) + 9.0 * unit).max(18.0 * unit);
-    rect(
-        svg,
-        x + size - code_width - 5.0 * unit,
-        y + size - 14.0 * unit,
-        code_width,
-        10.0 * unit,
-        3.0 * unit,
-        accent,
-        None,
-    );
-    text(
-        svg,
-        x + size - 9.0 * unit,
-        y + size - 6.5 * unit,
-        6.3 * unit,
-        760,
-        "#FFFFFF",
-        code,
-        Some("end"),
-    );
-}
-
-fn vcti_avatar_data_uri(code: &str, guild: &str) -> String {
-    let fallback = match guild {
-        "agent" => "BOSS",
-        "quality" => "TEST",
-        "debug" => "DEBUG",
-        "delivery" => "SHIP",
-        "tools" => "BUDDY",
-        _ => "VIBE",
-    };
-    let bytes: &'static [u8] = match if vcti_type_known(code) {
-        code
-    } else {
-        fallback
-    } {
-        "VIBE" => include_bytes!("../../src/assets/vcti/types-v2/VIBE.webp"),
-        "SPEC" => include_bytes!("../../src/assets/vcti/types-v2/SPEC.webp"),
-        "HACK" => include_bytes!("../../src/assets/vcti/types-v2/HACK.webp"),
-        "MIX" => include_bytes!("../../src/assets/vcti/types-v2/MIX.webp"),
-        "YOLO" => include_bytes!("../../src/assets/vcti/types-v2/YOLO.webp"),
-        "LOOP" => include_bytes!("../../src/assets/vcti/types-v2/LOOP.webp"),
-        "BOSS" => include_bytes!("../../src/assets/vcti/types-v2/BOSS.webp"),
-        "SWARM" => include_bytes!("../../src/assets/vcti/types-v2/SWARM.webp"),
-        "DIFF" => include_bytes!("../../src/assets/vcti/types-v2/DIFF.webp"),
-        "TEST" => include_bytes!("../../src/assets/vcti/types-v2/TEST.webp"),
-        "DOCS" => include_bytes!("../../src/assets/vcti/types-v2/DOCS.webp"),
-        "UNDO" => include_bytes!("../../src/assets/vcti/types-v2/UNDO.webp"),
-        "DEBUG" => include_bytes!("../../src/assets/vcti/types-v2/DEBUG.webp"),
-        "PATCH" => include_bytes!("../../src/assets/vcti/types-v2/PATCH.webp"),
-        "STACK" => include_bytes!("../../src/assets/vcti/types-v2/STACK.webp"),
-        "AUTO" => include_bytes!("../../src/assets/vcti/types-v2/AUTO.webp"),
-        "SHIP" => include_bytes!("../../src/assets/vcti/types-v2/SHIP.webp"),
-        "RUSH" => include_bytes!("../../src/assets/vcti/types-v2/RUSH.webp"),
-        "MVP" => include_bytes!("../../src/assets/vcti/types-v2/MVP.webp"),
-        "DETAIL" => include_bytes!("../../src/assets/vcti/types-v2/DETAIL.webp"),
-        "FORK" => include_bytes!("../../src/assets/vcti/types-v2/FORK.webp"),
-        "TOKEN" => include_bytes!("../../src/assets/vcti/types-v2/TOKEN.webp"),
-        "CACHE" => include_bytes!("../../src/assets/vcti/types-v2/CACHE.webp"),
-        "BUDDY" => include_bytes!("../../src/assets/vcti/types-v2/BUDDY.webp"),
-        _ => include_bytes!("../../src/assets/vcti/types-v2/VIBE.webp"),
-    };
-    format!("data:image/webp;base64,{}", BASE64_STANDARD.encode(bytes))
-}
-
-fn vcti_type_known(code: &str) -> bool {
-    matches!(
-        code,
-        "VIBE"
-            | "SPEC"
-            | "HACK"
-            | "MIX"
-            | "YOLO"
-            | "LOOP"
-            | "BOSS"
-            | "SWARM"
-            | "DIFF"
-            | "TEST"
-            | "DOCS"
-            | "UNDO"
-            | "DEBUG"
-            | "PATCH"
-            | "STACK"
-            | "AUTO"
-            | "SHIP"
-            | "RUSH"
-            | "MVP"
-            | "DETAIL"
-            | "FORK"
-            | "TOKEN"
-            | "CACHE"
-            | "BUDDY"
-    )
+    for path in &visual.paths {
+        write!(
+            svg,
+            "<path d=\"{}\" fill=\"none\" stroke=\"{accent}\" stroke-width=\"{:.2}\" opacity=\"{:.3}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            xml(&path.d),
+            path.stroke_width,
+            path.opacity,
+        )
+        .ok();
+    }
+    svg.push_str("</g>");
+    rect(svg, x, y, size, size, size * 0.5, "none", Some(accent));
 }
 
 fn vcti_guild_color(guild: &str, palette: Palette) -> &'static str {
@@ -3877,6 +3788,47 @@ mod tests {
             "YEAR · LOCAL INFERENCE"
         );
         assert_ne!(vcti_range_caption("zh-CN", "30d"), "最近 90 天 · 本机推断");
+    }
+
+    #[test]
+    fn vcti_card_renders_the_shared_identity_geometry() {
+        use crate::models::{VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual};
+
+        let visual = VctiIdentityVisual {
+            algorithm_version: "1.6.0".into(),
+            version: "1.0.0".into(),
+            range: "90d".into(),
+            available: true,
+            inputs: vec![VctiIdentityInput {
+                id: "dimensions".into(),
+                available: true,
+            }],
+            paths: vec![VctiIdentityPath {
+                d: "M10,10Q50,0 90,10Z".into(),
+                stroke_width: 1.25,
+                opacity: 0.8,
+            }],
+        };
+        let mut svg = String::new();
+
+        render_vcti_identity_visual(
+            &mut svg,
+            20.0,
+            30.0,
+            400.0,
+            "#245CA6",
+            Palette::for_theme("light"),
+            &visual,
+        );
+
+        assert!(svg.contains("M10,10Q50,0 90,10Z"));
+        assert!(svg.contains("data-vcti-visual-version=\"1.0.0\""));
+        assert!(!svg.contains("data:image/webp"));
+        let png = render_png_bytes(&format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"500\" height=\"500\">{svg}</svg>"
+        ))
+        .expect("shared visual PNG");
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
     #[test]

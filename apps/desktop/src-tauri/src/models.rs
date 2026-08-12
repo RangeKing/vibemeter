@@ -1070,6 +1070,32 @@ pub struct VctiTrendPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VctiIdentityInput {
+    pub id: String,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VctiIdentityPath {
+    pub d: String,
+    pub stroke_width: f64,
+    pub opacity: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VctiIdentityVisual {
+    pub algorithm_version: String,
+    pub version: String,
+    pub range: String,
+    pub available: bool,
+    pub inputs: Vec<VctiIdentityInput>,
+    pub paths: Vec<VctiIdentityPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VctiProfile {
     pub status: String,
     pub algorithm_version: String,
@@ -1090,6 +1116,7 @@ pub struct VctiProfile {
     pub badges: Vec<VctiBadge>,
     pub evidence: Vec<VctiEvidenceItem>,
     pub trend: Vec<VctiTrendPoint>,
+    pub identity_visual: VctiIdentityVisual,
     pub behavior: BehaviorSummary,
     pub missing_capabilities: Vec<String>,
     pub structure_analysis_enabled: bool,

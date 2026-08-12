@@ -1,11 +1,12 @@
 use crate::models::{
-    BehaviorSignals, BehaviorSummary, VctiBadge, VctiEvidenceItem, VctiProfile, VctiScore,
-    VctiTrendPoint,
+    BehaviorSignals, BehaviorSummary, VctiBadge, VctiEvidenceItem, VctiIdentityInput,
+    VctiIdentityPath, VctiIdentityVisual, VctiProfile, VctiScore, VctiTrendPoint,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const ALGORITHM_VERSION: &str = "1.6.0";
+pub const IDENTITY_VISUAL_VERSION: &str = "1.0.0";
 const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 
@@ -19,6 +20,19 @@ pub fn window_days_for_range(range: &str) -> i64 {
         "year" => 365,
         "all" => 3651,
         _ => 30,
+    }
+}
+
+fn range_for_window_days(window_days: i64) -> &'static str {
+    match window_days {
+        1 => "today",
+        7 => "7d",
+        30 => "30d",
+        90 => "90d",
+        180 => "180d",
+        365 => "year",
+        3651 => "all",
+        _ => "custom",
     }
 }
 
@@ -215,6 +229,13 @@ pub fn calculate(
     };
     let scores = public_scores(&features, &behavior);
     let dimensions = dimension_scores(&features);
+    let identity_visual = build_identity_visual(
+        range_for_window_days(window_days),
+        top.map(|candidate| candidate.code),
+        secondary.map(|candidate| candidate.code),
+        top.map(|candidate| candidate.guild),
+        &dimensions,
+    );
     let badges = badges(
         &features,
         &behavior,
@@ -270,11 +291,109 @@ pub fn calculate(
         badges,
         evidence,
         trend,
+        identity_visual,
         behavior,
         missing_capabilities,
         structure_analysis_enabled,
         git_evidence_enabled,
     }
+}
+
+fn build_identity_visual(
+    range: &str,
+    primary_type: Option<&str>,
+    secondary_type: Option<&str>,
+    guild: Option<&str>,
+    dimensions: &[VctiScore],
+) -> VctiIdentityVisual {
+    let dimensions_available = dimensions.len() == 18 && dimensions.iter().all(|score| score.coverage > 0.0);
+    let identity_available = primary_type.is_some() && guild.is_some();
+    let available = identity_available && dimensions_available;
+    let inputs = vec![
+        VctiIdentityInput {
+            id: "identity".into(),
+            available: identity_available,
+        },
+        VctiIdentityInput {
+            id: "dimensions".into(),
+            available: dimensions_available,
+        },
+    ];
+    if !available {
+        return VctiIdentityVisual {
+            algorithm_version: ALGORITHM_VERSION.into(),
+            version: IDENTITY_VISUAL_VERSION.into(),
+            range: range.into(),
+            available,
+            inputs,
+            paths: Vec::new(),
+        };
+    }
+
+    let primary_type = primary_type.unwrap_or_default();
+    let secondary_type = secondary_type.unwrap_or(primary_type);
+    let guild = guild.unwrap_or("start");
+    let phase = stable_fraction(primary_type) * std::f64::consts::TAU;
+    let counter_phase = stable_fraction(secondary_type) * 0.34;
+    let aspect = 0.92 + stable_fraction(guild) * 0.16;
+    let point_count = 12usize;
+    let paths = (0..7)
+        .map(|layer| {
+            let base_radius = 41.5 - layer as f64 * 4.65;
+            let points = (0..point_count)
+                .map(|point| {
+                    let score = &dimensions[(point + layer * 2) % dimensions.len()];
+                    let signal = (score.value - 50.0) / 50.0;
+                    let angle = phase
+                        + counter_phase * layer as f64
+                        + std::f64::consts::TAU * point as f64 / point_count as f64;
+                    let radius = base_radius + signal * (2.7 + layer as f64 * 0.16);
+                    let x = 50.0 + angle.cos() * radius * aspect;
+                    let y = 50.0 + angle.sin() * radius / aspect;
+                    (x.clamp(3.0, 97.0), y.clamp(3.0, 97.0))
+                })
+                .collect::<Vec<_>>();
+            VctiIdentityPath {
+                d: smooth_closed_path(&points),
+                stroke_width: 0.72 + (6 - layer) as f64 * 0.08,
+                opacity: 0.28 + (6 - layer) as f64 * 0.085,
+            }
+        })
+        .collect();
+
+    VctiIdentityVisual {
+        algorithm_version: ALGORITHM_VERSION.into(),
+        version: IDENTITY_VISUAL_VERSION.into(),
+        range: range.into(),
+        available,
+        inputs,
+        paths,
+    }
+}
+
+fn smooth_closed_path(points: &[(f64, f64)]) -> String {
+    let first = points[0];
+    let last = points[points.len() - 1];
+    let mut output = format!("M{:.2},{:.2}", (last.0 + first.0) / 2.0, (last.1 + first.1) / 2.0);
+    for (index, point) in points.iter().enumerate() {
+        let next = points[(index + 1) % points.len()];
+        output.push_str(&format!(
+            "Q{:.2},{:.2} {:.2},{:.2}",
+            point.0,
+            point.1,
+            (point.0 + next.0) / 2.0,
+            (point.1 + next.1) / 2.0
+        ));
+    }
+    output.push('Z');
+    output
+}
+
+fn stable_fraction(value: &str) -> f64 {
+    let hash = value.bytes().fold(2_166_136_261u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    });
+    f64::from(hash % 10_000) / 10_000.0
 }
 
 fn derive_features(
@@ -1458,6 +1577,44 @@ mod tests {
         assert!(profile.evidence.len() >= 3);
         assert_eq!(profile.scores.len(), 6);
         assert_eq!(profile.dimensions.len(), 18);
+    }
+
+    #[test]
+    fn identity_visual_is_versioned_and_deterministic() {
+        let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let records = (0..35)
+            .map(|offset| record(&(now - Duration::days(offset)).date_naive().to_string()))
+            .collect::<Vec<_>>();
+        let behavior = BehaviorSummary {
+            sessions: 35,
+            structure_coverage: 1.0,
+            lifecycle_coverage: 1.0,
+            tool_result_coverage: 1.0,
+            orchestration_coverage: 1.0,
+            process_control_coverage: 1.0,
+            ..BehaviorSummary::default()
+        };
+
+        let first = calculate(&records, behavior.clone(), 3, true, true, now, 90);
+        let replay = calculate(&records, behavior, 3, true, true, now, 90);
+
+        assert_eq!(first.identity_visual.version, "1.0.0");
+        assert_eq!(first.identity_visual.algorithm_version, ALGORITHM_VERSION);
+        assert_eq!(first.identity_visual.range, "90d");
+        assert!(first.identity_visual.available);
+        assert_eq!(first.identity_visual.inputs.len(), 2);
+        assert_eq!(first.identity_visual.paths.len(), 7);
+        assert_eq!(
+            serde_json::to_value(&first.identity_visual).unwrap(),
+            serde_json::to_value(&replay.identity_visual).unwrap()
+        );
+        assert!(first
+            .identity_visual
+            .paths
+            .iter()
+            .all(|path| path.d.starts_with('M') && path.d.ends_with('Z')));
     }
 
     #[test]

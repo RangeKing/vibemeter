@@ -8,6 +8,7 @@ import { CatchphraseClouds } from "../components/CatchphraseClouds";
 import { InsightCard } from "../components/InsightCard";
 import { RangePicker } from "../components/RangePicker";
 import { VctiAvatar } from "../components/VctiAvatar";
+import { VctiIdentityVisual } from "../components/VctiIdentityVisual";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDate, formatDuration, formatPercent } from "../lib/format";
@@ -156,7 +157,12 @@ export function VctiPage({ locale }: { locale: Locale }) {
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
           </div>
         </div>
-        <VctiAvatar type={profile.primaryType} guild={profile.guild} label={primaryName} />
+        <VctiIdentityVisual
+          visual={profile.identityVisual}
+          type={profile.primaryType}
+          guild={profile.guild}
+          label={`${primaryName} · ${t("vcti.eyebrow")}`}
+        />
       </section>
 
       <section className="vcti-panel vcti-scores">
