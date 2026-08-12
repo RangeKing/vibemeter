@@ -1,6 +1,7 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiEvidenceItem, VctiIdentityInput,
-    VctiIdentityPath, VctiIdentityVisual, VctiProfile, VctiScore, VctiTrendPoint,
+    VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiProfile, VctiRhythmPeriod,
+    VctiScore, VctiTrendPoint, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -235,6 +236,8 @@ pub fn calculate(
         secondary.map(|candidate| candidate.code),
         top.map(|candidate| candidate.guild),
         &dimensions,
+        records,
+        window_days,
     );
     let badges = badges(
         &features,
@@ -305,10 +308,13 @@ fn build_identity_visual(
     secondary_type: Option<&str>,
     guild: Option<&str>,
     dimensions: &[VctiScore],
+    records: &[SessionBehaviorRecord],
+    window_days: i64,
 ) -> VctiIdentityVisual {
     let dimensions_available = dimensions.len() == 18 && dimensions.iter().all(|score| score.coverage > 0.0);
     let identity_available = primary_type.is_some() && guild.is_some();
     let available = identity_available && dimensions_available;
+    let rhythm = aggregate_work_rhythm(records, window_days);
     let inputs = vec![
         VctiIdentityInput {
             id: "identity".into(),
@@ -318,6 +324,18 @@ fn build_identity_visual(
             id: "dimensions".into(),
             available: dimensions_available,
         },
+        VctiIdentityInput {
+            id: "work-periods".into(),
+            available: rhythm.work_periods_available,
+        },
+        VctiIdentityInput {
+            id: "active-days".into(),
+            available: rhythm.active_days.available,
+        },
+        VctiIdentityInput {
+            id: "session-density".into(),
+            available: rhythm.sessions_per_day.available,
+        },
     ];
     if !available {
         return VctiIdentityVisual {
@@ -326,6 +344,7 @@ fn build_identity_visual(
             range: range.into(),
             available,
             inputs,
+            rhythm,
             paths: Vec::new(),
         };
     }
@@ -333,13 +352,16 @@ fn build_identity_visual(
     let primary_type = primary_type.unwrap_or_default();
     let secondary_type = secondary_type.unwrap_or(primary_type);
     let guild = guild.unwrap_or("start");
-    let phase = stable_fraction(primary_type) * std::f64::consts::TAU;
+    let phase = stable_fraction(primary_type) * std::f64::consts::TAU
+        + rhythm.phase_offset.unwrap_or(0.0);
     let counter_phase = stable_fraction(secondary_type) * 0.34;
     let aspect = 0.92 + stable_fraction(guild) * 0.16;
     let point_count = 12usize;
-    let paths = (0..7)
+    let contour_count = rhythm.contour_count.unwrap_or(7) as usize;
+    let contour_spacing = rhythm.contour_spacing.unwrap_or(4.65);
+    let paths = (0..contour_count)
         .map(|layer| {
-            let base_radius = 41.5 - layer as f64 * 4.65;
+            let base_radius = 41.5 - layer as f64 * contour_spacing;
             let points = (0..point_count)
                 .map(|point| {
                     let score = &dimensions[(point + layer * 2) % dimensions.len()];
@@ -355,8 +377,8 @@ fn build_identity_visual(
                 .collect::<Vec<_>>();
             VctiIdentityPath {
                 d: smooth_closed_path(&points),
-                stroke_width: 0.72 + (6 - layer) as f64 * 0.08,
-                opacity: 0.28 + (6 - layer) as f64 * 0.085,
+                stroke_width: 0.72 + (contour_count - layer) as f64 * 0.08,
+                opacity: (0.28 + (contour_count - layer) as f64 * 0.075).min(0.88),
             }
         })
         .collect();
@@ -367,8 +389,91 @@ fn build_identity_visual(
         range: range.into(),
         available,
         inputs,
+        rhythm,
         paths,
     }
+}
+
+fn aggregate_work_rhythm(records: &[SessionBehaviorRecord], window_days: i64) -> VctiWorkRhythm {
+    let parsed = records
+        .iter()
+        .filter_map(|record| DateTime::parse_from_rfc3339(&record.started_at).ok())
+        .collect::<Vec<_>>();
+    let timestamps_available = records.is_empty() || parsed.len() == records.len();
+    let mut period_counts = BTreeMap::from([
+        ("night", 0_u64),
+        ("morning", 0_u64),
+        ("afternoon", 0_u64),
+        ("evening", 0_u64),
+    ]);
+    let mut active_days = HashSet::new();
+    for timestamp in &parsed {
+        let local = timestamp.with_timezone(&Local);
+        *period_counts.entry(work_period(local.hour())).or_default() += 1;
+        active_days.insert(local.date_naive());
+    }
+    let total = parsed.len() as f64;
+    let work_periods = ["night", "morning", "afternoon", "evening"]
+        .into_iter()
+        .map(|id| {
+            let sessions = period_counts[id];
+            VctiRhythmPeriod {
+                id: id.into(),
+                sessions,
+                share: if total == 0.0 {
+                    0.0
+                } else {
+                    sessions as f64 / total
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let sessions_per_day = records.len() as f64 / window_days.max(1) as f64;
+    let active_day_value = timestamps_available.then_some(active_days.len() as f64);
+    let active_day_ratio = active_day_value
+        .map(|value| (value / window_days.max(1) as f64).clamp(0.0, 1.0));
+    let density = normalize_session_density(sessions_per_day);
+    let phase_offset = timestamps_available.then(|| {
+        work_periods
+            .iter()
+            .enumerate()
+            .map(|(index, period)| period.share * index as f64 * std::f64::consts::FRAC_PI_2)
+            .sum::<f64>()
+    });
+    let active_day_contribution = active_day_ratio.unwrap_or(0.0);
+    let contour_count = Some(
+        (5.0 + (active_day_contribution * 2.0).round() + (density * 2.0).round()) as u64,
+    );
+    let contour_spacing = Some(5.45 - density * 1.15 - active_day_contribution * 0.35);
+
+    VctiWorkRhythm {
+        work_periods,
+        work_periods_available: timestamps_available,
+        active_days: VctiOptionalMetric {
+            value: active_day_value,
+            available: timestamps_available,
+        },
+        sessions_per_day: VctiOptionalMetric {
+            value: Some(sessions_per_day),
+            available: true,
+        },
+        phase_offset,
+        contour_count,
+        contour_spacing,
+    }
+}
+
+fn work_period(hour: u32) -> &'static str {
+    match hour {
+        0..=5 => "night",
+        6..=11 => "morning",
+        12..=17 => "afternoon",
+        _ => "evening",
+    }
+}
+
+fn normalize_session_density(sessions_per_day: f64) -> f64 {
+    (sessions_per_day / 4.0).clamp(0.0, 1.0)
 }
 
 fn smooth_closed_path(points: &[(f64, f64)]) -> String {
@@ -1604,8 +1709,8 @@ mod tests {
         assert_eq!(first.identity_visual.algorithm_version, ALGORITHM_VERSION);
         assert_eq!(first.identity_visual.range, "90d");
         assert!(first.identity_visual.available);
-        assert_eq!(first.identity_visual.inputs.len(), 2);
-        assert_eq!(first.identity_visual.paths.len(), 7);
+        assert_eq!(first.identity_visual.inputs.len(), 5);
+        assert!((5..=9).contains(&first.identity_visual.paths.len()));
         assert_eq!(
             serde_json::to_value(&first.identity_visual).unwrap(),
             serde_json::to_value(&replay.identity_visual).unwrap()
@@ -1615,6 +1720,31 @@ mod tests {
             .paths
             .iter()
             .all(|path| path.d.starts_with('M') && path.d.ends_with('Z')));
+    }
+
+    #[test]
+    fn work_rhythm_preserves_zero_activity_and_missing_timestamps() {
+        assert_eq!(work_period(2), "night");
+        assert_eq!(work_period(9), "morning");
+        assert_eq!(work_period(15), "afternoon");
+        assert_eq!(work_period(21), "evening");
+        assert_eq!(normalize_session_density(0.0), 0.0);
+        assert_eq!(normalize_session_density(4.0), 1.0);
+        assert_eq!(normalize_session_density(400.0), 1.0);
+
+        let empty = aggregate_work_rhythm(&[], 30);
+        assert!(empty.work_periods_available);
+        assert_eq!(empty.active_days.value, Some(0.0));
+        assert_eq!(empty.sessions_per_day.value, Some(0.0));
+
+        let mut invalid = record("2026-07-23");
+        invalid.started_at = "not-recorded".into();
+        let partial = aggregate_work_rhythm(&[invalid], 30);
+        assert!(!partial.work_periods_available);
+        assert!(!partial.active_days.available);
+        assert_eq!(partial.active_days.value, None);
+        assert!(partial.sessions_per_day.available);
+        assert!(partial.sessions_per_day.value.is_some());
     }
 
     #[test]

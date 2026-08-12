@@ -587,12 +587,34 @@ export interface VctiIdentityPath {
   opacity: number;
 }
 
+export interface VctiOptionalMetric {
+  value?: number;
+  available: boolean;
+}
+
+export interface VctiRhythmPeriod {
+  id: "night" | "morning" | "afternoon" | "evening";
+  sessions: number;
+  share: number;
+}
+
+export interface VctiWorkRhythm {
+  workPeriods: VctiRhythmPeriod[];
+  workPeriodsAvailable: boolean;
+  activeDays: VctiOptionalMetric;
+  sessionsPerDay: VctiOptionalMetric;
+  phaseOffset?: number;
+  contourCount?: number;
+  contourSpacing?: number;
+}
+
 export interface VctiIdentityVisual {
   algorithmVersion: string;
   version: string;
   range: string;
   available: boolean;
   inputs: VctiIdentityInput[];
+  rhythm: VctiWorkRhythm;
   paths: VctiIdentityPath[];
 }
 

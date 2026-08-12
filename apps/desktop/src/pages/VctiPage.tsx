@@ -242,6 +242,33 @@ export function VctiPage({ locale }: { locale: Locale }) {
                 ) : <EmptyState title={t("vcti.noEvidence")} body={t("vcti.collecting.body")} />}
               </section>
               <section>
+                <h3>{t("vcti.rhythmTitle")}</h3>
+                <p>{t("vcti.rhythmBody")}</p>
+                <div className="vcti-rhythm-evidence">
+                  <div>
+                    <span>{t("vcti.workPeriods")}</span>
+                    <strong>{profile.identityVisual.rhythm.workPeriodsAvailable
+                      ? profile.identityVisual.rhythm.workPeriods
+                        .filter((period) => period.sessions > 0)
+                        .map((period) => `${t(`vcti.periods.${period.id}`)} ${period.sessions}`)
+                        .join(" · ") || t("vcti.noActivity")
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
+                  <div>
+                    <span>{t("vcti.activeDaysLabel")}</span>
+                    <strong>{profile.identityVisual.rhythm.activeDays.available
+                      ? t("vcti.daysValue", { value: profile.identityVisual.rhythm.activeDays.value ?? 0 })
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
+                  <div>
+                    <span>{t("vcti.sessionDensity")}</span>
+                    <strong>{profile.identityVisual.rhythm.sessionsPerDay.available
+                      ? t("vcti.sessionsPerDayValue", { value: (profile.identityVisual.rhythm.sessionsPerDay.value ?? 0).toFixed(1) })
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
+                </div>
+              </section>
+              <section>
                 <h3>{t("vcti.coverageTitle")}</h3>
                 <p>{t("vcti.coverageBody")}</p>
                 <BehaviorCoverage profile={profile} />

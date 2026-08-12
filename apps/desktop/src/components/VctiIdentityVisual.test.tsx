@@ -13,6 +13,15 @@ describe("VctiIdentityVisual", () => {
       range: "90d",
       available: true,
       inputs: [{ id: "dimensions", available: true }],
+      rhythm: {
+        workPeriods: [],
+        workPeriodsAvailable: true,
+        activeDays: { value: 12, available: true },
+        sessionsPerDay: { value: 1.4, available: true },
+        phaseOffset: 0,
+        contourCount: 7,
+        contourSpacing: 4.5,
+      },
       paths: [{ d: "M10,10Q50,0 90,10Z", strokeWidth: 1.25, opacity: 0.8 }],
     };
 

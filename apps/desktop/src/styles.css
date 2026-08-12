@@ -919,6 +919,11 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .vcti-evidence-drawer-body { overflow: auto; display: grid; gap: 28px; padding: 22px 24px 28px; }
 .vcti-evidence-drawer-body h3 { margin: 0 0 10px; font-size: 15px; }
 .vcti-evidence-drawer-body > section > p { margin: 0 0 14px; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+.vcti-rhythm-evidence { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.vcti-rhythm-evidence > div { min-width: 0; padding: 13px; border-right: 1px solid var(--line); }
+.vcti-rhythm-evidence > div:last-child { border-right: 0; }
+.vcti-rhythm-evidence span { display: block; color: var(--muted); font-size: var(--font-caption); }
+.vcti-rhythm-evidence strong { display: block; margin-top: 7px; font-size: 12.5px; line-height: 1.45; }
 .vcti-insights, .vcti-behavior { margin-top: 22px; }
 .vcti-insights .insight-grid { margin-top: 14px; }
 .vcti-behavior .behavior-streams { overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: var(--surface); }

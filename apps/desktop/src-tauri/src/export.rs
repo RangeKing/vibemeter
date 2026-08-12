@@ -3792,7 +3792,10 @@ mod tests {
 
     #[test]
     fn vcti_card_renders_the_shared_identity_geometry() {
-        use crate::models::{VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual};
+        use crate::models::{
+            VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric,
+            VctiWorkRhythm,
+        };
 
         let visual = VctiIdentityVisual {
             algorithm_version: "1.6.0".into(),
@@ -3803,6 +3806,21 @@ mod tests {
                 id: "dimensions".into(),
                 available: true,
             }],
+            rhythm: VctiWorkRhythm {
+                work_periods: Vec::new(),
+                work_periods_available: true,
+                active_days: VctiOptionalMetric {
+                    value: Some(12.0),
+                    available: true,
+                },
+                sessions_per_day: VctiOptionalMetric {
+                    value: Some(1.4),
+                    available: true,
+                },
+                phase_offset: Some(0.0),
+                contour_count: Some(7),
+                contour_spacing: Some(4.5),
+            },
             paths: vec![VctiIdentityPath {
                 d: "M10,10Q50,0 90,10Z".into(),
                 stroke_width: 1.25,

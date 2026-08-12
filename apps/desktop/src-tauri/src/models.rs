@@ -1085,12 +1085,40 @@ pub struct VctiIdentityPath {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VctiOptionalMetric {
+    pub value: Option<f64>,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VctiRhythmPeriod {
+    pub id: String,
+    pub sessions: u64,
+    pub share: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VctiWorkRhythm {
+    pub work_periods: Vec<VctiRhythmPeriod>,
+    pub work_periods_available: bool,
+    pub active_days: VctiOptionalMetric,
+    pub sessions_per_day: VctiOptionalMetric,
+    pub phase_offset: Option<f64>,
+    pub contour_count: Option<u64>,
+    pub contour_spacing: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VctiIdentityVisual {
     pub algorithm_version: String,
     pub version: String,
     pub range: String,
     pub available: bool,
     pub inputs: Vec<VctiIdentityInput>,
+    pub rhythm: VctiWorkRhythm,
     pub paths: Vec<VctiIdentityPath>,
 }
 
