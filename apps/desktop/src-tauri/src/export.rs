@@ -1314,6 +1314,17 @@ fn render_vcti_identity_visual(
         )
         .ok();
     }
+    for detail in &visual.details {
+        write!(
+            svg,
+            "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"{accent}\" opacity=\"{:.3}\"/>",
+            detail.cx,
+            detail.cy,
+            detail.radius,
+            detail.opacity,
+        )
+        .ok();
+    }
     svg.push_str("</g>");
     rect(svg, x, y, size, size, size * 0.5, "none", Some(accent));
 }
@@ -3803,8 +3814,8 @@ mod tests {
     #[test]
     fn vcti_card_renders_the_shared_identity_geometry() {
         use crate::models::{
-            VctiCollaboration, VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual,
-            VctiOptionalMetric, VctiWorkRhythm,
+            VctiCollaboration, VctiDetailDiversity, VctiIdentityInput, VctiIdentityMark,
+            VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiWorkRhythm,
         };
 
         let visual = VctiIdentityVisual {
@@ -3852,6 +3863,23 @@ mod tests {
                 d: "M50,50Q60,40 80,30".into(),
                 stroke_width: 1.0,
                 opacity: 0.6,
+            }],
+            detail_diversity: VctiDetailDiversity {
+                tool_categories: VctiOptionalMetric {
+                    value: Some(3.0),
+                    available: true,
+                },
+                explicit_skills: VctiOptionalMetric {
+                    value: Some(1.0),
+                    available: true,
+                },
+                detail_count: Some(4),
+            },
+            details: vec![VctiIdentityMark {
+                cx: 25.0,
+                cy: 35.0,
+                radius: 0.8,
+                opacity: 0.7,
             }],
         };
         let mut svg = String::new();

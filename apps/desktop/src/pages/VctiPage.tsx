@@ -278,6 +278,18 @@ export function VctiPage({ locale }: { locale: Locale }) {
                       ? t("vcti.countValue", { value: profile.identityVisual.collaboration.parallelBatches.value ?? 0 })
                       : t("vcti.notRecorded")}</strong>
                   </div>
+                  <div>
+                    <span>{t("vcti.toolCategoriesLabel")}</span>
+                    <strong>{profile.identityVisual.detailDiversity.toolCategories.available
+                      ? t("vcti.categoryCountValue", { value: profile.identityVisual.detailDiversity.toolCategories.value ?? 0 })
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
+                  <div>
+                    <span>{t("vcti.explicitSkillsLabel")}</span>
+                    <strong>{profile.identityVisual.detailDiversity.explicitSkills.available
+                      ? t("vcti.categoryCountValue", { value: profile.identityVisual.detailDiversity.explicitSkills.value ?? 0 })
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
                 </div>
               </section>
               <section>

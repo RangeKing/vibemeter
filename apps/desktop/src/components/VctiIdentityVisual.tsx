@@ -48,6 +48,18 @@ export function VctiIdentityVisual({
             />
           ))}
         </g>
+        <g className="vcti-identity-details">
+          {visual.details.map((detail, index) => (
+            <circle
+              key={index}
+              cx={detail.cx}
+              cy={detail.cy}
+              r={detail.radius}
+              fill="currentColor"
+              opacity={detail.opacity}
+            />
+          ))}
+        </g>
       </svg>
       {type ? <figcaption>{type}</figcaption> : null}
     </figure>

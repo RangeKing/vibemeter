@@ -5469,7 +5469,11 @@ impl Database {
                     THEN tu.count ELSE 0 END),0),
                 COALESCE(lm.waiting_count,0),
                 COALESCE(lm.error_count,0),
-                COALESCE(lm.completion_count,0)
+                COALESCE(lm.completion_count,0),
+                COALESCE((SELECT GROUP_CONCAT(tu2.tool, char(31))
+                    FROM tool_usage tu2 WHERE tu2.session_id=s.id),''),
+                COALESCE((SELECT GROUP_CONCAT(su.skill, char(31))
+                    FROM skill_usage su WHERE su.session_id=s.id),'')
              FROM sessions s
              LEFT JOIN session_behavior sb ON sb.session_id=s.id
              LEFT JOIN tool_usage tu ON tu.session_id=s.id
@@ -5496,6 +5500,13 @@ impl Database {
                 if live_completion > 0 {
                     behavior.task_completions = behavior.task_completions.max(1);
                 }
+                let split_categories = |value: String| {
+                    value
+                        .split('\u{1f}')
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                };
                 Ok(crate::vcti::SessionBehaviorRecord {
                     id: row.get(0)?,
                     started_at: row.get(1)?,
@@ -5524,6 +5535,8 @@ impl Database {
                     search_events: read_u64(row, 24)?,
                     edit_events: read_u64(row, 25)?,
                     shell_events: read_u64(row, 26)?,
+                    tool_categories: split_categories(row.get(30)?),
+                    explicit_skills: split_categories(row.get(31)?),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

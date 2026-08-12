@@ -30,6 +30,12 @@ describe("VctiIdentityVisual", () => {
         parallelSpread: 0,
       },
       branches: [{ d: "M50,50Q60,40 80,30", strokeWidth: 1, opacity: 0.6 }],
+      detailDiversity: {
+        toolCategories: { value: 3, available: true },
+        explicitSkills: { value: 1, available: true },
+        detailCount: 4,
+      },
+      details: [{ cx: 25, cy: 35, radius: 0.8, opacity: 0.7 }],
     };
 
     render(<VctiIdentityVisual visual={visual} type="SPEC" guild="start" label="规划型" />);
@@ -38,6 +44,7 @@ describe("VctiIdentityVisual", () => {
     expect(image.getAttribute("data-vcti-visual-version")).toBe("1.0.0");
     expect(image.querySelector("path")?.getAttribute("d")).toBe("M10,10Q50,0 90,10Z");
     expect(image.querySelector(".vcti-identity-branches path")?.getAttribute("d")).toBe("M50,50Q60,40 80,30");
+    expect(image.querySelector(".vcti-identity-details circle")?.getAttribute("cx")).toBe("25");
     expect(image.textContent).toContain("SPEC");
   });
 });

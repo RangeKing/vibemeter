@@ -615,6 +615,19 @@ export interface VctiCollaboration {
   parallelSpread?: number;
 }
 
+export interface VctiDetailDiversity {
+  toolCategories: VctiOptionalMetric;
+  explicitSkills: VctiOptionalMetric;
+  detailCount?: number;
+}
+
+export interface VctiIdentityMark {
+  cx: number;
+  cy: number;
+  radius: number;
+  opacity: number;
+}
+
 export interface VctiIdentityVisual {
   algorithmVersion: string;
   version: string;
@@ -625,6 +638,8 @@ export interface VctiIdentityVisual {
   paths: VctiIdentityPath[];
   collaboration: VctiCollaboration;
   branches: VctiIdentityPath[];
+  detailDiversity: VctiDetailDiversity;
+  details: VctiIdentityMark[];
 }
 
 export interface VctiProfile {

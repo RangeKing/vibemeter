@@ -1,7 +1,8 @@
 use crate::models::{
-    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiEvidenceItem,
-    VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiProfile,
-    VctiRhythmPeriod, VctiScore, VctiTrendPoint, VctiWorkRhythm,
+    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
+    VctiEvidenceItem, VctiIdentityInput, VctiIdentityMark, VctiIdentityPath,
+    VctiIdentityVisual, VctiOptionalMetric, VctiProfile, VctiRhythmPeriod, VctiScore,
+    VctiTrendPoint, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -65,6 +66,8 @@ pub struct SessionBehaviorRecord {
     pub search_events: u64,
     pub edit_events: u64,
     pub shell_events: u64,
+    pub tool_categories: Vec<String>,
+    pub explicit_skills: Vec<String>,
     pub behavior: BehaviorSignals,
 }
 
@@ -318,6 +321,7 @@ fn build_identity_visual(
     let available = identity_available && dimensions_available;
     let rhythm = aggregate_work_rhythm(records, window_days);
     let collaboration = aggregate_collaboration(behavior);
+    let detail_diversity = aggregate_detail(records);
     let inputs = vec![
         VctiIdentityInput {
             id: "identity".into(),
@@ -347,6 +351,14 @@ fn build_identity_visual(
             id: "parallel-batches".into(),
             available: collaboration.parallel_batches.available,
         },
+        VctiIdentityInput {
+            id: "tool-categories".into(),
+            available: detail_diversity.tool_categories.available,
+        },
+        VctiIdentityInput {
+            id: "explicit-skills".into(),
+            available: detail_diversity.explicit_skills.available,
+        },
     ];
     if !available {
         return VctiIdentityVisual {
@@ -359,6 +371,8 @@ fn build_identity_visual(
             paths: Vec::new(),
             collaboration,
             branches: Vec::new(),
+            detail_diversity,
+            details: Vec::new(),
         };
     }
 
@@ -396,6 +410,7 @@ fn build_identity_visual(
         })
         .collect();
     let branches = build_collaboration_branches(&collaboration, phase);
+    let details = build_detail_marks(&detail_diversity, phase);
 
     VctiIdentityVisual {
         algorithm_version: ALGORITHM_VERSION.into(),
@@ -407,6 +422,8 @@ fn build_identity_visual(
         paths,
         collaboration,
         branches,
+        detail_diversity,
+        details,
     }
 }
 
@@ -465,6 +482,56 @@ fn build_collaboration_branches(
                 ),
                 stroke_width: 0.8 + spread * 0.4,
                 opacity: 0.48 + index as f64 * 0.055,
+            }
+        })
+        .collect()
+}
+
+fn aggregate_detail(records: &[SessionBehaviorRecord]) -> VctiDetailDiversity {
+    let tool_categories_available = records
+        .iter()
+        .all(|record| record.tool_calls == 0 || !record.tool_categories.is_empty());
+    let tool_categories = records
+        .iter()
+        .flat_map(|record| record.tool_categories.iter().cloned())
+        .collect::<HashSet<_>>()
+        .len() as u64;
+    let explicit_skills = records
+        .iter()
+        .flat_map(|record| record.explicit_skills.iter().cloned())
+        .collect::<HashSet<_>>()
+        .len() as u64;
+    let detail_count = tool_categories_available
+        .then_some(tool_categories.min(8))
+        .unwrap_or(0)
+        .saturating_add(explicit_skills.min(4));
+    VctiDetailDiversity {
+        tool_categories: VctiOptionalMetric {
+            value: tool_categories_available.then_some(tool_categories as f64),
+            available: tool_categories_available,
+        },
+        explicit_skills: VctiOptionalMetric {
+            value: Some(explicit_skills as f64),
+            available: true,
+        },
+        detail_count: Some(detail_count),
+    }
+}
+
+fn build_detail_marks(detail: &VctiDetailDiversity, phase: f64) -> Vec<VctiIdentityMark> {
+    let count = detail.detail_count.unwrap_or(0) as usize;
+    (0..count)
+        .map(|index| {
+            let ring = index % 3;
+            let angle = phase
+                + std::f64::consts::TAU * index as f64 / count.max(1) as f64
+                + ring as f64 * 0.18;
+            let distance = 22.0 + ring as f64 * 8.0;
+            VctiIdentityMark {
+                cx: 50.0 + angle.cos() * distance,
+                cy: 50.0 + angle.sin() * distance,
+                radius: 0.65 + ring as f64 * 0.16,
+                opacity: 0.42 + (index % 4) as f64 * 0.1,
             }
         })
         .collect()
@@ -1710,6 +1777,8 @@ mod tests {
             search_events: 1,
             edit_events: 4,
             shell_events: 8,
+            tool_categories: vec!["shell".into(), "edit".into(), "test".into()],
+            explicit_skills: Vec::new(),
             behavior: BehaviorSignals {
                 prompt_count: 2,
                 prompt_characters: 400,
@@ -1785,7 +1854,7 @@ mod tests {
         assert_eq!(first.identity_visual.algorithm_version, ALGORITHM_VERSION);
         assert_eq!(first.identity_visual.range, "90d");
         assert!(first.identity_visual.available);
-        assert_eq!(first.identity_visual.inputs.len(), 7);
+        assert_eq!(first.identity_visual.inputs.len(), 9);
         assert!((5..=9).contains(&first.identity_visual.paths.len()));
         assert_eq!(
             serde_json::to_value(&first.identity_visual).unwrap(),
@@ -1863,6 +1932,31 @@ mod tests {
         assert_eq!(missing.subagent_starts.value, None);
         assert_eq!(missing.parallel_batches.value, None);
         assert_eq!(missing.branch_count, None);
+    }
+
+    #[test]
+    fn explicit_tool_and_skill_detail_is_bounded_without_names() {
+        let mut one = record("2026-07-23");
+        one.tool_categories = vec!["edit".into()];
+        one.explicit_skills = vec!["tdd".into()];
+        let observed = aggregate_detail(&[one]);
+        assert_eq!(observed.tool_categories.value, Some(1.0));
+        assert_eq!(observed.explicit_skills.value, Some(1.0));
+        assert_eq!(observed.detail_count, Some(2));
+
+        let mut extreme = record("2026-07-23");
+        extreme.tool_categories = (0..50).map(|index| format!("tool-{index}" )).collect();
+        extreme.explicit_skills = (0..50).map(|index| format!("skill-{index}" )).collect();
+        assert_eq!(aggregate_detail(&[extreme]).detail_count, Some(12));
+
+        let mut missing = record("2026-07-23");
+        missing.tool_calls = 3;
+        missing.tool_categories.clear();
+        let partial = aggregate_detail(&[missing]);
+        assert!(!partial.tool_categories.available);
+        assert_eq!(partial.tool_categories.value, None);
+        assert!(partial.explicit_skills.available);
+        assert_eq!(partial.explicit_skills.value, Some(0.0));
     }
 
     #[test]
