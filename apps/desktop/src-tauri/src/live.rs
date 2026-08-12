@@ -4189,7 +4189,12 @@ mod tests {
                     .expect("normalized lifecycle should persist");
             }
 
-            let activity = database.live_activity().expect("live activity should load");
+            let now = DateTime::parse_from_rfc3339("2026-08-10T12:00:00Z")
+                .expect("fixture clock should parse")
+                .with_timezone(&Utc);
+            let activity = database
+                .live_activity_at(now)
+                .expect("live activity should load");
             assert_eq!(activity.timeline.len(), event_names.len());
             let public_json = serde_json::to_string(&activity).expect("activity should serialize");
             assert!(!public_json.contains("super-secret prompt"));

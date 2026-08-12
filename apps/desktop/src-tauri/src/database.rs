@@ -5291,21 +5291,24 @@ impl Database {
     }
 
     pub fn live_activity(&self) -> AppResult<LiveActivityResponse> {
-        let now = Utc::now();
+        self.live_activity_at(Utc::now())
+    }
+
+    pub(crate) fn live_activity_at(&self, now: DateTime<Utc>) -> AppResult<LiveActivityResponse> {
         self.maintain_attention_events_if_due(now)?;
         let attention = self.attention_queue_at(now)?;
         let connection = self.connect()?;
-        let period_start = Local::now()
-            .date_naive()
+        let local_date = now.with_timezone(&Local).date_naive();
+        let period_start = local_date
             .and_hms_opt(0, 0, 0)
             .map(|value| {
                 value
                     .and_local_timezone(Local)
                     .single()
                     .map(|local| local.with_timezone(&Utc).to_rfc3339())
-                    .unwrap_or_else(|| format!("{}T00:00:00Z", Local::now().date_naive()))
+                    .unwrap_or_else(|| format!("{local_date}T00:00:00Z"))
             })
-            .unwrap_or_else(|| format!("{}T00:00:00Z", Local::now().date_naive()));
+            .unwrap_or_else(|| format!("{local_date}T00:00:00Z"));
         let history_start = (now - Duration::days(7)).to_rfc3339();
         let mut timeline_statement = connection.prepare(
             "SELECT id, occurred_at, observed_at, agent, project_label,
@@ -8622,6 +8625,15 @@ mod concurrency_tests {
     use std::path::Path;
     use std::sync::{Arc, Barrier};
 
+    fn fixture_live_activity(database: &Database) -> LiveActivityResponse {
+        let now = DateTime::parse_from_rfc3339("2026-08-10T12:00:00Z")
+            .expect("fixture clock should parse")
+            .with_timezone(&Utc);
+        database
+            .live_activity_at(now)
+            .expect("fixture live activity should load")
+    }
+
     fn restore_legacy_evidence_tables(connection: &Connection) {
         connection
             .execute_batch(
@@ -11898,7 +11910,7 @@ mod concurrency_tests {
                     .all(|cycle| cycle.5 == "observed" && cycle.6 == "exact-lifecycle")
             );
 
-            let activity = database.live_activity().expect("live activity should load");
+            let activity = fixture_live_activity(&database);
             assert_eq!(activity.timeline.len(), events.len());
             let public_json = serde_json::to_string(&activity).expect("activity should serialize");
             assert!(!public_json.contains("private"));
@@ -12280,7 +12292,7 @@ mod concurrency_tests {
         create_v14_live_database(&path);
 
         let upgraded = Database::open(path.clone()).expect("v14 database should upgrade");
-        let first = upgraded.live_activity().expect("v14 activity should load");
+        let first = fixture_live_activity(&upgraded);
         let connection = upgraded.connect().expect("database should connect");
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -12302,9 +12314,7 @@ mod concurrency_tests {
         drop(upgraded);
 
         let reopened = Database::open(path.clone()).expect("upgraded database should reopen");
-        let second = reopened
-            .live_activity()
-            .expect("activity should remain visible");
+        let second = fixture_live_activity(&reopened);
         let reopened_count: i64 = reopened
             .connect()
             .expect("database should connect")
@@ -12393,14 +12403,7 @@ mod concurrency_tests {
         assert_eq!(summary, (0, 1, 1, 5));
         assert_eq!(version, DATABASE_SCHEMA_VERSION);
         drop(connection);
-        assert_eq!(
-            upgraded
-                .live_activity()
-                .expect("canonical activity should remain visible")
-                .timeline
-                .len(),
-            1
-        );
+        assert_eq!(fixture_live_activity(&upgraded).timeline.len(), 1);
         drop(upgraded);
         let (staging, rollback, marker) = migration_paths(&path);
         for candidate in [
