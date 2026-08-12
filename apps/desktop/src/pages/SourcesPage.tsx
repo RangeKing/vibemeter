@@ -35,6 +35,9 @@ export function SourcesPage({ locale }: { locale: Locale }) {
         client.invalidateQueries({ queryKey: ["sources"] }),
         client.invalidateQueries({ queryKey: ["overview"] }),
         client.invalidateQueries({ queryKey: ["tasks"] }),
+        client.invalidateQueries({ queryKey: ["vcti"] }),
+        client.invalidateQueries({ queryKey: ["insights"] }),
+        client.invalidateQueries({ queryKey: ["share-preview"] }),
       ]);
     },
   });

@@ -5476,6 +5476,12 @@ impl Database {
              LEFT JOIN live_session_metrics lm
                 ON lm.agent=s.agent AND lm.source_session_id=s.source_session_id
              WHERE s.started_at>=?1
+               AND (
+                    NOT EXISTS(SELECT 1 FROM sources)
+                    OR s.agent IN (
+                        SELECT agent FROM sources WHERE available=1 AND selected=1
+                    )
+               )
              GROUP BY s.id
              ORDER BY s.started_at",
         )?;
@@ -5523,8 +5529,16 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
         let available_agents = connection.query_row(
-            "SELECT COUNT(DISTINCT agent) FROM sources WHERE available=1",
-            [],
+            "SELECT COUNT(DISTINCT s.agent)
+             FROM sessions s
+             WHERE s.started_at>=?1
+               AND (
+                    NOT EXISTS(SELECT 1 FROM sources)
+                    OR s.agent IN (
+                        SELECT agent FROM sources WHERE available=1 AND selected=1
+                    )
+               )",
+            params![start_timestamp],
             |row| read_u64(row, 0),
         )?;
         let structure_analysis_enabled = connection
@@ -13118,6 +13132,11 @@ mod concurrency_tests {
             .expect("initial overview");
         assert_eq!(initial.totals.usage.total(), 1_000);
         assert_eq!(initial.agents.len(), 2);
+        let initial_vcti = database
+            .vcti_profile("today")
+            .expect("initial VCTI profile");
+        assert_eq!(initial_vcti.session_count, 2);
+        assert_eq!(initial_vcti.behavior.sessions, 2);
 
         database
             .set_source_selected("codex", false)
@@ -13137,6 +13156,11 @@ mod concurrency_tests {
         assert_eq!(filtered.totals.usage.total(), 700);
         assert_eq!(filtered.agents.len(), 1);
         assert_eq!(filtered.agents[0].label, "claude-code");
+        let filtered_vcti = database
+            .vcti_profile("today")
+            .expect("filtered VCTI profile");
+        assert_eq!(filtered_vcti.session_count, 1);
+        assert_eq!(filtered_vcti.behavior.sessions, 1);
     }
 
     #[test]
