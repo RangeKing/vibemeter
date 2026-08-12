@@ -36,6 +36,18 @@ export function VctiIdentityVisual({
             />
           ))}
         </g>
+        <g className="vcti-identity-branches">
+          {visual.branches.map((branch, index) => (
+            <path
+              key={`${index}-${branch.d}`}
+              d={branch.d}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={branch.strokeWidth}
+              opacity={branch.opacity}
+            />
+          ))}
+        </g>
       </svg>
       {type ? <figcaption>{type}</figcaption> : null}
     </figure>

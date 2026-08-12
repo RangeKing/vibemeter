@@ -23,6 +23,13 @@ describe("VctiIdentityVisual", () => {
         contourSpacing: 4.5,
       },
       paths: [{ d: "M10,10Q50,0 90,10Z", strokeWidth: 1.25, opacity: 0.8 }],
+      collaboration: {
+        subagentStarts: { value: 1, available: true },
+        parallelBatches: { value: 0, available: true },
+        branchCount: 1,
+        parallelSpread: 0,
+      },
+      branches: [{ d: "M50,50Q60,40 80,30", strokeWidth: 1, opacity: 0.6 }],
     };
 
     render(<VctiIdentityVisual visual={visual} type="SPEC" guild="start" label="规划型" />);
@@ -30,6 +37,7 @@ describe("VctiIdentityVisual", () => {
     const image = screen.getByRole("img", { name: "规划型" });
     expect(image.getAttribute("data-vcti-visual-version")).toBe("1.0.0");
     expect(image.querySelector("path")?.getAttribute("d")).toBe("M10,10Q50,0 90,10Z");
+    expect(image.querySelector(".vcti-identity-branches path")?.getAttribute("d")).toBe("M50,50Q60,40 80,30");
     expect(image.textContent).toContain("SPEC");
   });
 });

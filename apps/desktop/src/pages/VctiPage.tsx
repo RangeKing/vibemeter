@@ -266,6 +266,18 @@ export function VctiPage({ locale }: { locale: Locale }) {
                       ? t("vcti.sessionsPerDayValue", { value: (profile.identityVisual.rhythm.sessionsPerDay.value ?? 0).toFixed(1) })
                       : t("vcti.notRecorded")}</strong>
                   </div>
+                  <div>
+                    <span>{t("vcti.subagentStartsLabel")}</span>
+                    <strong>{profile.identityVisual.collaboration.subagentStarts.available
+                      ? t("vcti.countValue", { value: profile.identityVisual.collaboration.subagentStarts.value ?? 0 })
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
+                  <div>
+                    <span>{t("vcti.parallelBatchesLabel")}</span>
+                    <strong>{profile.identityVisual.collaboration.parallelBatches.available
+                      ? t("vcti.countValue", { value: profile.identityVisual.collaboration.parallelBatches.value ?? 0 })
+                      : t("vcti.notRecorded")}</strong>
+                  </div>
                 </div>
               </section>
               <section>

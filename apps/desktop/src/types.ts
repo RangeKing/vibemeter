@@ -608,6 +608,13 @@ export interface VctiWorkRhythm {
   contourSpacing?: number;
 }
 
+export interface VctiCollaboration {
+  subagentStarts: VctiOptionalMetric;
+  parallelBatches: VctiOptionalMetric;
+  branchCount?: number;
+  parallelSpread?: number;
+}
+
 export interface VctiIdentityVisual {
   algorithmVersion: string;
   version: string;
@@ -616,6 +623,8 @@ export interface VctiIdentityVisual {
   inputs: VctiIdentityInput[];
   rhythm: VctiWorkRhythm;
   paths: VctiIdentityPath[];
+  collaboration: VctiCollaboration;
+  branches: VctiIdentityPath[];
 }
 
 export interface VctiProfile {

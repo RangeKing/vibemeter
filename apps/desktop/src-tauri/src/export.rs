@@ -1304,6 +1304,16 @@ fn render_vcti_identity_visual(
         )
         .ok();
     }
+    for branch in &visual.branches {
+        write!(
+            svg,
+            "<path d=\"{}\" fill=\"none\" stroke=\"{accent}\" stroke-width=\"{:.2}\" opacity=\"{:.3}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            xml(&branch.d),
+            branch.stroke_width,
+            branch.opacity,
+        )
+        .ok();
+    }
     svg.push_str("</g>");
     rect(svg, x, y, size, size, size * 0.5, "none", Some(accent));
 }
@@ -3793,8 +3803,8 @@ mod tests {
     #[test]
     fn vcti_card_renders_the_shared_identity_geometry() {
         use crate::models::{
-            VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric,
-            VctiWorkRhythm,
+            VctiCollaboration, VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual,
+            VctiOptionalMetric, VctiWorkRhythm,
         };
 
         let visual = VctiIdentityVisual {
@@ -3826,6 +3836,23 @@ mod tests {
                 stroke_width: 1.25,
                 opacity: 0.8,
             }],
+            collaboration: VctiCollaboration {
+                subagent_starts: VctiOptionalMetric {
+                    value: Some(1.0),
+                    available: true,
+                },
+                parallel_batches: VctiOptionalMetric {
+                    value: Some(0.0),
+                    available: true,
+                },
+                branch_count: Some(1),
+                parallel_spread: Some(0.0),
+            },
+            branches: vec![VctiIdentityPath {
+                d: "M50,50Q60,40 80,30".into(),
+                stroke_width: 1.0,
+                opacity: 0.6,
+            }],
         };
         let mut svg = String::new();
 
@@ -3840,6 +3867,7 @@ mod tests {
         );
 
         assert!(svg.contains("M10,10Q50,0 90,10Z"));
+        assert!(svg.contains("M50,50Q60,40 80,30"));
         assert!(svg.contains("data-vcti-visual-version=\"1.0.0\""));
         assert!(!svg.contains("data:image/webp"));
         let png = render_png_bytes(&format!(

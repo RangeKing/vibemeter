@@ -1,7 +1,7 @@
 use crate::models::{
-    BehaviorSignals, BehaviorSummary, VctiBadge, VctiEvidenceItem, VctiIdentityInput,
-    VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiProfile, VctiRhythmPeriod,
-    VctiScore, VctiTrendPoint, VctiWorkRhythm,
+    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiEvidenceItem,
+    VctiIdentityInput, VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiProfile,
+    VctiRhythmPeriod, VctiScore, VctiTrendPoint, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -238,6 +238,7 @@ pub fn calculate(
         &dimensions,
         records,
         window_days,
+        &behavior,
     );
     let badges = badges(
         &features,
@@ -310,11 +311,13 @@ fn build_identity_visual(
     dimensions: &[VctiScore],
     records: &[SessionBehaviorRecord],
     window_days: i64,
+    behavior: &BehaviorSummary,
 ) -> VctiIdentityVisual {
     let dimensions_available = dimensions.len() == 18 && dimensions.iter().all(|score| score.coverage > 0.0);
     let identity_available = primary_type.is_some() && guild.is_some();
     let available = identity_available && dimensions_available;
     let rhythm = aggregate_work_rhythm(records, window_days);
+    let collaboration = aggregate_collaboration(behavior);
     let inputs = vec![
         VctiIdentityInput {
             id: "identity".into(),
@@ -336,6 +339,14 @@ fn build_identity_visual(
             id: "session-density".into(),
             available: rhythm.sessions_per_day.available,
         },
+        VctiIdentityInput {
+            id: "subagent-starts".into(),
+            available: collaboration.subagent_starts.available,
+        },
+        VctiIdentityInput {
+            id: "parallel-batches".into(),
+            available: collaboration.parallel_batches.available,
+        },
     ];
     if !available {
         return VctiIdentityVisual {
@@ -346,6 +357,8 @@ fn build_identity_visual(
             inputs,
             rhythm,
             paths: Vec::new(),
+            collaboration,
+            branches: Vec::new(),
         };
     }
 
@@ -382,6 +395,7 @@ fn build_identity_visual(
             }
         })
         .collect();
+    let branches = build_collaboration_branches(&collaboration, phase);
 
     VctiIdentityVisual {
         algorithm_version: ALGORITHM_VERSION.into(),
@@ -391,7 +405,69 @@ fn build_identity_visual(
         inputs,
         rhythm,
         paths,
+        collaboration,
+        branches,
     }
+}
+
+fn aggregate_collaboration(behavior: &BehaviorSummary) -> VctiCollaboration {
+    let available = behavior.orchestration_capable_sessions > 0;
+    let subagent_starts = available.then_some(behavior.subagent_starts as f64);
+    let parallel_batches = available.then_some(behavior.parallel_batches as f64);
+    let branch_count = available.then(|| {
+        let weighted = behavior
+            .subagent_starts
+            .saturating_add(behavior.parallel_batches.saturating_mul(2));
+        if weighted == 0 {
+            0
+        } else {
+            (1 + u64::from(weighted.ilog2())).min(6)
+        }
+    });
+    let parallel_spread = available
+        .then(|| (behavior.parallel_batches as f64 / 8.0).clamp(0.0, 1.0));
+    VctiCollaboration {
+        subagent_starts: VctiOptionalMetric {
+            value: subagent_starts,
+            available,
+        },
+        parallel_batches: VctiOptionalMetric {
+            value: parallel_batches,
+            available,
+        },
+        branch_count,
+        parallel_spread,
+    }
+}
+
+fn build_collaboration_branches(
+    collaboration: &VctiCollaboration,
+    phase: f64,
+) -> Vec<VctiIdentityPath> {
+    let count = collaboration.branch_count.unwrap_or(0) as usize;
+    let spread = collaboration.parallel_spread.unwrap_or(0.0);
+    (0..count)
+        .map(|index| {
+            let centered = index as f64 - (count.saturating_sub(1)) as f64 / 2.0;
+            let angle = phase + centered * (0.34 + spread * 0.26);
+            let start_radius = 8.0 + index as f64 * 1.2;
+            let end_radius = 37.0 + spread * 6.0;
+            let start_x = 50.0 + angle.cos() * start_radius;
+            let start_y = 50.0 + angle.sin() * start_radius;
+            let end_x = 50.0 + angle.cos() * end_radius;
+            let end_y = 50.0 + angle.sin() * end_radius;
+            let bend_angle = angle + if index % 2 == 0 { 0.34 } else { -0.34 };
+            let control_x = 50.0 + bend_angle.cos() * (22.0 + spread * 5.0);
+            let control_y = 50.0 + bend_angle.sin() * (22.0 + spread * 5.0);
+            VctiIdentityPath {
+                d: format!(
+                    "M{start_x:.2},{start_y:.2}Q{control_x:.2},{control_y:.2} {end_x:.2},{end_y:.2}"
+                ),
+                stroke_width: 0.8 + spread * 0.4,
+                opacity: 0.48 + index as f64 * 0.055,
+            }
+        })
+        .collect()
 }
 
 fn aggregate_work_rhythm(records: &[SessionBehaviorRecord], window_days: i64) -> VctiWorkRhythm {
@@ -1709,7 +1785,7 @@ mod tests {
         assert_eq!(first.identity_visual.algorithm_version, ALGORITHM_VERSION);
         assert_eq!(first.identity_visual.range, "90d");
         assert!(first.identity_visual.available);
-        assert_eq!(first.identity_visual.inputs.len(), 5);
+        assert_eq!(first.identity_visual.inputs.len(), 7);
         assert!((5..=9).contains(&first.identity_visual.paths.len()));
         assert_eq!(
             serde_json::to_value(&first.identity_visual).unwrap(),
@@ -1745,6 +1821,48 @@ mod tests {
         assert_eq!(partial.active_days.value, None);
         assert!(partial.sessions_per_day.available);
         assert!(partial.sessions_per_day.value.is_some());
+    }
+
+    #[test]
+    fn collaboration_branches_are_bounded_and_distinguish_missing_from_zero() {
+        let observed_zero = aggregate_collaboration(&BehaviorSummary {
+            sessions: 4,
+            orchestration_capable_sessions: 4,
+            orchestration_coverage: 1.0,
+            ..BehaviorSummary::default()
+        });
+        assert_eq!(observed_zero.subagent_starts.value, Some(0.0));
+        assert_eq!(observed_zero.parallel_batches.value, Some(0.0));
+        assert_eq!(observed_zero.branch_count, Some(0));
+
+        let single = aggregate_collaboration(&BehaviorSummary {
+            sessions: 4,
+            subagent_starts: 1,
+            orchestration_capable_sessions: 4,
+            orchestration_coverage: 1.0,
+            ..BehaviorSummary::default()
+        });
+        assert_eq!(single.branch_count, Some(1));
+
+        let extreme = aggregate_collaboration(&BehaviorSummary {
+            sessions: 4,
+            subagent_starts: 500,
+            parallel_batches: 500,
+            orchestration_capable_sessions: 4,
+            orchestration_coverage: 1.0,
+            ..BehaviorSummary::default()
+        });
+        assert_eq!(extreme.branch_count, Some(6));
+        assert_eq!(extreme.parallel_spread, Some(1.0));
+
+        let missing = aggregate_collaboration(&BehaviorSummary {
+            sessions: 4,
+            ..BehaviorSummary::default()
+        });
+        assert!(!missing.subagent_starts.available);
+        assert_eq!(missing.subagent_starts.value, None);
+        assert_eq!(missing.parallel_batches.value, None);
+        assert_eq!(missing.branch_count, None);
     }
 
     #[test]
