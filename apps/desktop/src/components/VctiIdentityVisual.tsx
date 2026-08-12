@@ -1,5 +1,12 @@
 import { VCTI_GUILD_ACCENT, type VctiGuild } from "../lib/vctiCatalog";
 import type { VctiIdentityVisual as IdentityVisual } from "../types";
+import { useEffect, useState } from "react";
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
 
 export function VctiIdentityVisual({
   visual,
@@ -13,11 +20,22 @@ export function VctiIdentityVisual({
   label: string;
 }) {
   const resolvedGuild = (guild || "start") as VctiGuild;
+  const [generating, setGenerating] = useState(() => !prefersReducedMotion());
+  useEffect(() => {
+    if (prefersReducedMotion()) {
+      setGenerating(false);
+      return;
+    }
+    setGenerating(true);
+    const timeout = window.setTimeout(() => setGenerating(false), 800);
+    return () => window.clearTimeout(timeout);
+  }, [visual.algorithmVersion, visual.range, visual.version]);
   return (
     <figure
       className={`vcti-identity-visual ${visual.available ? "available" : "collecting"}`}
       style={{ "--vcti-accent": VCTI_GUILD_ACCENT[resolvedGuild] } as React.CSSProperties}
       data-vcti-visual-version={visual.version}
+      data-generating={generating ? "true" : "false"}
       aria-label={label}
       role="img"
     >
@@ -33,6 +51,7 @@ export function VctiIdentityVisual({
               stroke="currentColor"
               strokeWidth={path.strokeWidth}
               opacity={path.opacity}
+              pathLength={1}
             />
           ))}
         </g>
@@ -45,6 +64,7 @@ export function VctiIdentityVisual({
               stroke="currentColor"
               strokeWidth={branch.strokeWidth}
               opacity={branch.opacity}
+              pathLength={1}
             />
           ))}
         </g>
@@ -69,6 +89,7 @@ export function VctiIdentityVisual({
               stroke="currentColor"
               strokeWidth={variation.strokeWidth}
               opacity={variation.opacity}
+              pathLength={1}
             />
           ))}
         </g>
