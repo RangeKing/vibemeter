@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SourceStatus } from "../types";
 import {
   capabilityTranslationKey,
+  dataFilterAgents,
   defaultDataAgents,
   parseSourceCapabilities,
   sourceCapabilityNameGroups,
@@ -84,5 +85,40 @@ describe("source status language", () => {
         ],
       ),
     ).toEqual(["codex"]);
+  });
+
+  it("keeps experimental live sources available as Data filters before history is observed", () => {
+    const source = (overrides: Partial<SourceStatus>): SourceStatus => ({
+      agent: "codex",
+      available: true,
+      selected: true,
+      capabilityLevel: "full",
+      liveCapability: "exact",
+      parserVersion: "test-parser",
+      sessionCount: 1,
+      status: "ready",
+      warningCount: 0,
+      pathLabel: "",
+      ...overrides,
+    });
+
+    expect(dataFilterAgents([
+      source({ agent: "codex" }),
+      source({
+        agent: "zcode",
+        available: false,
+        liveCapability: "experimental",
+        sessionCount: 0,
+        status: "not-found",
+      }),
+      source({
+        agent: "kimi-code",
+        available: false,
+        liveCapability: "experimental",
+        sessionCount: 0,
+        status: "not-found",
+      }),
+      source({ agent: "openclaw", available: false, liveCapability: "none", sessionCount: 0 }),
+    ])).toEqual(["codex", "zcode", "kimi-code"]);
   });
 });

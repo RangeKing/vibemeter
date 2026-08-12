@@ -77,6 +77,7 @@ describe("Notch session selection", () => {
     expect(screen.getByRole("alert").textContent).toBe(
       "注意力状态暂时不可用，现有证据未被清空。",
     );
+    expect(screen.queryByText("注意力雷达")).toBeNull();
   });
 
   it("shows the retained attention item when its jump fails", () => {
@@ -110,6 +111,10 @@ describe("Notch session selection", () => {
 
     expect(screen.getByRole("alert").textContent).toBe("无法返回源会话，关注事件已保留，可稍后重试。");
     expect(screen.getByText("VibeMeter")).toBeTruthy();
+    expect(screen.queryByText("注意力雷达")).toBeNull();
+    expect(screen.getByRole("button", { name: "已处理" }).className).toContain(
+      "notch-attention-action-text",
+    );
   });
 
   it("formats a live conversation duration instead of a wall-clock timestamp", () => {

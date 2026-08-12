@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
 import { useUiStore } from "../store";
-import type { OverviewResponse } from "../types";
+import type { OverviewResponse, SourceStatus } from "../types";
 import { DataPage } from "./DataPage";
 
 const { comparison, overview, providers, settings, sources, tasks } = vi.hoisted(() => ({
@@ -137,5 +137,28 @@ describe("DataPage query transition", () => {
     });
 
     await waitFor(() => expect(screen.getByRole("heading", { name: /你与 Agent/ })).toBeTruthy());
+  });
+
+  it("renders the ZCode filter before historical sessions are available", async () => {
+    const zcode: SourceStatus = {
+      agent: "zcode",
+      available: false,
+      selected: true,
+      capabilityLevel: "partial",
+      liveCapability: "experimental",
+      parserVersion: "test-parser",
+      sessionCount: 0,
+      status: "not-found",
+      warningCount: 0,
+      pathLabel: "",
+    };
+    overview.mockResolvedValue(emptyOverview);
+    sources.mockResolvedValue([zcode]);
+    tasks.mockResolvedValue([]);
+
+    renderDataPage();
+
+    const button = await screen.findByRole("button", { name: "ZCode" });
+    expect(button.getAttribute("aria-pressed")).toBe("false");
   });
 });

@@ -180,7 +180,6 @@ export function NotchAttentionQueue({
   if (!available) {
     return (
       <section className="notch-attention-queue is-unavailable">
-        <header><strong>{t("live.attention.queueTitle")}</strong></header>
         <p className="notch-attention-unavailable" role="alert">
           {t("live.attention.unavailable")}
         </p>
@@ -190,7 +189,6 @@ export function NotchAttentionQueue({
   if (!items.length) return null;
   return (
     <section className="notch-attention-queue">
-      <header><strong>{t("live.attention.queueTitle")}</strong><span>{items.length}</span></header>
       {items.map((attention) => (
         <article key={attention.id} className={`kind-${attention.kind}`}>
           <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
@@ -199,7 +197,12 @@ export function NotchAttentionQueue({
             <small>{attention.projectLabel || agentName(attention.agent)}</small>
           </span>
           <span className="notch-attention-actions">
-            <button onClick={() => onFeedback(attention.id, "handled")}>{t("live.attention.action.handled")}</button>
+            <button
+              className="notch-attention-action-text"
+              onClick={() => onFeedback(attention.id, "handled")}
+            >
+              {t("live.attention.action.handled")}
+            </button>
             {attention.kind === "stuck" ? <button onClick={() => onFeedback(attention.id, "not-stuck")}>{t("live.attention.action.not-stuck")}</button> : null}
             <button onClick={() => onJump(attention.id)} aria-label={t("live.jump")}><ArrowUpRight size={12} /></button>
           </span>

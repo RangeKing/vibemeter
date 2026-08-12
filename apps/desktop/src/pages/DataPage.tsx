@@ -17,7 +17,7 @@ import { buildHourlyActivity, findPeakActivity } from "../lib/activity";
 import { chartTooltip, useChartColors } from "../lib/chartTheme";
 import { agentName, cacheTokenTotal, formatCompact, formatCurrency, formatDate, sumTokenUsage, tokenTotal } from "../lib/format";
 import { summarizeProviderAccountUsage } from "../lib/providerUsage";
-import { defaultDataAgents } from "../lib/sourceStatus";
+import { dataFilterAgents, defaultDataAgents } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
 
@@ -190,8 +190,8 @@ export function DataPage({ locale }: { locale: Locale }) {
       await Promise.all([client.invalidateQueries({ queryKey: ["tasks"] }), client.invalidateQueries({ queryKey: ["overview"] }), client.invalidateQueries({ queryKey: ["sessions"] })]);
     },
   });
-  const availableAgents = useMemo(
-    () => (sources.data ?? []).filter((source) => source.available).map((source) => source.agent),
+  const filterAgents = useMemo(
+    () => dataFilterAgents(sources.data ?? []),
     [sources.data],
   );
   const defaultAgents = useMemo(
@@ -202,10 +202,10 @@ export function DataPage({ locale }: { locale: Locale }) {
     if (!sources.data || !overview.data) return;
     setAgentFilter((current) => {
       if (current === null) return current;
-      const stillValid = current.filter((agent) => availableAgents.includes(agent));
+      const stillValid = current.filter((agent) => filterAgents.includes(agent));
       return stillValid.length ? stillValid : defaultAgents;
     });
-  }, [availableAgents, defaultAgents, overview.data, sources.data]);
+  }, [filterAgents, defaultAgents, overview.data, sources.data]);
 
   const isToday = range === "today";
   const referenceTime = useMemo(() => {
@@ -302,7 +302,7 @@ export function DataPage({ locale }: { locale: Locale }) {
         <div><span className="eyebrow"><BarChart3 size={13} />{t("data.eyebrow")}</span><h1>{locale === "zh-CN" ? <>你与 Agent<br />一起完成的工作</> : t("data.title")}</h1><p>{t("data.description")}</p></div>
         <div className="data-header-actions">
           <div className="data-agent-chips" role="group" aria-label={t("data.agentFilter")}>
-            {availableAgents.length ? availableAgents.map((agent) => {
+            {filterAgents.length ? filterAgents.map((agent) => {
               const active = activeAgents.includes(agent);
               return (
                 <button
@@ -310,6 +310,7 @@ export function DataPage({ locale }: { locale: Locale }) {
                   type="button"
                   className={active ? "active" : ""}
                   aria-pressed={active}
+                  aria-label={agentName(agent)}
                   onClick={() => toggleAgent(agent)}
                 >
                   <AgentBadge agent={agent} compact />
