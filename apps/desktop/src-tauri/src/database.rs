@@ -5449,7 +5449,7 @@ impl Database {
                 s.input_tokens+s.output_tokens+s.cache_read_tokens+
                     s.cache_write_tokens+s.cache_write_1h_tokens+s.reasoning_tokens,
                 s.cache_read_tokens, s.tool_calls, s.files_touched,
-                s.lines_added+s.lines_deleted, s.errors, s.verification_events,
+                s.lines_added+s.lines_deleted, s.errors, s.retries, s.verification_events,
                 s.human_interventions, s.subagent_count, s.model_switches,
                 s.longest_uninterrupted_seconds,
                 EXISTS(SELECT 1 FROM git_commits gc WHERE gc.session_id=s.id),
@@ -5473,7 +5473,8 @@ impl Database {
                 COALESCE((SELECT GROUP_CONCAT(tu2.tool, char(31))
                     FROM tool_usage tu2 WHERE tu2.session_id=s.id),''),
                 COALESCE((SELECT GROUP_CONCAT(su.skill, char(31))
-                    FROM skill_usage su WHERE su.session_id=s.id),'')
+                    FROM skill_usage su WHERE su.session_id=s.id),''),
+                s.parser_version
              FROM sessions s
              LEFT JOIN session_behavior sb ON sb.session_id=s.id
              LEFT JOIN tool_usage tu ON tu.session_id=s.id
@@ -5491,12 +5492,12 @@ impl Database {
         )?;
         let records = statement
             .query_map(params![start_timestamp], |row| {
-                let behavior_json = row.get::<_, Option<String>>(17)?;
+                let behavior_json = row.get::<_, Option<String>>(18)?;
                 let mut behavior: BehaviorSignals = behavior_json
                     .as_deref()
                     .and_then(|json| serde_json::from_str(json).ok())
                     .unwrap_or_default();
-                let live_completion = read_u64(row, 29)?;
+                let live_completion = read_u64(row, 30)?;
                 if live_completion > 0 {
                     behavior.task_completions = behavior.task_completions.max(1);
                 }
@@ -5507,6 +5508,12 @@ impl Database {
                         .map(str::to_string)
                         .collect::<Vec<_>>()
                 };
+                let event_counts_available = row
+                    .get::<_, String>(33)?
+                    .split('.')
+                    .next()
+                    .and_then(|major| major.parse::<u64>().ok())
+                    .is_some_and(|major| major >= 4);
                 Ok(crate::vcti::SessionBehaviorRecord {
                     id: row.get(0)?,
                     started_at: row.get(1)?,
@@ -5518,25 +5525,28 @@ impl Database {
                     tool_calls: read_u64(row, 7)?,
                     files_touched: read_u64(row, 8)?,
                     lines_changed: read_u64(row, 9)?,
-                    errors: read_u64(row, 10)?.max(read_u64(row, 28)?),
-                    verification_events: read_u64(row, 11)?,
-                    human_interventions: read_u64(row, 12)?.max(read_u64(row, 27)?),
-                    subagent_count: read_u64(row, 13)?,
-                    model_switches: read_u64(row, 14)?,
-                    longest_uninterrupted_seconds: read_u64(row, 15)?,
-                    has_commit: row.get::<_, i64>(16)? != 0,
+                    errors: read_u64(row, 10)?.max(read_u64(row, 29)?),
+                    retries: read_u64(row, 11)?,
+                    error_events_available: event_counts_available,
+                    retry_events_available: event_counts_available,
+                    verification_events: read_u64(row, 12)?,
+                    human_interventions: read_u64(row, 13)?.max(read_u64(row, 28)?),
+                    subagent_count: read_u64(row, 14)?,
+                    model_switches: read_u64(row, 15)?,
+                    longest_uninterrupted_seconds: read_u64(row, 16)?,
+                    has_commit: row.get::<_, i64>(17)? != 0,
                     behavior,
-                    git_review_events: read_u64(row, 18)?,
-                    test_events: read_u64(row, 19)?,
-                    build_events: read_u64(row, 20)?,
-                    lint_events: read_u64(row, 21)?,
-                    typecheck_events: read_u64(row, 22)?,
-                    read_events: read_u64(row, 23)?,
-                    search_events: read_u64(row, 24)?,
-                    edit_events: read_u64(row, 25)?,
-                    shell_events: read_u64(row, 26)?,
-                    tool_categories: split_categories(row.get(30)?),
-                    explicit_skills: split_categories(row.get(31)?),
+                    git_review_events: read_u64(row, 19)?,
+                    test_events: read_u64(row, 20)?,
+                    build_events: read_u64(row, 21)?,
+                    lint_events: read_u64(row, 22)?,
+                    typecheck_events: read_u64(row, 23)?,
+                    read_events: read_u64(row, 24)?,
+                    search_events: read_u64(row, 25)?,
+                    edit_events: read_u64(row, 26)?,
+                    shell_events: read_u64(row, 27)?,
+                    tool_categories: split_categories(row.get(31)?),
+                    explicit_skills: split_categories(row.get(32)?),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

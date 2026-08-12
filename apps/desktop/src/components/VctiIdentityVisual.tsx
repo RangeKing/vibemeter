@@ -60,6 +60,18 @@ export function VctiIdentityVisual({
             />
           ))}
         </g>
+        <g className="vcti-identity-variations">
+          {visual.variations.map((variation, index) => (
+            <path
+              key={`${index}-${variation.d}`}
+              d={variation.d}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={variation.strokeWidth}
+              opacity={variation.opacity}
+            />
+          ))}
+        </g>
       </svg>
       {type ? <figcaption>{type}</figcaption> : null}
     </figure>

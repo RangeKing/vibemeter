@@ -36,6 +36,13 @@ describe("VctiIdentityVisual", () => {
         detailCount: 4,
       },
       details: [{ cx: 25, cy: 35, radius: 0.8, opacity: 0.7 }],
+      processVariation: {
+        errors: { value: 1, available: true },
+        retries: { value: 0, available: true },
+        rollbacks: { value: 0, available: true },
+        variationCount: 1,
+      },
+      variations: [{ d: "M20,20Q25,18 30,20", strokeWidth: 1.15, opacity: 0.5 }],
     };
 
     render(<VctiIdentityVisual visual={visual} type="SPEC" guild="start" label="规划型" />);
@@ -45,6 +52,7 @@ describe("VctiIdentityVisual", () => {
     expect(image.querySelector("path")?.getAttribute("d")).toBe("M10,10Q50,0 90,10Z");
     expect(image.querySelector(".vcti-identity-branches path")?.getAttribute("d")).toBe("M50,50Q60,40 80,30");
     expect(image.querySelector(".vcti-identity-details circle")?.getAttribute("cx")).toBe("25");
+    expect(image.querySelector(".vcti-identity-variations path")?.getAttribute("d")).toBe("M20,20Q25,18 30,20");
     expect(image.textContent).toContain("SPEC");
   });
 });

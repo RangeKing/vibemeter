@@ -628,6 +628,13 @@ export interface VctiIdentityMark {
   opacity: number;
 }
 
+export interface VctiProcessVariation {
+  errors: VctiOptionalMetric;
+  retries: VctiOptionalMetric;
+  rollbacks: VctiOptionalMetric;
+  variationCount?: number;
+}
+
 export interface VctiIdentityVisual {
   algorithmVersion: string;
   version: string;
@@ -640,6 +647,8 @@ export interface VctiIdentityVisual {
   branches: VctiIdentityPath[];
   detailDiversity: VctiDetailDiversity;
   details: VctiIdentityMark[];
+  processVariation: VctiProcessVariation;
+  variations: VctiIdentityPath[];
 }
 
 export interface VctiProfile {

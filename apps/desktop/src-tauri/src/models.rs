@@ -1138,6 +1138,15 @@ pub struct VctiIdentityMark {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VctiProcessVariation {
+    pub errors: VctiOptionalMetric,
+    pub retries: VctiOptionalMetric,
+    pub rollbacks: VctiOptionalMetric,
+    pub variation_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VctiIdentityVisual {
     pub algorithm_version: String,
     pub version: String,
@@ -1150,6 +1159,8 @@ pub struct VctiIdentityVisual {
     pub branches: Vec<VctiIdentityPath>,
     pub detail_diversity: VctiDetailDiversity,
     pub details: Vec<VctiIdentityMark>,
+    pub process_variation: VctiProcessVariation,
+    pub variations: Vec<VctiIdentityPath>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -959,6 +959,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .vcti-identity-orbit.inner { opacity: .1; }
 .vcti-identity-contours path { stroke-linecap: round; stroke-linejoin: round; }
 .vcti-identity-branches path { stroke-linecap: round; stroke-linejoin: round; }
+.vcti-identity-variations path { stroke-linecap: round; stroke-linejoin: round; }
 .vcti-identity-visual figcaption { position: absolute; right: 11%; bottom: 10%; padding: 6px 9px; border-radius: 7px; color: #fff; background: color-mix(in srgb, var(--vcti-accent) 90%, #202020); font-family: "SFMono-Regular", Menlo, monospace; font-size: 11px; font-weight: 780; letter-spacing: .08em; box-shadow: 0 4px 14px rgb(0 0 0 / 15%); }
 .vcti-identity-visual.collecting { opacity: .48; }
 .vcti-avatar { --vcti-accent: var(--warm); position: relative; display: grid; place-items: center; overflow: hidden; isolation: isolate; border: 1px solid color-mix(in srgb, var(--vcti-accent) 24%, var(--line)); background: #f5f0e7; box-shadow: 0 24px 70px rgb(43 32 22 / 14%); }

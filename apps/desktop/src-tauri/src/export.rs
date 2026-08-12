@@ -1325,6 +1325,16 @@ fn render_vcti_identity_visual(
         )
         .ok();
     }
+    for variation in &visual.variations {
+        write!(
+            svg,
+            "<path d=\"{}\" fill=\"none\" stroke=\"{accent}\" stroke-width=\"{:.2}\" opacity=\"{:.3}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            xml(&variation.d),
+            variation.stroke_width,
+            variation.opacity,
+        )
+        .ok();
+    }
     svg.push_str("</g>");
     rect(svg, x, y, size, size, size * 0.5, "none", Some(accent));
 }
@@ -3815,7 +3825,8 @@ mod tests {
     fn vcti_card_renders_the_shared_identity_geometry() {
         use crate::models::{
             VctiCollaboration, VctiDetailDiversity, VctiIdentityInput, VctiIdentityMark,
-            VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiWorkRhythm,
+            VctiIdentityPath, VctiIdentityVisual, VctiOptionalMetric, VctiProcessVariation,
+            VctiWorkRhythm,
         };
 
         let visual = VctiIdentityVisual {
@@ -3880,6 +3891,26 @@ mod tests {
                 cy: 35.0,
                 radius: 0.8,
                 opacity: 0.7,
+            }],
+            process_variation: VctiProcessVariation {
+                errors: VctiOptionalMetric {
+                    value: Some(1.0),
+                    available: true,
+                },
+                retries: VctiOptionalMetric {
+                    value: Some(0.0),
+                    available: true,
+                },
+                rollbacks: VctiOptionalMetric {
+                    value: Some(0.0),
+                    available: true,
+                },
+                variation_count: Some(1),
+            },
+            variations: vec![VctiIdentityPath {
+                d: "M20,20Q25,18 30,20".into(),
+                stroke_width: 1.15,
+                opacity: 0.5,
             }],
         };
         let mut svg = String::new();

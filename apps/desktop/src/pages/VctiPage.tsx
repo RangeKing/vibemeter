@@ -290,6 +290,21 @@ export function VctiPage({ locale }: { locale: Locale }) {
                       ? t("vcti.categoryCountValue", { value: profile.identityVisual.detailDiversity.explicitSkills.value ?? 0 })
                       : t("vcti.notRecorded")}</strong>
                   </div>
+                  {([
+                    ["errors", "errorsLabel"],
+                    ["retries", "retriesLabel"],
+                    ["rollbacks", "rollbacksLabel"],
+                  ] as const).map(([key, label]) => {
+                    const metric = profile.identityVisual.processVariation[key];
+                    return (
+                      <div key={key}>
+                        <span>{t(`vcti.${label}`)}</span>
+                        <strong>{metric.available
+                          ? t("vcti.countValue", { value: metric.value ?? 0 })
+                          : t("vcti.notRecorded")}</strong>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
               <section>

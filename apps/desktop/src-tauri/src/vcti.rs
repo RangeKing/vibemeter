@@ -1,8 +1,8 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
     VctiEvidenceItem, VctiIdentityInput, VctiIdentityMark, VctiIdentityPath,
-    VctiIdentityVisual, VctiOptionalMetric, VctiProfile, VctiRhythmPeriod, VctiScore,
-    VctiTrendPoint, VctiWorkRhythm,
+    VctiIdentityVisual, VctiOptionalMetric, VctiProcessVariation, VctiProfile,
+    VctiRhythmPeriod, VctiScore, VctiTrendPoint, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -51,6 +51,9 @@ pub struct SessionBehaviorRecord {
     pub files_touched: u64,
     pub lines_changed: u64,
     pub errors: u64,
+    pub retries: u64,
+    pub error_events_available: bool,
+    pub retry_events_available: bool,
     pub verification_events: u64,
     pub human_interventions: u64,
     pub subagent_count: u64,
@@ -322,6 +325,7 @@ fn build_identity_visual(
     let rhythm = aggregate_work_rhythm(records, window_days);
     let collaboration = aggregate_collaboration(behavior);
     let detail_diversity = aggregate_detail(records);
+    let process_variation = aggregate_process_variation(records, behavior);
     let inputs = vec![
         VctiIdentityInput {
             id: "identity".into(),
@@ -359,6 +363,18 @@ fn build_identity_visual(
             id: "explicit-skills".into(),
             available: detail_diversity.explicit_skills.available,
         },
+        VctiIdentityInput {
+            id: "errors".into(),
+            available: process_variation.errors.available,
+        },
+        VctiIdentityInput {
+            id: "retries".into(),
+            available: process_variation.retries.available,
+        },
+        VctiIdentityInput {
+            id: "rollbacks".into(),
+            available: process_variation.rollbacks.available,
+        },
     ];
     if !available {
         return VctiIdentityVisual {
@@ -373,6 +389,8 @@ fn build_identity_visual(
             branches: Vec::new(),
             detail_diversity,
             details: Vec::new(),
+            process_variation,
+            variations: Vec::new(),
         };
     }
 
@@ -411,6 +429,7 @@ fn build_identity_visual(
         .collect();
     let branches = build_collaboration_branches(&collaboration, phase);
     let details = build_detail_marks(&detail_diversity, phase);
+    let variations = build_process_variations(&process_variation, phase);
 
     VctiIdentityVisual {
         algorithm_version: ALGORITHM_VERSION.into(),
@@ -424,6 +443,8 @@ fn build_identity_visual(
         branches,
         detail_diversity,
         details,
+        process_variation,
+        variations,
     }
 }
 
@@ -532,6 +553,77 @@ fn build_detail_marks(detail: &VctiDetailDiversity, phase: f64) -> Vec<VctiIdent
                 cy: 50.0 + angle.sin() * distance,
                 radius: 0.65 + ring as f64 * 0.16,
                 opacity: 0.42 + (index % 4) as f64 * 0.1,
+            }
+        })
+        .collect()
+}
+
+fn aggregate_process_variation(
+    records: &[SessionBehaviorRecord],
+    behavior: &BehaviorSummary,
+) -> VctiProcessVariation {
+    let errors_available = records.iter().all(|record| record.error_events_available);
+    let retries_available = records.iter().all(|record| record.retry_events_available);
+    let rollbacks_available = behavior.process_control_capable_sessions > 0;
+    let errors = errors_available.then_some(records.iter().map(|record| record.errors).sum::<u64>());
+    let retries = retries_available.then_some(records.iter().map(|record| record.retries).sum::<u64>());
+    let rollbacks = rollbacks_available.then_some(behavior.rollbacks);
+    let available_count = [errors, retries, rollbacks]
+        .into_iter()
+        .flatten()
+        .map(|value| variation_weight(value))
+        .sum::<u64>()
+        .min(9);
+    VctiProcessVariation {
+        errors: VctiOptionalMetric {
+            value: errors.map(|value| value as f64),
+            available: errors_available,
+        },
+        retries: VctiOptionalMetric {
+            value: retries.map(|value| value as f64),
+            available: retries_available,
+        },
+        rollbacks: VctiOptionalMetric {
+            value: rollbacks.map(|value| value as f64),
+            available: rollbacks_available,
+        },
+        variation_count: (errors_available || retries_available || rollbacks_available)
+            .then_some(available_count),
+    }
+}
+
+fn variation_weight(value: u64) -> u64 {
+    if value == 0 {
+        0
+    } else {
+        (1 + u64::from(value.ilog2())).min(3)
+    }
+}
+
+fn build_process_variations(
+    process: &VctiProcessVariation,
+    phase: f64,
+) -> Vec<VctiIdentityPath> {
+    let count = process.variation_count.unwrap_or(0) as usize;
+    (0..count)
+        .map(|index| {
+            let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
+            let tangent = angle + std::f64::consts::FRAC_PI_2;
+            let center_x = 50.0 + angle.cos() * 31.0;
+            let center_y = 50.0 + angle.sin() * 31.0;
+            let span = 2.6 + (index % 3) as f64 * 0.75;
+            let start_x = center_x - tangent.cos() * span;
+            let start_y = center_y - tangent.sin() * span;
+            let end_x = center_x + tangent.cos() * span;
+            let end_y = center_y + tangent.sin() * span;
+            let control_x = center_x + angle.cos() * (2.2 + (index % 2) as f64);
+            let control_y = center_y + angle.sin() * (2.2 + (index % 2) as f64);
+            VctiIdentityPath {
+                d: format!(
+                    "M{start_x:.2},{start_y:.2}Q{control_x:.2},{control_y:.2} {end_x:.2},{end_y:.2}"
+                ),
+                stroke_width: 1.15,
+                opacity: 0.48 + (index % 3) as f64 * 0.1,
             }
         })
         .collect()
@@ -1762,6 +1854,9 @@ mod tests {
             files_touched: 4,
             lines_changed: 120,
             errors: 0,
+            retries: 0,
+            error_events_available: true,
+            retry_events_available: true,
             verification_events: 2,
             human_interventions: 2,
             subagent_count: 0,
@@ -1854,7 +1949,7 @@ mod tests {
         assert_eq!(first.identity_visual.algorithm_version, ALGORITHM_VERSION);
         assert_eq!(first.identity_visual.range, "90d");
         assert!(first.identity_visual.available);
-        assert_eq!(first.identity_visual.inputs.len(), 9);
+        assert_eq!(first.identity_visual.inputs.len(), 12);
         assert!((5..=9).contains(&first.identity_visual.paths.len()));
         assert_eq!(
             serde_json::to_value(&first.identity_visual).unwrap(),
@@ -1957,6 +2052,52 @@ mod tests {
         assert_eq!(partial.tool_categories.value, None);
         assert!(partial.explicit_skills.available);
         assert_eq!(partial.explicit_skills.value, Some(0.0));
+    }
+
+    #[test]
+    fn process_variation_is_descriptive_bounded_and_missing_aware() {
+        let behavior = BehaviorSummary {
+            sessions: 1,
+            process_control_capable_sessions: 1,
+            process_control_coverage: 1.0,
+            ..BehaviorSummary::default()
+        };
+        let observed_zero = aggregate_process_variation(&[record("2026-07-23")], &behavior);
+        assert_eq!(observed_zero.errors.value, Some(0.0));
+        assert_eq!(observed_zero.retries.value, Some(0.0));
+        assert_eq!(observed_zero.rollbacks.value, Some(0.0));
+        assert_eq!(observed_zero.variation_count, Some(0));
+
+        let mut active = record("2026-07-23");
+        active.errors = 4;
+        active.retries = 2;
+        let active_behavior = BehaviorSummary {
+            rollbacks: 1,
+            ..behavior.clone()
+        };
+        let varied = aggregate_process_variation(&[active], &active_behavior);
+        assert!(varied.variation_count.is_some_and(|value| value > 0));
+
+        let mut extreme = record("2026-07-23");
+        extreme.errors = 10_000;
+        extreme.retries = 10_000;
+        let extreme_behavior = BehaviorSummary {
+            rollbacks: 10_000,
+            ..behavior.clone()
+        };
+        assert_eq!(
+            aggregate_process_variation(&[extreme], &extreme_behavior).variation_count,
+            Some(9)
+        );
+
+        let mut missing = record("2026-07-23");
+        missing.error_events_available = false;
+        missing.retry_events_available = false;
+        let unavailable = aggregate_process_variation(&[missing], &BehaviorSummary::default());
+        assert_eq!(unavailable.errors.value, None);
+        assert_eq!(unavailable.retries.value, None);
+        assert_eq!(unavailable.rollbacks.value, None);
+        assert_eq!(unavailable.variation_count, None);
     }
 
     #[test]
