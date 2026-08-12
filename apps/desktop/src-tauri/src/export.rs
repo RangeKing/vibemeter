@@ -707,11 +707,7 @@ fn render_vcti_card(
         28.0,
         560,
         palette.muted,
-        if locale == "zh-CN" {
-            "最近 90 天 · 本机推断"
-        } else {
-            "LAST 90 DAYS · LOCAL INFERENCE"
-        },
+        &vcti_range_caption(locale, &request.range),
         Some("end"),
     );
     panel(svg, margin, panel_y, panel_width, panel_height, palette);
@@ -1252,6 +1248,15 @@ fn render_vcti_card(
             },
             None,
         );
+    }
+}
+
+fn vcti_range_caption(locale: &str, range: &str) -> String {
+    let label = loc::format_range(locale, range);
+    if loc::normalize_locale(locale) == "zh-CN" {
+        format!("{label} · 本机推断")
+    } else {
+        format!("{} · LOCAL INFERENCE", label.to_uppercase())
     }
 }
 
@@ -3862,6 +3867,16 @@ mod tests {
             vcti_type_tagline("zh-CN", "BOSS"),
             "别人把 Agent 当助手，你已经给它们排班、派活、验收。"
         );
+    }
+
+    #[test]
+    fn vcti_share_range_caption_follows_the_selected_range() {
+        assert_eq!(vcti_range_caption("zh-CN", "30d"), "月 · 本机推断");
+        assert_eq!(
+            vcti_range_caption("en-US", "year"),
+            "YEAR · LOCAL INFERENCE"
+        );
+        assert_ne!(vcti_range_caption("zh-CN", "30d"), "最近 90 天 · 本机推断");
     }
 
     #[test]
