@@ -3837,6 +3837,7 @@ mod tests {
             inputs: vec![VctiIdentityInput {
                 id: "dimensions".into(),
                 available: true,
+                status: "recorded".into(),
             }],
             rhythm: VctiWorkRhythm {
                 work_periods: Vec::new(),

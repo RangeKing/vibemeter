@@ -327,54 +327,18 @@ fn build_identity_visual(
     let detail_diversity = aggregate_detail(records);
     let process_variation = aggregate_process_variation(records, behavior);
     let inputs = vec![
-        VctiIdentityInput {
-            id: "identity".into(),
-            available: identity_available,
-        },
-        VctiIdentityInput {
-            id: "dimensions".into(),
-            available: dimensions_available,
-        },
-        VctiIdentityInput {
-            id: "work-periods".into(),
-            available: rhythm.work_periods_available,
-        },
-        VctiIdentityInput {
-            id: "active-days".into(),
-            available: rhythm.active_days.available,
-        },
-        VctiIdentityInput {
-            id: "session-density".into(),
-            available: rhythm.sessions_per_day.available,
-        },
-        VctiIdentityInput {
-            id: "subagent-starts".into(),
-            available: collaboration.subagent_starts.available,
-        },
-        VctiIdentityInput {
-            id: "parallel-batches".into(),
-            available: collaboration.parallel_batches.available,
-        },
-        VctiIdentityInput {
-            id: "tool-categories".into(),
-            available: detail_diversity.tool_categories.available,
-        },
-        VctiIdentityInput {
-            id: "explicit-skills".into(),
-            available: detail_diversity.explicit_skills.available,
-        },
-        VctiIdentityInput {
-            id: "errors".into(),
-            available: process_variation.errors.available,
-        },
-        VctiIdentityInput {
-            id: "retries".into(),
-            available: process_variation.retries.available,
-        },
-        VctiIdentityInput {
-            id: "rollbacks".into(),
-            available: process_variation.rollbacks.available,
-        },
+        identity_input("identity", identity_available),
+        identity_input("dimensions", dimensions_available),
+        identity_input("work-periods", rhythm.work_periods_available),
+        identity_input("active-days", rhythm.active_days.available),
+        identity_input("session-density", rhythm.sessions_per_day.available),
+        identity_input("subagent-starts", collaboration.subagent_starts.available),
+        identity_input("parallel-batches", collaboration.parallel_batches.available),
+        identity_input("tool-categories", detail_diversity.tool_categories.available),
+        identity_input("explicit-skills", detail_diversity.explicit_skills.available),
+        identity_input("errors", process_variation.errors.available),
+        identity_input("retries", process_variation.retries.available),
+        identity_input("rollbacks", process_variation.rollbacks.available),
     ];
     if !available {
         return VctiIdentityVisual {
@@ -445,6 +409,14 @@ fn build_identity_visual(
         details,
         process_variation,
         variations,
+    }
+}
+
+fn identity_input(id: &str, available: bool) -> VctiIdentityInput {
+    VctiIdentityInput {
+        id: id.into(),
+        available,
+        status: if available { "recorded" } else { "not-recorded" }.into(),
     }
 }
 

@@ -9,6 +9,7 @@ import { InsightCard } from "../components/InsightCard";
 import { RangePicker } from "../components/RangePicker";
 import { VctiAvatar } from "../components/VctiAvatar";
 import { VctiIdentityVisual } from "../components/VctiIdentityVisual";
+import { VctiVisualLegend } from "../components/VctiVisualLegend";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDate, formatDuration, formatPercent } from "../lib/format";
@@ -157,13 +158,24 @@ export function VctiPage({ locale }: { locale: Locale }) {
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
           </div>
         </div>
-        <VctiIdentityVisual
-          visual={profile.identityVisual}
-          type={profile.primaryType}
-          guild={profile.guild}
-          label={`${primaryName} · ${t("vcti.eyebrow")}`}
-        />
+        {profile.status === "collecting" ? (
+          <div className="vcti-visual-collecting" role="status">
+            <DatabaseZap size={24} />
+            <strong>{t("vcti.collecting.name")}</strong>
+            <p>{t("vcti.visualCollectingBody", { current: profile.sessionCount, required: 8 })}</p>
+            <i><em style={{ width: `${Math.min(100, profile.sessionCount / 8 * 100)}%` }} /></i>
+          </div>
+        ) : (
+          <VctiIdentityVisual
+            visual={profile.identityVisual}
+            type={profile.primaryType}
+            guild={profile.guild}
+            label={`${primaryName} · ${t("vcti.eyebrow")}`}
+          />
+        )}
       </section>
+
+      <VctiVisualLegend inputs={profile.identityVisual.inputs} onOpenEvidence={() => setShowEvidence(true)} />
 
       <section className="vcti-panel vcti-scores">
         <header><span className="section-index">01</span><div><h2>{t("vcti.scoresTitle")}</h2><p>{t("vcti.scoresBody")}</p></div></header>

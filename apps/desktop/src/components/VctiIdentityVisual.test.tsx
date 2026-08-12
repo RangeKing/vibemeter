@@ -12,7 +12,7 @@ describe("VctiIdentityVisual", () => {
       version: "1.0.0",
       range: "90d",
       available: true,
-      inputs: [{ id: "dimensions", available: true }],
+      inputs: [{ id: "dimensions", available: true, status: "recorded" }],
       rhythm: {
         workPeriods: [],
         workPeriodsAvailable: true,

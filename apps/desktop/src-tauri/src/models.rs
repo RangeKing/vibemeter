@@ -1073,6 +1073,7 @@ pub struct VctiTrendPoint {
 pub struct VctiIdentityInput {
     pub id: String,
     pub available: bool,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

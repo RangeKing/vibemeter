@@ -579,6 +579,7 @@ export interface VctiTrendPoint {
 export interface VctiIdentityInput {
   id: string;
   available: boolean;
+  status: "recorded" | "not-recorded" | "not-authorized" | "not-found";
 }
 
 export interface VctiIdentityPath {
