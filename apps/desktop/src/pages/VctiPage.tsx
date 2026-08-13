@@ -25,59 +25,43 @@ function evidenceValue(item: VctiEvidenceItem, locale: Locale): string {
 
 function IdentityEvidenceSummary({ profile }: { profile: VctiProfile }) {
   const { t } = useTranslation();
-  const metric = (item: VctiOptionalMetric, key: "count" | "category") => item.available && item.value !== undefined
-    ? t(key === "category" ? "vcti.categoryCountValue" : "vcti.countValue", { value: item.value })
-    : t("vcti.shortNotRecorded");
-  const rhythm = profile.identityEvidence.rhythm;
-  const workPeriods = rhythm.workPeriodsAvailable
-    ? rhythm.workPeriods
-      .filter((period) => period.sessions > 0)
-      .map((period) => `${t(`vcti.periods.${period.id}`)} ${t("vcti.countValue", { value: period.sessions })}`)
-      .join(" · ") || t("vcti.noActivity")
-    : t("vcti.shortNotRecorded");
   const summaries = [
     {
       id: "rhythm",
       label: t("vcti.identityEvidence.rhythm"),
-      value: [
-        workPeriods,
-        rhythm.activeDays.available && rhythm.activeDays.value !== undefined
-          ? t("vcti.daysValue", { value: rhythm.activeDays.value })
-          : t("vcti.shortNotRecorded"),
-      ].join(" · "),
+      value: t("vcti.visualLegend.rhythm"),
+      available: profile.identityVisual.rhythm.available,
     },
     {
       id: "collaboration",
       label: t("vcti.identityEvidence.collaboration"),
-      value: `${t("vcti.subagentShort")} ${metric(profile.identityEvidence.collaboration.subagentStarts, "count")} · ${t("vcti.parallelShort")} ${metric(profile.identityEvidence.collaboration.parallelBatches, "count")}`,
+      value: t("vcti.visualLegend.collaboration"),
+      available: profile.identityVisual.collaboration.available,
     },
     {
       id: "detail",
       label: t("vcti.identityEvidence.detail"),
-      value: `${t("vcti.toolsShort")} ${metric(profile.identityEvidence.detailDiversity.toolCategories, "category")} · Skill ${metric(profile.identityEvidence.detailDiversity.explicitSkills, "category")}`,
+      value: t("vcti.visualLegend.detail"),
+      available: profile.identityVisual.detail.available,
     },
     {
       id: "process",
       label: t("vcti.identityEvidence.process"),
-      value: `${t("vcti.errorsShort")} ${metric(profile.identityEvidence.processVariation.errors, "count")} · ${t("vcti.retriesShort")} ${metric(profile.identityEvidence.processVariation.retries, "count")} · ${t("vcti.rollbacksShort")} ${metric(profile.identityEvidence.processVariation.rollbacks, "count")}`,
+      value: t("vcti.visualLegend.process"),
+      available: profile.identityVisual.process.available,
     },
   ];
 
   return (
-    <section className="vcti-identity-evidence" aria-labelledby="vcti-identity-evidence-title">
-      <header>
-        <strong id="vcti-identity-evidence-title">{t("vcti.identityEvidence.title")}</strong>
-        <span>{t("vcti.identityEvidence.body")}</span>
-      </header>
-      <div>
-        {summaries.map((item, index) => (
-          <article key={item.id}>
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            <div><b>{item.label}</b><p>{item.value}</p></div>
-          </article>
-        ))}
-      </div>
-    </section>
+    <ul className="vcti-visual-legend" aria-label={t("vcti.identityEvidence.title")}>
+      {summaries.map((item) => (
+        <li key={item.id} className={item.available ? "mapped" : "not-recorded"}>
+          <i aria-hidden="true" />
+          <b>{item.label}</b>
+          <span>{item.available ? item.value : t("vcti.shortNotRecorded")}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

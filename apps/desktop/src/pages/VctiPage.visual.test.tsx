@@ -131,21 +131,22 @@ describe("VctiPage identity art", () => {
     expect(container.querySelectorAll(".vcti-art-process path")).toHaveLength(1);
   });
 
-  it("shows all four identity evidence summaries before opening the detail drawer", async () => {
+  it("makes the four-channel art the primary composition and keeps text as a compact legend", async () => {
     useUiStore.setState({ range: "90d" });
     vctiProfile.mockResolvedValue(profile);
     insights.mockResolvedValue({ items: [] });
     phraseCloud.mockRejectedValue(new Error("not needed"));
 
-    renderPage();
+    const { container } = renderPage();
 
-    expect(await screen.findByRole("region", { name: "人格依据" })).toBeTruthy();
+    expect(await screen.findByRole("figure", { name: /开工判官/ })).toBeTruthy();
+    expect(container.querySelectorAll(".vcti-art-field > g")).toHaveLength(5);
+    expect(screen.getByRole("list", { name: "人格依据" })).toBeTruthy();
     expect(screen.getByText("工作节奏")).toBeTruthy();
     expect(screen.getByText("协作方式")).toBeTruthy();
     expect(screen.getByText("工具与 Skill")).toBeTruthy();
     expect(screen.getByText("过程记录")).toBeTruthy();
-    expect(screen.getByText(/错误 0/)).toBeTruthy();
-    expect(screen.getByText(/回滚 未记录/)).toBeTruthy();
+    expect(screen.queryByText(/错误 0/)).toBeNull();
     expect(screen.queryByRole("dialog", { name: "为什么是这个人格" })).toBeNull();
   });
 
@@ -166,7 +167,7 @@ describe("VctiPage identity art", () => {
 
     renderPage();
 
-    expect(await screen.findByText(/错误 未记录/)).toBeTruthy();
+    expect(await screen.findByText("过程记录")).toBeTruthy();
   });
 
   it("keeps the collecting state focused on progress instead of a finished evidence summary", async () => {
