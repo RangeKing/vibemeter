@@ -2862,10 +2862,11 @@ fn snapshot_from_at(
     {
         session.pulse = work_pulse_at(session, now);
     }
-    let (attention, attention_available) = match database.attention_queue_at(now) {
+    let (mut attention, attention_available) = match database.attention_queue_at(now) {
         Ok(attention) => (attention, true),
         Err(_) => (Vec::new(), false),
     };
+    hydrate_attention_titles(database, &mut attention);
     overlay_attention_pulses(&mut items, &attention);
     for completed in &mut completed_sessions {
         overlay_attention_pulses(std::slice::from_mut(&mut completed.session), &attention);
@@ -3018,12 +3019,7 @@ fn hydrate_conversation_titles(
         .chain(completed_sessions.iter().map(|item| &item.session))
         .map(|session| (session.agent.clone(), session.source_session_id.clone()))
         .collect::<Vec<_>>();
-    let mut titles = database
-        .live_conversation_titles(&sources)
-        .unwrap_or_default();
-    for (key, value) in codex_conversation_titles(&sources) {
-        titles.insert(key, value);
-    }
+    let titles = conversation_titles_for_sources(database, &sources);
     for session in sessions
         .iter_mut()
         .chain(completed_sessions.iter_mut().map(|item| &mut item.session))
@@ -3033,6 +3029,33 @@ fn hydrate_conversation_titles(
             !title.eq_ignore_ascii_case(&session.project_label) && title.trim().len() > 1
         });
     }
+}
+
+pub(crate) fn hydrate_attention_titles(database: &Database, attention: &mut [AttentionEvent]) {
+    let sources = attention
+        .iter()
+        .map(|event| (event.agent.clone(), event.source_session_id.clone()))
+        .collect::<Vec<_>>();
+    let titles = conversation_titles_for_sources(database, &sources);
+    for event in attention {
+        let key = (event.agent.clone(), event.source_session_id.clone());
+        event.conversation_title = titles.get(&key).cloned().filter(|title| {
+            !title.eq_ignore_ascii_case(&event.project_label) && title.trim().len() > 1
+        });
+    }
+}
+
+fn conversation_titles_for_sources(
+    database: &Database,
+    sources: &[(String, String)],
+) -> HashMap<(String, String), String> {
+    let mut titles = database
+        .live_conversation_titles(sources)
+        .unwrap_or_default();
+    for (key, value) in codex_conversation_titles(sources) {
+        titles.insert(key, value);
+    }
+    titles
 }
 
 fn codex_conversation_titles(sources: &[(String, String)]) -> HashMap<(String, String), String> {
@@ -3769,6 +3792,7 @@ fn write_if_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{AgentKind, ParseState};
     use tempfile::tempdir;
 
     #[test]
@@ -3847,6 +3871,47 @@ mod tests {
     }
 
     #[test]
+    fn attention_queue_uses_the_sanitized_matching_session_title() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("attention-title.sqlite"))
+            .expect("database should open");
+        let mut state = ParseState::new(AgentKind::ClaudeCode, "attention-source".into());
+        state.started_at = Some("2026-08-13T08:00:00Z".into());
+        state.ended_at = Some("2026-08-13T08:05:00Z".into());
+        state.title = Some("[$skill]([path]) VibeMeter 可视化功能".into());
+        state.project_label = Some("vibemeter".into());
+        database
+            .persist_parse_state("attention-title-source", 1, 1, 1, &state)
+            .expect("session title should persist");
+        let mut attention = vec![AttentionEvent {
+            id: "attention-title".into(),
+            kind: "completion-review".into(),
+            state: "open".into(),
+            reason_key: "completion-needs-review".into(),
+            agent: "claude-code".into(),
+            source_session_id: "attention-source".into(),
+            project_label: "vibemeter".into(),
+            conversation_title: None,
+            opened_at: "2026-08-13T08:05:00Z".into(),
+            latest_evidence_at: "2026-08-13T08:05:00Z".into(),
+            expires_at: "2026-08-14T08:05:00Z".into(),
+            resolved_at: None,
+            evidence_level: "observed".into(),
+            source_coverage: "exact-lifecycle".into(),
+            rule_version: "test".into(),
+            evidence_count: 1,
+            intervention_count: 0,
+        }];
+
+        hydrate_attention_titles(&database, &mut attention);
+
+        assert_eq!(
+            attention[0].conversation_title.as_deref(),
+            Some("VibeMeter 可视化功能")
+        );
+    }
+
+    #[test]
     fn high_confidence_stuck_attention_overlays_a_running_exact_pulse() {
         let mut session = jump_test_session("codex", "desktop", None);
         session.id = "stuck-live".into();
@@ -3862,6 +3927,7 @@ mod tests {
             agent: "codex".into(),
             source_session_id: "stuck-source".into(),
             project_label: "vibemeter".into(),
+            conversation_title: None,
             opened_at: Utc::now().to_rfc3339(),
             latest_evidence_at: Utc::now().to_rfc3339(),
             expires_at: (Utc::now() + Duration::hours(24)).to_rfc3339(),

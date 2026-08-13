@@ -261,6 +261,19 @@ describe("Attention actions", () => {
     expect(screen.getByText("需要你")).toBeTruthy();
   });
 
+  it("shows the sanitized conversation title in the attention queue", () => {
+    const event = attention("completion-review", "review", "2026-08-10T08:00:00Z");
+    event.projectLabel = "vibemeter";
+    event.conversationTitle = "VibeMeter 可视化功能";
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionQueue items={[event]} onFeedback={vi.fn()} onJump={vi.fn()} />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText(/VibeMeter 可视化功能/)).toBeTruthy();
+  });
+
   it("loads attention history in bounded pages", () => {
     const onLoadMore = vi.fn();
     render(

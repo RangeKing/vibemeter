@@ -346,6 +346,7 @@ export interface AttentionEvent {
   agent: string;
   sourceSessionId: string;
   projectLabel: string;
+  conversationTitle?: string;
   openedAt: string;
   latestEvidenceAt: string;
   expiresAt: string;

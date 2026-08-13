@@ -98,7 +98,10 @@ export function AttentionQueue({
           <header>
             <div>
               <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-              <small>{attention.projectLabel || agentName(attention.agent)}</small>
+              <small className="attention-context">
+                <b>{attention.projectLabel || agentName(attention.agent)}</b>
+                {attention.conversationTitle ? <span> · {attention.conversationTitle}</span> : null}
+              </small>
             </div>
             <span>{t(`live.attention.state.${attention.state}`)}</span>
           </header>
@@ -180,7 +183,9 @@ export function AttentionHistory({
         {items.map((attention) => (
           <li key={attention.id}>
             <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-            <span>{attention.projectLabel || agentName(attention.agent)}</span>
+            <span>{attention.projectLabel || agentName(attention.agent)}
+              {attention.conversationTitle ? ` · ${attention.conversationTitle}` : ""}
+            </span>
             <small>{t(`live.attention.state.${attention.state}`)}</small>
           </li>
         ))}

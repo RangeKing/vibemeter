@@ -81,6 +81,8 @@ async fn get_live_activity(state: State<'_, AppState>) -> AppResult<LiveActivity
     let mut activity = tauri::async_runtime::spawn_blocking(move || database.live_activity())
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))??;
+    let title_database = state.database.clone();
+    live::hydrate_attention_titles(&title_database, &mut activity.attention);
     let metrics = std::mem::take(&mut activity.concurrency);
     let agents = snapshot
         .sessions
@@ -152,9 +154,13 @@ async fn get_attention_history(
     limit: u64,
 ) -> AppResult<Vec<AttentionEvent>> {
     let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.attention_history(offset, limit))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+    let title_database = database.clone();
+    let mut attention =
+        tauri::async_runtime::spawn_blocking(move || database.attention_history(offset, limit))
+            .await
+            .map_err(|error| AppError::InvalidRequest(error.to_string()))??;
+    live::hydrate_attention_titles(&title_database, &mut attention);
+    Ok(attention)
 }
 
 #[tauri::command]

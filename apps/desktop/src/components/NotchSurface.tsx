@@ -194,7 +194,15 @@ export function NotchAttentionQueue({
           <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
           <span>
             <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-            <small>{attention.projectLabel || agentName(attention.agent)}</small>
+            <small className="notch-attention-context">
+              <b>{attention.projectLabel || agentName(attention.agent)}</b>
+              {attention.conversationTitle ? (
+                <>
+                  <i aria-hidden="true">·</i>
+                  <span>{attention.conversationTitle}</span>
+                </>
+              ) : null}
+            </small>
           </span>
           <span className="notch-attention-actions">
             <button

@@ -844,6 +844,8 @@ pub struct AttentionEvent {
     pub agent: String,
     pub source_session_id: String,
     pub project_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_title: Option<String>,
     pub opened_at: String,
     pub latest_evidence_at: String,
     pub expires_at: String,

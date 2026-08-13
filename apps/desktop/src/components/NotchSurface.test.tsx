@@ -117,6 +117,40 @@ describe("Notch session selection", () => {
     );
   });
 
+  it("identifies an attention item with the matching conversation title", () => {
+    const attention: AttentionEvent = {
+      id: "attention-completion-review",
+      kind: "completion-review",
+      state: "open",
+      reasonKey: "completion-needs-review",
+      agent: "codex",
+      sourceSessionId: "matching-source-session",
+      projectLabel: "vibemeter",
+      openedAt: "2026-08-13T08:00:00Z",
+      latestEvidenceAt: "2026-08-13T08:00:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 1,
+      interventionCount: 0,
+    };
+    attention.conversationTitle = "VibeMeter 可视化功能";
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[attention]}
+          onFeedback={vi.fn()}
+          onJump={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("vibemeter")).toBeTruthy();
+    expect(screen.getByText("VibeMeter 可视化功能")).toBeTruthy();
+  });
+
   it("formats a live conversation duration instead of a wall-clock timestamp", () => {
     const startedAt = "2026-07-26T00:00:00Z";
     expect(formatLiveElapsed(startedAt, Date.parse("2026-07-26T00:03:07Z"))).toBe("3:07");
