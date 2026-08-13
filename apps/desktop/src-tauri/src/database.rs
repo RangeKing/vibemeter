@@ -2247,6 +2247,23 @@ fn sync_attention_event(
     let now = &canonical.observed_at;
     expire_attention_events(transaction, now)?;
 
+    if canonical.event_type == "lifecycle.resume" {
+        transaction.execute(
+            "UPDATE attention_events
+             SET state='resolved', resolved_at=?1, resolution_reason='user-continued', updated_at=?2
+             WHERE agent=?3 AND source_session_id=?4
+               AND kind='completion-review'
+               AND latest_evidence_at<=?1
+               AND state IN('open','acknowledged','snoozed')",
+            params![
+                canonical.occurred_at,
+                now,
+                canonical.agent,
+                canonical.source_session_id
+            ],
+        )?;
+    }
+
     if matches!(canonical.lifecycle_status.as_str(), "idle" | "running") {
         let resolved = {
             let mut statement = transaction.prepare(
@@ -4748,6 +4765,16 @@ impl Database {
                AND (
                     ae.state IN('open','acknowledged')
                     OR (ae.state='snoozed' AND ae.snoozed_until<=?1)
+               )
+               AND NOT (
+                    ae.kind='completion-review'
+                    AND EXISTS (
+                        SELECT 1 FROM canonical_events resumed
+                        WHERE resumed.agent=ae.agent
+                          AND resumed.source_session_id=ae.source_session_id
+                          AND resumed.event_type='lifecycle.resume'
+                          AND resumed.occurred_at>ae.latest_evidence_at
+                    )
                )
              ORDER BY
                 CASE ae.kind
@@ -11610,6 +11637,62 @@ mod concurrency_tests {
             .find(|event| event.id == second.id)
             .expect("second completion history should remain");
         assert_eq!(second.state, "resolved");
+    }
+
+    #[test]
+    fn completion_review_resolves_when_the_user_continues_the_same_session() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("completion-continued.sqlite"))
+            .expect("database should open");
+        let base = Utc::now();
+        let event = |id: &str, name: &str, status: &str, seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: "continued-session".into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(seconds),
+            source_event_fingerprint: None,
+            event_name: name.into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(status.into()),
+        };
+        database
+            .record_observed_live_event(&event("complete", "Stop", "completed", 0))
+            .unwrap();
+        database
+            .record_observed_live_event(&event("continue", "UserPromptSubmit", "running", 1))
+            .unwrap();
+        let completion = database
+            .attention_events()
+            .unwrap()
+            .into_iter()
+            .find(|attention| attention.kind == "completion-review")
+            .expect("completion history should remain");
+        assert_eq!(completion.state, "resolved");
+        assert!(
+            database
+                .attention_queue_at(base + Duration::seconds(2))
+                .unwrap()
+                .is_empty()
+        );
+        database
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE attention_events SET state='open', resolved_at=NULL WHERE id=?1",
+                params![completion.id],
+            )
+            .unwrap();
+        assert!(
+            database
+                .attention_queue_at(base + Duration::seconds(3))
+                .unwrap()
+                .is_empty(),
+            "an upgrade must hide stale completion review when later resume evidence exists"
+        );
     }
 
     #[test]

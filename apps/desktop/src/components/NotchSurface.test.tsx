@@ -149,6 +149,7 @@ describe("Notch session selection", () => {
 
     expect(screen.getByText("vibemeter")).toBeTruthy();
     expect(screen.getByText("VibeMeter 可视化功能")).toBeTruthy();
+    expect(screen.getByText("待确认完成").className).toContain("notch-attention-title");
   });
 
   it("uses a stable private session reference when no trusted title exists", () => {

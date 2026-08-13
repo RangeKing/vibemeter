@@ -194,7 +194,7 @@ export function NotchAttentionQueue({
         <article key={attention.id} className={`kind-${attention.kind}`}>
           <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
           <span>
-            <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
+            <strong className="notch-attention-title">{t(`live.attention.kind.${attention.kind}`)}</strong>
             <small className="notch-attention-context">
               <b>{attention.projectLabel || agentName(attention.agent)}</b>
               <i aria-hidden="true">·</i>

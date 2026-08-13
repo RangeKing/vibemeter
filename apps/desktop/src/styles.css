@@ -369,6 +369,7 @@ select { padding-right: 28px; }
 .notch-attention-queue > article.kind-error { border-left-color: var(--red); }
 .notch-attention-queue > article.kind-completion-review { border-left-color: var(--green); }
 .notch-attention-queue > article > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
+.notch-attention-title { overflow: hidden; font-size: 10px; font-weight: 650; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .notch-attention-queue > article small { overflow: hidden; color: rgba(255,255,255,.56); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .notch-attention-context { display: flex; min-width: 0; align-items: baseline; gap: 4px; }
 .notch-attention-context b { flex: 0 0 auto; color: inherit; font-weight: 500; }
