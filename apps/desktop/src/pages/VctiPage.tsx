@@ -24,8 +24,8 @@ function evidenceValue(item: VctiEvidenceItem, locale: Locale): string {
 
 function IdentityEvidenceSummary({ profile }: { profile: VctiProfile }) {
   const { t } = useTranslation();
-  const metric = (item: VctiOptionalMetric, key: "count" | "category") => item.available
-    ? t(key === "category" ? "vcti.categoryCountValue" : "vcti.countValue", { value: item.value ?? 0 })
+  const metric = (item: VctiOptionalMetric, key: "count" | "category") => item.available && item.value !== undefined
+    ? t(key === "category" ? "vcti.categoryCountValue" : "vcti.countValue", { value: item.value })
     : t("vcti.shortNotRecorded");
   const rhythm = profile.identityEvidence.rhythm;
   const workPeriods = rhythm.workPeriodsAvailable
@@ -40,8 +40,8 @@ function IdentityEvidenceSummary({ profile }: { profile: VctiProfile }) {
       label: t("vcti.identityEvidence.rhythm"),
       value: [
         workPeriods,
-        rhythm.activeDays.available
-          ? t("vcti.daysValue", { value: rhythm.activeDays.value ?? 0 })
+        rhythm.activeDays.available && rhythm.activeDays.value !== undefined
+          ? t("vcti.daysValue", { value: rhythm.activeDays.value })
           : t("vcti.shortNotRecorded"),
       ].join(" · "),
     },
@@ -209,7 +209,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
           ) : (
             <div className="vcti-collecting-track"><span style={{ width: `${Math.min(92, profile.confidence)}%` }} /></div>
           )}
-          <IdentityEvidenceSummary profile={profile} />
+          {profile.primaryType ? <IdentityEvidenceSummary profile={profile} /> : null}
           <div className="vcti-actions">
             <button className="button primary" disabled={!profile.primaryType} onClick={() => openShare("vcti-card")}><Sparkles size={14} />{t("vcti.makeShareCard")}</button>
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
@@ -309,38 +309,38 @@ export function VctiPage({ locale }: { locale: Locale }) {
                   </div>
                   <div>
                     <span>{t("vcti.activeDaysLabel")}</span>
-                    <strong>{profile.identityEvidence.rhythm.activeDays.available
-                      ? t("vcti.daysValue", { value: profile.identityEvidence.rhythm.activeDays.value ?? 0 })
+                    <strong>{profile.identityEvidence.rhythm.activeDays.available && profile.identityEvidence.rhythm.activeDays.value !== undefined
+                      ? t("vcti.daysValue", { value: profile.identityEvidence.rhythm.activeDays.value })
                       : t("vcti.notRecorded")}</strong>
                   </div>
                   <div>
                     <span>{t("vcti.sessionDensity")}</span>
-                    <strong>{profile.identityEvidence.rhythm.sessionsPerDay.available
-                      ? t("vcti.sessionsPerDayValue", { value: (profile.identityEvidence.rhythm.sessionsPerDay.value ?? 0).toFixed(1) })
+                    <strong>{profile.identityEvidence.rhythm.sessionsPerDay.available && profile.identityEvidence.rhythm.sessionsPerDay.value !== undefined
+                      ? t("vcti.sessionsPerDayValue", { value: profile.identityEvidence.rhythm.sessionsPerDay.value.toFixed(1) })
                       : t("vcti.notRecorded")}</strong>
                   </div>
                   <div>
                     <span>{t("vcti.subagentStartsLabel")}</span>
-                    <strong>{profile.identityEvidence.collaboration.subagentStarts.available
-                      ? t("vcti.countValue", { value: profile.identityEvidence.collaboration.subagentStarts.value ?? 0 })
+                    <strong>{profile.identityEvidence.collaboration.subagentStarts.available && profile.identityEvidence.collaboration.subagentStarts.value !== undefined
+                      ? t("vcti.countValue", { value: profile.identityEvidence.collaboration.subagentStarts.value })
                       : t("vcti.notRecorded")}</strong>
                   </div>
                   <div>
                     <span>{t("vcti.parallelBatchesLabel")}</span>
-                    <strong>{profile.identityEvidence.collaboration.parallelBatches.available
-                      ? t("vcti.countValue", { value: profile.identityEvidence.collaboration.parallelBatches.value ?? 0 })
+                    <strong>{profile.identityEvidence.collaboration.parallelBatches.available && profile.identityEvidence.collaboration.parallelBatches.value !== undefined
+                      ? t("vcti.countValue", { value: profile.identityEvidence.collaboration.parallelBatches.value })
                       : t("vcti.notRecorded")}</strong>
                   </div>
                   <div>
                     <span>{t("vcti.toolCategoriesLabel")}</span>
-                    <strong>{profile.identityEvidence.detailDiversity.toolCategories.available
-                      ? t("vcti.categoryCountValue", { value: profile.identityEvidence.detailDiversity.toolCategories.value ?? 0 })
+                    <strong>{profile.identityEvidence.detailDiversity.toolCategories.available && profile.identityEvidence.detailDiversity.toolCategories.value !== undefined
+                      ? t("vcti.categoryCountValue", { value: profile.identityEvidence.detailDiversity.toolCategories.value })
                       : t("vcti.notRecorded")}</strong>
                   </div>
                   <div>
                     <span>{t("vcti.explicitSkillsLabel")}</span>
-                    <strong>{profile.identityEvidence.detailDiversity.explicitSkills.available
-                      ? t("vcti.categoryCountValue", { value: profile.identityEvidence.detailDiversity.explicitSkills.value ?? 0 })
+                    <strong>{profile.identityEvidence.detailDiversity.explicitSkills.available && profile.identityEvidence.detailDiversity.explicitSkills.value !== undefined
+                      ? t("vcti.categoryCountValue", { value: profile.identityEvidence.detailDiversity.explicitSkills.value })
                       : t("vcti.notRecorded")}</strong>
                   </div>
                   {([
@@ -352,8 +352,8 @@ export function VctiPage({ locale }: { locale: Locale }) {
                     return (
                       <div key={key}>
                         <span>{t(`vcti.${label}`)}</span>
-                        <strong>{metric.available
-                          ? t("vcti.countValue", { value: metric.value ?? 0 })
+                        <strong>{metric.available && metric.value !== undefined
+                          ? t("vcti.countValue", { value: metric.value })
                           : t("vcti.notRecorded")}</strong>
                       </div>
                     );

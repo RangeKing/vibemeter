@@ -226,6 +226,7 @@ export const enUS = {
       historyMore: "Load more attention history",
       unavailable: "Attention status is temporarily unavailable. Existing evidence was not cleared.",
       jumpFailed: "Could not return to the source session. The attention event was kept so you can retry.",
+      sessionReference: "Session {{value}}",
       evidence: "{{count}} evidence records",
       kind: {
         waiting: "Needs you",
@@ -1125,6 +1126,7 @@ export const zhCN = {
       historyMore: "加载更多注意力历史",
       unavailable: "注意力状态暂时不可用，现有证据未被清空。",
       jumpFailed: "无法返回源会话，关注事件已保留，可稍后重试。",
+      sessionReference: "会话 {{value}}",
       evidence: "{{count}} 条证据",
       kind: {
         waiting: "需要你",

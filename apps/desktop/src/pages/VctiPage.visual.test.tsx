@@ -131,4 +131,41 @@ describe("VctiPage identity art", () => {
     expect(screen.getByText(/回滚 未记录/)).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "为什么是这个人格" })).toBeNull();
   });
+
+  it("treats an available metric without a value as not recorded", async () => {
+    useUiStore.setState({ range: "90d" });
+    vctiProfile.mockResolvedValue({
+      ...profile,
+      identityEvidence: {
+        ...profile.identityEvidence,
+        processVariation: {
+          ...profile.identityEvidence.processVariation,
+          errors: { available: true },
+        },
+      },
+    });
+    insights.mockResolvedValue({ items: [] });
+    phraseCloud.mockRejectedValue(new Error("not needed"));
+
+    renderPage();
+
+    expect(await screen.findByText(/错误 未记录/)).toBeTruthy();
+  });
+
+  it("keeps the collecting state focused on progress instead of a finished evidence summary", async () => {
+    useUiStore.setState({ range: "today" });
+    vctiProfile.mockResolvedValue({
+      ...profile,
+      status: "collecting",
+      primaryType: undefined,
+      confidence: 4,
+    });
+    insights.mockResolvedValue({ items: [] });
+    phraseCloud.mockRejectedValue(new Error("not needed"));
+
+    renderPage();
+
+    expect(await screen.findByText("还在了解你")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "人格依据" })).toBeNull();
+  });
 });

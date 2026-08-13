@@ -3010,7 +3010,7 @@ fn sort_live_sessions(items: &mut [LiveSession]) {
 }
 
 fn hydrate_conversation_titles(
-    database: &Database,
+    _database: &Database,
     sessions: &mut [LiveSession],
     completed_sessions: &mut [NotchCompletedSession],
 ) {
@@ -3019,7 +3019,7 @@ fn hydrate_conversation_titles(
         .chain(completed_sessions.iter().map(|item| &item.session))
         .map(|session| (session.agent.clone(), session.source_session_id.clone()))
         .collect::<Vec<_>>();
-    let titles = conversation_titles_for_sources(database, &sources);
+    let titles = conversation_titles_for_sources(&sources);
     for session in sessions
         .iter_mut()
         .chain(completed_sessions.iter_mut().map(|item| &mut item.session))
@@ -3031,12 +3031,12 @@ fn hydrate_conversation_titles(
     }
 }
 
-pub(crate) fn hydrate_attention_titles(database: &Database, attention: &mut [AttentionEvent]) {
+pub(crate) fn hydrate_attention_titles(_database: &Database, attention: &mut [AttentionEvent]) {
     let sources = attention
         .iter()
         .map(|event| (event.agent.clone(), event.source_session_id.clone()))
         .collect::<Vec<_>>();
-    let titles = conversation_titles_for_sources(database, &sources);
+    let titles = conversation_titles_for_sources(&sources);
     for event in attention {
         let key = (event.agent.clone(), event.source_session_id.clone());
         event.conversation_title = titles.get(&key).cloned().filter(|title| {
@@ -3046,16 +3046,9 @@ pub(crate) fn hydrate_attention_titles(database: &Database, attention: &mut [Att
 }
 
 fn conversation_titles_for_sources(
-    database: &Database,
     sources: &[(String, String)],
 ) -> HashMap<(String, String), String> {
-    let mut titles = database
-        .live_conversation_titles(sources)
-        .unwrap_or_default();
-    for (key, value) in codex_conversation_titles(sources) {
-        titles.insert(key, value);
-    }
-    titles
+    codex_conversation_titles(sources)
 }
 
 fn codex_conversation_titles(sources: &[(String, String)]) -> HashMap<(String, String), String> {
@@ -3871,7 +3864,7 @@ mod tests {
     }
 
     #[test]
-    fn attention_queue_uses_the_sanitized_matching_session_title() {
+    fn attention_queue_does_not_promote_prompt_derived_session_titles() {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("attention-title.sqlite"))
             .expect("database should open");
@@ -3905,10 +3898,7 @@ mod tests {
 
         hydrate_attention_titles(&database, &mut attention);
 
-        assert_eq!(
-            attention[0].conversation_title.as_deref(),
-            Some("VibeMeter 可视化功能")
-        );
+        assert_eq!(attention[0].conversation_title, None);
     }
 
     #[test]

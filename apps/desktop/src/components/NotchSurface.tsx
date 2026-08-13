@@ -29,6 +29,7 @@ import codexIconUrl from "../assets/providers/codex.svg";
 import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { agentName } from "../lib/format";
+import { privateSessionReference } from "../lib/sessionReference";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import type { AttentionEvent, LiveSession, Locale, NotchUiState } from "../types";
 
@@ -196,12 +197,10 @@ export function NotchAttentionQueue({
             <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
             <small className="notch-attention-context">
               <b>{attention.projectLabel || agentName(attention.agent)}</b>
-              {attention.conversationTitle ? (
-                <>
-                  <i aria-hidden="true">·</i>
-                  <span>{attention.conversationTitle}</span>
-                </>
-              ) : null}
+              <i aria-hidden="true">·</i>
+              <span>{attention.conversationTitle || t("live.attention.sessionReference", {
+                value: privateSessionReference(attention.agent, attention.sourceSessionId),
+              })}</span>
             </small>
           </span>
           <span className="notch-attention-actions">

@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { agentName, formatDateTime, formatTime } from "../lib/format";
+import { privateSessionReference } from "../lib/sessionReference";
 import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import { useUiStore } from "../store";
@@ -100,7 +101,9 @@ export function AttentionQueue({
               <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
               <small className="attention-context">
                 <b>{attention.projectLabel || agentName(attention.agent)}</b>
-                {attention.conversationTitle ? <span> · {attention.conversationTitle}</span> : null}
+                <span> · {attention.conversationTitle || t("live.attention.sessionReference", {
+                  value: privateSessionReference(attention.agent, attention.sourceSessionId),
+                })}</span>
               </small>
             </div>
             <span>{t(`live.attention.state.${attention.state}`)}</span>
@@ -183,8 +186,9 @@ export function AttentionHistory({
         {items.map((attention) => (
           <li key={attention.id}>
             <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-            <span>{attention.projectLabel || agentName(attention.agent)}
-              {attention.conversationTitle ? ` · ${attention.conversationTitle}` : ""}
+            <span>{attention.projectLabel || agentName(attention.agent)} · {attention.conversationTitle || t("live.attention.sessionReference", {
+              value: privateSessionReference(attention.agent, attention.sourceSessionId),
+            })}
             </span>
             <small>{t(`live.attention.state.${attention.state}`)}</small>
           </li>

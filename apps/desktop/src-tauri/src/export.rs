@@ -1212,7 +1212,7 @@ fn render_vcti_identity_evidence(
     let columns = if landscape { 4 } else { 2 };
     let gap = if landscape { 12.0 } else { 18.0 };
     let card_width = (width - gap * (columns - 1) as f64) / columns as f64;
-    let card_height = if landscape { 122.0 } else { 144.0 };
+    let card_height = if landscape { 108.0 } else { 144.0 };
     let heading_size = if landscape { 18.0 } else { 24.0 };
     text(
         svg,
@@ -1257,9 +1257,9 @@ fn render_vcti_identity_evidence(
         text_block(
             svg,
             card_x + 20.0,
-            card_y + 70.0,
+            card_y + if landscape { 62.0 } else { 70.0 },
             card_width - 40.0,
-            if landscape { 17.0 } else { 21.0 },
+            if landscape { 15.0 } else { 21.0 },
             560,
             palette.text,
             value,
@@ -1276,7 +1276,7 @@ fn vcti_identity_evidence_summaries(
 ) -> Vec<(&'static str, String)> {
     let zh = locale == "zh-CN";
     let identity = &profile.identity_evidence;
-    let rhythm = if identity.rhythm.work_periods_available {
+    let work_periods = if identity.rhythm.work_periods_available {
         let periods = identity
             .rhythm
             .work_periods
@@ -1303,6 +1303,11 @@ fn vcti_identity_evidence_summaries(
     } else {
         vcti_not_recorded(locale).into()
     };
+    let rhythm = format!(
+        "{} · {}",
+        work_periods,
+        vcti_optional_days(locale, &identity.rhythm.active_days)
+    );
     let collaboration = format!(
         "{} {} · {} {}",
         "Subagent",
@@ -1341,22 +1346,35 @@ fn vcti_identity_evidence_summaries(
 }
 
 fn vcti_optional_count(locale: &str, metric: &VctiOptionalMetric) -> String {
-    if metric.available {
-        vcti_count(locale, metric.value.unwrap_or(0.0))
-    } else {
-        vcti_not_recorded(locale).into()
-    }
+    metric
+        .available
+        .then_some(metric.value)
+        .flatten()
+        .map(|value| vcti_count(locale, value))
+        .unwrap_or_else(|| vcti_not_recorded(locale).into())
 }
 
 fn vcti_optional_categories(locale: &str, metric: &VctiOptionalMetric) -> String {
-    if !metric.available {
+    let Some(value) = metric.available.then_some(metric.value).flatten() else {
         return vcti_not_recorded(locale).into();
-    }
-    let value = format!("{:.0}", metric.value.unwrap_or(0.0));
+    };
+    let value = format!("{value:.0}");
     if locale == "zh-CN" {
         format!("{value} 类")
     } else {
         format!("{value} categories")
+    }
+}
+
+fn vcti_optional_days(locale: &str, metric: &VctiOptionalMetric) -> String {
+    let Some(value) = metric.available.then_some(metric.value).flatten() else {
+        return vcti_not_recorded(locale).into();
+    };
+    let value = format!("{value:.0}");
+    if locale == "zh-CN" {
+        format!("{value} 天")
+    } else {
+        format!("{value} days")
     }
 }
 
@@ -4095,8 +4113,21 @@ mod tests {
 
         assert_eq!(vcti_optional_count("zh-CN", &zero), "0 次");
         assert_eq!(vcti_optional_count("zh-CN", &missing), "未记录");
+        assert_eq!(
+            vcti_optional_count(
+                "zh-CN",
+                &crate::models::VctiOptionalMetric {
+                    value: None,
+                    available: true,
+                }
+            ),
+            "未记录"
+        );
         assert_eq!(vcti_optional_count("en-US", &zero), "0");
         assert_eq!(vcti_optional_count("en-US", &missing), "Not recorded");
+        assert_eq!(vcti_optional_days("zh-CN", &zero), "0 天");
+        assert_eq!(vcti_optional_days("en-US", &zero), "0 days");
+        assert_eq!(vcti_optional_days("zh-CN", &missing), "未记录");
     }
 
     #[test]

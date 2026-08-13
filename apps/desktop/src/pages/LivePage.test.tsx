@@ -274,6 +274,20 @@ describe("Attention actions", () => {
     expect(screen.getByText(/VibeMeter 可视化功能/)).toBeTruthy();
   });
 
+  it("shows a private session reference when no trusted title exists", () => {
+    const event = attention("completion-review", "private-reference", "2026-08-10T08:00:00Z");
+    event.projectLabel = "vibemeter";
+    event.sourceSessionId = "raw-private-session-id";
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AttentionQueue items={[event]} onFeedback={vi.fn()} onJump={vi.fn()} />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText(/会话 [0-9A-F]{6}/)).toBeTruthy();
+    expect(screen.queryByText(/raw-private-session-id/)).toBeNull();
+  });
+
   it("loads attention history in bounded pages", () => {
     const onLoadMore = vi.fn();
     render(
