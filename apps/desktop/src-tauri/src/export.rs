@@ -4083,6 +4083,23 @@ mod tests {
     }
 
     #[test]
+    fn vcti_identity_evidence_keeps_zero_distinct_from_unrecorded() {
+        let zero = crate::models::VctiOptionalMetric {
+            value: Some(0.0),
+            available: true,
+        };
+        let missing = crate::models::VctiOptionalMetric {
+            value: None,
+            available: false,
+        };
+
+        assert_eq!(vcti_optional_count("zh-CN", &zero), "0 次");
+        assert_eq!(vcti_optional_count("zh-CN", &missing), "未记录");
+        assert_eq!(vcti_optional_count("en-US", &zero), "0");
+        assert_eq!(vcti_optional_count("en-US", &missing), "Not recorded");
+    }
+
+    #[test]
     fn unavailable_vcti_dimension_does_not_render_a_value_bar() {
         let dimension = crate::models::VctiScore {
             id: "requirementClarity".into(),
