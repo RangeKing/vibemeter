@@ -100,6 +100,22 @@ fn validates_the_release_export_matrix() {
                         assert!(first.svg.contains("data:image/webp;base64,"));
                         assert!(!first.svg.contains("data-vcti-visual-version"));
                         assert!(!first.svg.contains("Fingerprint"));
+                        let evidence_labels = if locale == "zh-CN" {
+                            ["工作节奏", "协作方式", "工具与 Skill", "过程记录"]
+                        } else {
+                            [
+                                "WORK RHYTHM",
+                                "COLLABORATION",
+                                "TOOLS &amp; SKILL",
+                                "PROCESS RECORD",
+                            ]
+                        };
+                        for label in evidence_labels {
+                            assert!(
+                                first.svg.contains(label),
+                                "VCTI {locale} {aspect} preview is missing {label}"
+                            );
+                        }
                         for forbidden in ["/Users/", "SKILL.md", "apply_patch", "exec_command"] {
                             assert!(!first.svg.contains(forbidden), "private token in VCTI SVG");
                         }
