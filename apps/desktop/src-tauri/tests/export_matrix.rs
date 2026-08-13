@@ -99,6 +99,16 @@ fn validates_the_release_export_matrix() {
                     if template == "vcti-card" {
                         assert!(first.svg.contains("data:image/webp;base64,"));
                         assert!(first.svg.contains("data-vcti-visual-version=\"2.0.0\""));
+                        for visual_layer in [
+                            "vcti-art-contour",
+                            "vcti-art-rhythm",
+                            "vcti-art-branch",
+                            "vcti-art-tool",
+                            "vcti-art-skill",
+                            "vcti-art-process",
+                        ] {
+                            assert!(first.svg.contains(visual_layer), "missing {visual_layer}");
+                        }
                         assert!(!first.svg.contains("Fingerprint"));
                         let evidence_labels = if locale == "zh-CN" {
                             ["工作节奏", "协作方式", "工具与 Skill", "过程记录"]

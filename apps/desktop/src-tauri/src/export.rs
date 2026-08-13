@@ -4147,6 +4147,59 @@ mod tests {
     }
 
     #[test]
+    fn vcti_art_export_contains_no_raw_work_content_fields() {
+        let private_fields = [
+            "sourceSessionId",
+            "projectName",
+            "prompt",
+            "command",
+            "toolOutput",
+            "skillName",
+        ];
+        let mut svg = String::new();
+        let visual = crate::models::VctiIdentityVisual {
+            algorithm_version: "1.6.0".into(),
+            version: "2.0.0".into(),
+            range: "90d".into(),
+            available: false,
+            inputs: Vec::new(),
+            contours: Vec::new(),
+            rhythm: crate::models::VctiRhythmVisual {
+                available: false,
+                phase: None,
+                active_intensity: None,
+                session_intensity: None,
+                density: None,
+                paths: Vec::new(),
+            },
+            collaboration: crate::models::VctiCollaborationVisual {
+                available: false,
+                branch_intensity: None,
+                parallel_intensity: None,
+                paths: Vec::new(),
+            },
+            detail: crate::models::VctiDetailVisual {
+                available: false,
+                tool_intensity: None,
+                skill_intensity: None,
+                tool_marks: Vec::new(),
+                skill_marks: Vec::new(),
+            },
+            process: crate::models::VctiProcessVisual {
+                available: false,
+                error_intensity: None,
+                retry_intensity: None,
+                rollback_intensity: None,
+                paths: Vec::new(),
+            },
+        };
+        render_vcti_art_field(&mut svg, 0.0, 0.0, 100.0, "#fff", &visual);
+        for field in private_fields {
+            assert!(!svg.contains(field));
+        }
+    }
+
+    #[test]
     fn vcti_identity_evidence_keeps_zero_distinct_from_unrecorded() {
         let zero = crate::models::VctiOptionalMetric {
             value: Some(0.0),
