@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, CalendarRange, DatabaseZap, Eye, EyeOff, Fingerprint, ScanFace, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ArrowRight, CalendarRange, DatabaseZap, Eye, EyeOff, Orbit, ScanFace, ShieldCheck, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -103,7 +103,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
     <div className="page vcti-page">
       <header className="vcti-page-header">
         <div>
-          <span className="eyebrow"><Fingerprint size={13} />{t("vcti.eyebrow")}</span>
+          <span className="eyebrow"><Orbit size={13} />{t("vcti.eyebrow")}</span>
           <h1>{t("vcti.title")}</h1>
           <p>{t("vcti.description")}</p>
         </div>

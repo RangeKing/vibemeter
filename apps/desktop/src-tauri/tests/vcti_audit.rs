@@ -11,10 +11,25 @@ fn audits_real_profile_ranges() {
         .expect("VIBEMETER_TEST_DB");
     let database = Database::open(database_path).expect("database snapshot");
 
-    for range in ["7d", "30d", "90d", "180d", "year", "all"] {
+    let mut populated_ranges = 0;
+    let mut temporary_ranges = 0;
+    let mut collecting_ranges = 0;
+    for range in ["today", "7d", "30d", "90d", "180d", "year", "all"] {
         let profile = database.vcti_profile(range).expect("VCTI profile");
+        populated_ranges += u64::from(profile.session_count > 0);
+        temporary_ranges += u64::from(profile.temporary && profile.session_count > 0);
+        collecting_ranges += u64::from(profile.status == "collecting");
+        assert_eq!(profile.identity_visual.range, range);
+        assert_eq!(
+            profile.identity_visual.algorithm_version,
+            profile.algorithm_version
+        );
+        if profile.status == "collecting" {
+            assert!(!profile.identity_visual.available);
+            assert!(profile.identity_visual.paths.is_empty());
+        }
         println!(
-            "{range}: primary={} secondary={} badges={} status={} confidence={:.1}% margin={:.1}% sessions={} days={}",
+            "{range}: primary={} secondary={} badges={} status={} confidence={:.1}% margin={:.1}% sessions={} days={} visual={} paths={}",
             profile.primary_type.as_deref().unwrap_or("unassigned"),
             profile.secondary_type.as_deref().unwrap_or("none"),
             profile
@@ -27,7 +42,18 @@ fn audits_real_profile_ranges() {
             profile.confidence,
             profile.type_margin * 100.0,
             profile.session_count,
-            profile.active_days
+            profile.active_days,
+            profile.identity_visual.version,
+            profile.identity_visual.paths.len()
         );
     }
+    assert!(
+        populated_ranges >= 2,
+        "two populated real-data ranges required"
+    );
+    assert!(
+        temporary_ranges >= 1,
+        "one temporary real-data range required"
+    );
+    assert!(collecting_ranges >= 1, "one collecting range required");
 }

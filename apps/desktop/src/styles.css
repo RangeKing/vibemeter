@@ -967,7 +967,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .vcti-identity-visual[data-generating="true"] .vcti-identity-details { transform-box: fill-box; transform-origin: center; animation: vcti-identity-details 560ms 180ms cubic-bezier(.2,.72,.22,1) both; }
 @keyframes vcti-identity-draw { to { stroke-dashoffset: 0; } }
 @keyframes vcti-identity-details { from { transform: scale(.76); } to { transform: scale(1); } }
-.vcti-identity-visual figcaption { position: absolute; right: 11%; bottom: 10%; padding: 6px 9px; border-radius: 7px; color: #fff; background: color-mix(in srgb, var(--vcti-accent) 90%, #202020); font-family: "SFMono-Regular", Menlo, monospace; font-size: 11px; font-weight: 780; letter-spacing: .08em; box-shadow: 0 4px 14px rgb(0 0 0 / 15%); }
+.vcti-identity-visual figcaption { position: absolute; right: 17%; bottom: 13%; padding: 6px 9px; border-radius: 7px; color: #fff; background: color-mix(in srgb, var(--vcti-accent) 90%, #202020); font-family: "SFMono-Regular", Menlo, monospace; font-size: 11px; font-weight: 780; letter-spacing: .08em; box-shadow: 0 4px 14px rgb(0 0 0 / 15%); }
 .vcti-identity-visual.collecting { opacity: .48; }
 .vcti-visual-collecting { width: min(350px, 84%); justify-self: center; padding: 34px; border: 1px dashed var(--line-strong); border-radius: 22px; color: var(--muted); background: color-mix(in srgb, var(--surface) 82%, transparent); }
 .vcti-visual-collecting > svg { color: var(--warm); }

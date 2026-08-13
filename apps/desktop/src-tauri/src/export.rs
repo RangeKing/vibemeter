@@ -1020,15 +1020,15 @@ fn render_vcti_card(
                 content_end = structural_y + 104.0;
             }
         }
-        let fingerprint_y = content_end + 28.0;
-        let fingerprint_height = (footer_y - fingerprint_y - 34.0).min(360.0);
-        if fingerprint_height >= 220.0 && profile.dimensions.len() >= 12 {
+        let dimensions_y = content_end + 28.0;
+        let dimensions_height = (footer_y - dimensions_y - 34.0).min(360.0);
+        if dimensions_height >= 220.0 && profile.dimensions.len() >= 12 {
             rect(
                 svg,
                 margin + 48.0,
-                fingerprint_y,
+                dimensions_y,
                 panel_width - 96.0,
-                fingerprint_height,
+                dimensions_height,
                 24.0,
                 palette.tile,
                 None,
@@ -1036,24 +1036,24 @@ fn render_vcti_card(
             text(
                 svg,
                 margin + 72.0,
-                fingerprint_y + 42.0,
+                dimensions_y + 42.0,
                 20.0,
                 700,
                 palette.muted,
                 if locale == "zh-CN" {
-                    "18 维本地行为指纹"
+                    "18 项本地行为指标"
                 } else {
-                    "18D LOCAL BEHAVIOR FINGERPRINT"
+                    "18 LOCAL BEHAVIOR METRICS"
                 },
                 None,
             );
             let chart_x = margin + 72.0;
             let chart_width = panel_width - 144.0;
             let slot_width = chart_width / profile.dimensions.len().min(18) as f64;
-            let chart_y = fingerprint_y + 66.0;
+            let chart_y = dimensions_y + 66.0;
             let label_font_size = if locale == "zh-CN" { 13.0 } else { 12.0 };
             let label_band_height = if locale == "zh-CN" { 62.0 } else { 84.0 };
-            let label_y = fingerprint_y + fingerprint_height - 18.0;
+            let label_y = dimensions_y + dimensions_height - 18.0;
             let chart_bottom = label_y - label_band_height;
             let chart_height = (chart_bottom - chart_y).max(36.0);
             for (index, dimension) in profile.dimensions.iter().take(18).enumerate() {
@@ -1318,10 +1318,7 @@ fn render_vcti_identity_visual(
         write!(
             svg,
             "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"{accent}\" opacity=\"{:.3}\"/>",
-            detail.cx,
-            detail.cy,
-            detail.radius,
-            detail.opacity,
+            detail.cx, detail.cy, detail.radius, detail.opacity,
         )
         .ok();
     }
@@ -3790,7 +3787,7 @@ mod tests {
     }
 
     #[test]
-    fn vcti_fingerprint_uses_readable_dimension_labels() {
+    fn vcti_visual_uses_readable_dimension_labels() {
         assert_eq!(
             vcti_dimension_name("zh-CN", "requirementClarity"),
             "目标清晰"
