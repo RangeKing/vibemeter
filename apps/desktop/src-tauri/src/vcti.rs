@@ -1,8 +1,8 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
     VctiEvidenceItem, VctiIdentityEvidence, VctiIdentityVisual, VctiOptionalMetric,
-    VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiScore, VctiTrendPoint,
-    VctiVisualInput, VctiVisualPath, VctiWorkRhythm,
+    VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiRhythmVisual, VctiScore,
+    VctiTrendPoint, VctiVisualInput, VctiVisualPath, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -340,6 +340,7 @@ fn build_identity_visual(
             evidence.process_variation.errors.available,
         ),
     ];
+    let rhythm = build_rhythm_visual(&evidence.rhythm, primary_type.unwrap_or("collecting"));
     if !available {
         return VctiIdentityVisual {
             algorithm_version: ALGORITHM_VERSION.into(),
@@ -348,6 +349,7 @@ fn build_identity_visual(
             available,
             inputs,
             contours: Vec::new(),
+            rhythm,
         };
     }
 
@@ -390,6 +392,98 @@ fn build_identity_visual(
         available,
         inputs,
         contours,
+        rhythm,
+    }
+}
+
+fn build_rhythm_visual(rhythm: &VctiWorkRhythm, identity_seed: &str) -> VctiRhythmVisual {
+    let available = rhythm.work_periods_available
+        && rhythm.active_days.available
+        && rhythm.sessions_per_day.available
+        && rhythm.active_days.value.is_some()
+        && rhythm.sessions_per_day.value.is_some();
+    if !available {
+        return VctiRhythmVisual {
+            available: false,
+            phase: None,
+            active_intensity: None,
+            session_intensity: None,
+            density: None,
+            paths: Vec::new(),
+        };
+    }
+    let active_intensity = (rhythm.active_days.value.unwrap_or(0.0) / 21.0).clamp(0.0, 1.0);
+    let session_intensity = (rhythm.sessions_per_day.value.unwrap_or(0.0) / 4.0).clamp(0.0, 1.0);
+    let density = (active_intensity * 0.55 + session_intensity * 0.45).clamp(0.0, 1.0);
+    let total_share = rhythm
+        .work_periods
+        .iter()
+        .map(|period| period.share)
+        .sum::<f64>();
+    if total_share <= f64::EPSILON || density <= f64::EPSILON {
+        return VctiRhythmVisual {
+            available: true,
+            phase: None,
+            active_intensity: Some(active_intensity),
+            session_intensity: Some(session_intensity),
+            density: Some(density),
+            paths: Vec::new(),
+        };
+    }
+    let angle_for = |id: &str| match id {
+        "night" => -2.35,
+        "morning" => -0.78,
+        "afternoon" => 0.76,
+        _ => 2.34,
+    };
+    let vector = rhythm
+        .work_periods
+        .iter()
+        .fold((0.0, 0.0), |(x, y), period| {
+            let angle: f64 = angle_for(&period.id);
+            (
+                x + angle.cos() * period.share,
+                y + angle.sin() * period.share,
+            )
+        });
+    let phase = vector.1.atan2(vector.0) + stable_fraction(identity_seed) * 0.08;
+    let count = (3.0 + active_intensity * 3.0 + session_intensity * 3.0).round() as usize;
+    let paths = (0..count.min(9))
+        .map(|index| {
+            let spread =
+                (index as f64 - (count.saturating_sub(1)) as f64 / 2.0) * (7.6 - density * 2.4);
+            let perpendicular = phase + std::f64::consts::FRAC_PI_2;
+            let start = (
+                50.0 - phase.cos() * 49.0 + perpendicular.cos() * spread,
+                50.0 - phase.sin() * 49.0 + perpendicular.sin() * spread,
+            );
+            let end = (
+                50.0 + phase.cos() * 49.0 + perpendicular.cos() * spread,
+                50.0 + phase.sin() * 49.0 + perpendicular.sin() * spread,
+            );
+            let bend = ((index % 3) as f64 - 1.0) * (5.0 + session_intensity * 4.0);
+            VctiVisualPath {
+                d: format!(
+                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
+                    start.0,
+                    start.1,
+                    50.0 + perpendicular.cos() * (spread + bend),
+                    50.0 + perpendicular.sin() * (spread + bend),
+                    end.0,
+                    end.1
+                ),
+                stroke_width: 0.42 + session_intensity * 0.38,
+                opacity: 0.18 + active_intensity * 0.30,
+            }
+        })
+        .collect();
+    VctiRhythmVisual {
+        available: true,
+        phase: Some(phase),
+        active_intensity: Some(active_intensity),
+        session_intensity: Some(session_intensity),
+        density: Some(density),
+        paths,
     }
 }
 
@@ -1912,6 +2006,31 @@ mod tests {
         assert_eq!(partial.active_days.value, None);
         assert!(partial.sessions_per_day.available);
         assert!(partial.sessions_per_day.value.is_some());
+    }
+
+    #[test]
+    fn rhythm_visual_distinguishes_period_density_zero_and_missing() {
+        let mut day = record("2026-07-23");
+        day.started_at = "2026-07-23T10:00:00Z".into();
+        let morning = aggregate_work_rhythm(&[day.clone()], 7);
+        day.started_at = "2026-07-23T23:00:00Z".into();
+        let night = aggregate_work_rhythm(&[day], 7);
+        let morning_visual = build_rhythm_visual(&morning, "SPEC");
+        let night_visual = build_rhythm_visual(&night, "SPEC");
+        assert_ne!(morning_visual.phase, night_visual.phase);
+        assert_ne!(morning_visual.paths, night_visual.paths);
+
+        let zero = aggregate_work_rhythm(&[], 7);
+        let zero_visual = build_rhythm_visual(&zero, "SPEC");
+        assert!(zero_visual.available);
+        assert_eq!(zero_visual.density, Some(0.0));
+        assert!(zero_visual.paths.is_empty());
+
+        let mut invalid = record("2026-07-23");
+        invalid.started_at = "not-recorded".into();
+        let missing_visual = build_rhythm_visual(&aggregate_work_rhythm(&[invalid], 7), "SPEC");
+        assert!(!missing_visual.available);
+        assert_eq!(missing_visual.density, None);
     }
 
     #[test]

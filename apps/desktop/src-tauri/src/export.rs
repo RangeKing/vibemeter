@@ -1224,6 +1224,9 @@ fn render_vcti_art_field(
     for path in &visual.contours {
         write!(svg, "<path class=\"vcti-art-contour\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
     }
+    for path in &visual.rhythm.paths {
+        write!(svg, "<path class=\"vcti-art-rhythm\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
+    }
     svg.push_str("</g>");
 }
 

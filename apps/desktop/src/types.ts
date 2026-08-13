@@ -636,6 +636,14 @@ export interface VctiIdentityVisual {
   available: boolean;
   inputs: VctiVisualInput[];
   contours: VctiVisualPath[];
+  rhythm: {
+    available: boolean;
+    phase?: number;
+    activeIntensity?: number;
+    sessionIntensity?: number;
+    density?: number;
+    paths: VctiVisualPath[];
+  };
 }
 
 export interface VctiProfile {

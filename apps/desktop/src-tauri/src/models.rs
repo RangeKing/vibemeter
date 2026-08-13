@@ -1132,12 +1132,23 @@ pub struct VctiVisualInput {
     pub available: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VctiVisualPath {
     pub d: String,
     pub stroke_width: f64,
     pub opacity: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VctiRhythmVisual {
+    pub available: bool,
+    pub phase: Option<f64>,
+    pub active_intensity: Option<f64>,
+    pub session_intensity: Option<f64>,
+    pub density: Option<f64>,
+    pub paths: Vec<VctiVisualPath>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1149,6 +1160,7 @@ pub struct VctiIdentityVisual {
     pub available: bool,
     pub inputs: Vec<VctiVisualInput>,
     pub contours: Vec<VctiVisualPath>,
+    pub rhythm: VctiRhythmVisual,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

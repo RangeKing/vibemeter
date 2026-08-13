@@ -24,6 +24,11 @@ export function VctiArtPortrait({ visual, type, guild, label }: {
             <path key={`${index}-${path.d}`} d={path.d} fill="none" stroke="currentColor" strokeWidth={path.strokeWidth} opacity={path.opacity} />
           ))}
         </g>
+        <g className="vcti-art-rhythm">
+          {visual.rhythm.paths.map((path, index) => (
+            <path key={`${index}-${path.d}`} d={path.d} fill="none" stroke="currentColor" strokeWidth={path.strokeWidth} opacity={path.opacity} />
+          ))}
+        </g>
       </svg>
       <VctiAvatar type={type} guild={guild} label={label} />
     </div>
