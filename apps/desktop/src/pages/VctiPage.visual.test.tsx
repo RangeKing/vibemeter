@@ -85,6 +85,7 @@ const profile = {
     available: true,
     contours: [{ d: "M 10 50 Q 50 10 90 50 Q 50 90 10 50 Z", strokeWidth: 0.8, opacity: 0.5 }],
     rhythm: { available: true, phase: 0.25, density: 0.6, paths: [{ d: "M 4 42 Q 50 18 96 58", strokeWidth: 0.7, opacity: 0.4 }] },
+    collaboration: { available: true, branchIntensity: 0.5, parallelIntensity: 0.25, paths: [{ d: "M 50 50 Q 72 35 92 20", strokeWidth: 0.7, opacity: 0.5 }] },
   },
 } as unknown as VctiProfile;
 
@@ -122,6 +123,7 @@ describe("VctiPage identity art", () => {
     expect(container.querySelector('[data-vcti-visual-version="2.0.0"]')).toBeTruthy();
     expect(container.querySelectorAll(".vcti-art-contours path")).toHaveLength(1);
     expect(container.querySelectorAll(".vcti-art-rhythm path")).toHaveLength(1);
+    expect(container.querySelectorAll(".vcti-art-branches path")).toHaveLength(1);
   });
 
   it("shows all four identity evidence summaries before opening the detail drawer", async () => {

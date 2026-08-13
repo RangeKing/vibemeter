@@ -644,6 +644,12 @@ export interface VctiIdentityVisual {
     density?: number;
     paths: VctiVisualPath[];
   };
+  collaboration: {
+    available: boolean;
+    branchIntensity?: number;
+    parallelIntensity?: number;
+    paths: VctiVisualPath[];
+  };
 }
 
 export interface VctiProfile {

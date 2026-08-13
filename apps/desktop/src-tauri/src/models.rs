@@ -1153,6 +1153,15 @@ pub struct VctiRhythmVisual {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VctiCollaborationVisual {
+    pub available: bool,
+    pub branch_intensity: Option<f64>,
+    pub parallel_intensity: Option<f64>,
+    pub paths: Vec<VctiVisualPath>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VctiIdentityVisual {
     pub algorithm_version: String,
     pub version: String,
@@ -1161,6 +1170,7 @@ pub struct VctiIdentityVisual {
     pub inputs: Vec<VctiVisualInput>,
     pub contours: Vec<VctiVisualPath>,
     pub rhythm: VctiRhythmVisual,
+    pub collaboration: VctiCollaborationVisual,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

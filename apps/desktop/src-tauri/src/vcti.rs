@@ -1,8 +1,8 @@
 use crate::models::{
-    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
-    VctiEvidenceItem, VctiIdentityEvidence, VctiIdentityVisual, VctiOptionalMetric,
-    VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiRhythmVisual, VctiScore,
-    VctiTrendPoint, VctiVisualInput, VctiVisualPath, VctiWorkRhythm,
+    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiCollaborationVisual,
+    VctiDetailDiversity, VctiEvidenceItem, VctiIdentityEvidence, VctiIdentityVisual,
+    VctiOptionalMetric, VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiRhythmVisual,
+    VctiScore, VctiTrendPoint, VctiVisualInput, VctiVisualPath, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -341,6 +341,10 @@ fn build_identity_visual(
         ),
     ];
     let rhythm = build_rhythm_visual(&evidence.rhythm, primary_type.unwrap_or("collecting"));
+    let collaboration = build_collaboration_visual(
+        &evidence.collaboration,
+        primary_type.unwrap_or("collecting"),
+    );
     if !available {
         return VctiIdentityVisual {
             algorithm_version: ALGORITHM_VERSION.into(),
@@ -350,6 +354,7 @@ fn build_identity_visual(
             inputs,
             contours: Vec::new(),
             rhythm,
+            collaboration,
         };
     }
 
@@ -393,6 +398,57 @@ fn build_identity_visual(
         inputs,
         contours,
         rhythm,
+        collaboration,
+    }
+}
+
+fn build_collaboration_visual(
+    collaboration: &VctiCollaboration,
+    identity_seed: &str,
+) -> VctiCollaborationVisual {
+    let available = collaboration.subagent_starts.available
+        && collaboration.parallel_batches.available
+        && collaboration.subagent_starts.value.is_some()
+        && collaboration.parallel_batches.value.is_some();
+    if !available {
+        return VctiCollaborationVisual {
+            available: false,
+            branch_intensity: None,
+            parallel_intensity: None,
+            paths: Vec::new(),
+        };
+    }
+    let branch_intensity =
+        (collaboration.subagent_starts.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
+    let parallel_intensity =
+        (collaboration.parallel_batches.value.unwrap_or(0.0) / 5.0).clamp(0.0, 1.0);
+    let count = (collaboration.subagent_starts.value.unwrap_or(0.0).round() as usize).min(8);
+    let seed_phase = stable_fraction(identity_seed) * std::f64::consts::TAU;
+    let paths = (0..count)
+        .map(|index| {
+            let angle = seed_phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
+            let spread = 18.0 + parallel_intensity * 18.0;
+            let start_angle = angle - (0.24 + parallel_intensity * 0.12);
+            VctiVisualPath {
+                d: format!(
+                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
+                    50.0 + start_angle.cos() * 24.0,
+                    50.0 + start_angle.sin() * 24.0,
+                    50.0 + angle.cos() * spread,
+                    50.0 + angle.sin() * spread,
+                    50.0 + angle.cos() * 48.0,
+                    50.0 + angle.sin() * 48.0,
+                ),
+                stroke_width: 0.48 + parallel_intensity * 0.42,
+                opacity: 0.25 + branch_intensity * 0.42,
+            }
+        })
+        .collect();
+    VctiCollaborationVisual {
+        available: true,
+        branch_intensity: Some(branch_intensity),
+        parallel_intensity: Some(parallel_intensity),
+        paths,
     }
 }
 
@@ -2031,6 +2087,43 @@ mod tests {
         let missing_visual = build_rhythm_visual(&aggregate_work_rhythm(&[invalid], 7), "SPEC");
         assert!(!missing_visual.available);
         assert_eq!(missing_visual.density, None);
+    }
+
+    #[test]
+    fn collaboration_visual_caps_branches_and_separates_zero_from_missing() {
+        let zero = VctiCollaboration {
+            subagent_starts: VctiOptionalMetric {
+                value: Some(0.0),
+                available: true,
+            },
+            parallel_batches: VctiOptionalMetric {
+                value: Some(0.0),
+                available: true,
+            },
+        };
+        let high = VctiCollaboration {
+            subagent_starts: VctiOptionalMetric {
+                value: Some(100.0),
+                available: true,
+            },
+            parallel_batches: VctiOptionalMetric {
+                value: Some(100.0),
+                available: true,
+            },
+        };
+        let missing = VctiCollaboration {
+            subagent_starts: VctiOptionalMetric {
+                value: None,
+                available: false,
+            },
+            parallel_batches: VctiOptionalMetric {
+                value: None,
+                available: false,
+            },
+        };
+        assert!(build_collaboration_visual(&zero, "SPEC").paths.is_empty());
+        assert!(build_collaboration_visual(&high, "SPEC").paths.len() <= 8);
+        assert!(!build_collaboration_visual(&missing, "SPEC").available);
     }
 
     #[test]
