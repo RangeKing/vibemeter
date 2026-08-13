@@ -5508,12 +5508,16 @@ impl Database {
                         .map(str::to_string)
                         .collect::<Vec<_>>()
                 };
-                let event_counts_available = row
-                    .get::<_, String>(33)?
-                    .split('.')
-                    .next()
-                    .and_then(|major| major.parse::<u64>().ok())
-                    .is_some_and(|major| major >= 4);
+                let parser_version = row.get::<_, String>(33)?;
+                let parser_version_at_least = |required_major: u64, required_minor: u64| {
+                    let mut parts = parser_version.split('.');
+                    let major = parts.next().and_then(|value| value.parse::<u64>().ok());
+                    let minor = parts.next().and_then(|value| value.parse::<u64>().ok());
+                    major
+                        .zip(minor)
+                        .is_some_and(|version| version >= (required_major, required_minor))
+                };
+                let event_counts_available = parser_version_at_least(4, 0);
                 Ok(crate::vcti::SessionBehaviorRecord {
                     id: row.get(0)?,
                     started_at: row.get(1)?,
@@ -5547,6 +5551,7 @@ impl Database {
                     shell_events: read_u64(row, 27)?,
                     tool_categories: split_categories(row.get(31)?),
                     explicit_skills: split_categories(row.get(32)?),
+                    explicit_skills_available: parser_version_at_least(6, 3),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;

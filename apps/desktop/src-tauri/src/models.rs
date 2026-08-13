@@ -1070,22 +1070,6 @@ pub struct VctiTrendPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VctiIdentityInput {
-    pub id: String,
-    pub available: bool,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiIdentityPath {
-    pub d: String,
-    pub stroke_width: f64,
-    pub opacity: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VctiOptionalMetric {
     pub value: Option<f64>,
     pub available: bool,
@@ -1106,9 +1090,6 @@ pub struct VctiWorkRhythm {
     pub work_periods_available: bool,
     pub active_days: VctiOptionalMetric,
     pub sessions_per_day: VctiOptionalMetric,
-    pub phase_offset: Option<f64>,
-    pub contour_count: Option<u64>,
-    pub contour_spacing: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1116,8 +1097,6 @@ pub struct VctiWorkRhythm {
 pub struct VctiCollaboration {
     pub subagent_starts: VctiOptionalMetric,
     pub parallel_batches: VctiOptionalMetric,
-    pub branch_count: Option<u64>,
-    pub parallel_spread: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1125,16 +1104,6 @@ pub struct VctiCollaboration {
 pub struct VctiDetailDiversity {
     pub tool_categories: VctiOptionalMetric,
     pub explicit_skills: VctiOptionalMetric,
-    pub detail_count: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiIdentityMark {
-    pub cx: f64,
-    pub cy: f64,
-    pub radius: f64,
-    pub opacity: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1143,25 +1112,15 @@ pub struct VctiProcessVariation {
     pub errors: VctiOptionalMetric,
     pub retries: VctiOptionalMetric,
     pub rollbacks: VctiOptionalMetric,
-    pub variation_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VctiIdentityVisual {
-    pub algorithm_version: String,
-    pub version: String,
-    pub range: String,
-    pub available: bool,
-    pub inputs: Vec<VctiIdentityInput>,
+pub struct VctiIdentityEvidence {
     pub rhythm: VctiWorkRhythm,
-    pub paths: Vec<VctiIdentityPath>,
     pub collaboration: VctiCollaboration,
-    pub branches: Vec<VctiIdentityPath>,
     pub detail_diversity: VctiDetailDiversity,
-    pub details: Vec<VctiIdentityMark>,
     pub process_variation: VctiProcessVariation,
-    pub variations: Vec<VctiIdentityPath>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1186,7 +1145,7 @@ pub struct VctiProfile {
     pub badges: Vec<VctiBadge>,
     pub evidence: Vec<VctiEvidenceItem>,
     pub trend: Vec<VctiTrendPoint>,
-    pub identity_visual: VctiIdentityVisual,
+    pub identity_evidence: VctiIdentityEvidence,
     pub behavior: BehaviorSummary,
     pub missing_capabilities: Vec<String>,
     pub structure_analysis_enabled: bool,

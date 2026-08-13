@@ -1,14 +1,12 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
-    VctiEvidenceItem, VctiIdentityInput, VctiIdentityMark, VctiIdentityPath, VctiIdentityVisual,
-    VctiOptionalMetric, VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiScore,
-    VctiTrendPoint, VctiWorkRhythm,
+    VctiEvidenceItem, VctiIdentityEvidence, VctiOptionalMetric, VctiProcessVariation, VctiProfile,
+    VctiRhythmPeriod, VctiScore, VctiTrendPoint, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const ALGORITHM_VERSION: &str = "1.6.0";
-pub const IDENTITY_VISUAL_VERSION: &str = "1.0.0";
 const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 
@@ -22,19 +20,6 @@ pub fn window_days_for_range(range: &str) -> i64 {
         "year" => 365,
         "all" => 3651,
         _ => 30,
-    }
-}
-
-fn range_for_window_days(window_days: i64) -> &'static str {
-    match window_days {
-        1 => "today",
-        7 => "7d",
-        30 => "30d",
-        90 => "90d",
-        180 => "180d",
-        365 => "year",
-        3651 => "all",
-        _ => "custom",
     }
 }
 
@@ -71,6 +56,7 @@ pub struct SessionBehaviorRecord {
     pub shell_events: u64,
     pub tool_categories: Vec<String>,
     pub explicit_skills: Vec<String>,
+    pub explicit_skills_available: bool,
     pub behavior: BehaviorSignals,
 }
 
@@ -235,17 +221,13 @@ pub fn calculate(
         "collecting"
     };
     let scores = public_scores(&features, &behavior);
-    let dimensions = dimension_scores(&features);
-    let identity_visual = build_identity_visual(
-        range_for_window_days(window_days),
-        top.map(|candidate| candidate.code),
-        secondary.map(|candidate| candidate.code),
-        top.map(|candidate| candidate.guild),
-        &dimensions,
-        records,
-        window_days,
+    let dimensions = dimension_scores(
+        &features,
         &behavior,
+        structure_analysis_enabled,
+        git_evidence_enabled,
     );
+    let identity_evidence = build_identity_evidence(records, window_days, &behavior);
     let badges = badges(
         &features,
         &behavior,
@@ -301,7 +283,7 @@ pub fn calculate(
         badges,
         evidence,
         trend,
-        identity_visual,
+        identity_evidence,
         behavior,
         missing_capabilities,
         structure_analysis_enabled,
@@ -309,127 +291,20 @@ pub fn calculate(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_identity_visual(
-    range: &str,
-    primary_type: Option<&str>,
-    secondary_type: Option<&str>,
-    guild: Option<&str>,
-    dimensions: &[VctiScore],
+fn build_identity_evidence(
     records: &[SessionBehaviorRecord],
     window_days: i64,
     behavior: &BehaviorSummary,
-) -> VctiIdentityVisual {
-    let dimensions_available =
-        dimensions.len() == 18 && dimensions.iter().all(|score| score.coverage > 0.0);
-    let identity_available = primary_type.is_some() && guild.is_some();
-    let available = identity_available && dimensions_available;
+) -> VctiIdentityEvidence {
     let rhythm = aggregate_work_rhythm(records, window_days);
     let collaboration = aggregate_collaboration(behavior);
     let detail_diversity = aggregate_detail(records);
     let process_variation = aggregate_process_variation(records, behavior);
-    let inputs = vec![
-        identity_input("identity", identity_available),
-        identity_input("dimensions", dimensions_available),
-        identity_input("work-periods", rhythm.work_periods_available),
-        identity_input("active-days", rhythm.active_days.available),
-        identity_input("session-density", rhythm.sessions_per_day.available),
-        identity_input("subagent-starts", collaboration.subagent_starts.available),
-        identity_input("parallel-batches", collaboration.parallel_batches.available),
-        identity_input(
-            "tool-categories",
-            detail_diversity.tool_categories.available,
-        ),
-        identity_input(
-            "explicit-skills",
-            detail_diversity.explicit_skills.available,
-        ),
-        identity_input("errors", process_variation.errors.available),
-        identity_input("retries", process_variation.retries.available),
-        identity_input("rollbacks", process_variation.rollbacks.available),
-    ];
-    if !available {
-        return VctiIdentityVisual {
-            algorithm_version: ALGORITHM_VERSION.into(),
-            version: IDENTITY_VISUAL_VERSION.into(),
-            range: range.into(),
-            available,
-            inputs,
-            rhythm,
-            paths: Vec::new(),
-            collaboration,
-            branches: Vec::new(),
-            detail_diversity,
-            details: Vec::new(),
-            process_variation,
-            variations: Vec::new(),
-        };
-    }
-
-    let primary_type = primary_type.unwrap_or_default();
-    let secondary_type = secondary_type.unwrap_or(primary_type);
-    let guild = guild.unwrap_or("start");
-    let phase =
-        stable_fraction(primary_type) * std::f64::consts::TAU + rhythm.phase_offset.unwrap_or(0.0);
-    let counter_phase = stable_fraction(secondary_type) * 0.34;
-    let aspect = 0.92 + stable_fraction(guild) * 0.16;
-    let point_count = 12usize;
-    let contour_count = rhythm.contour_count.unwrap_or(7) as usize;
-    let contour_spacing = rhythm.contour_spacing.unwrap_or(4.65);
-    let paths = (0..contour_count)
-        .map(|layer| {
-            let base_radius = 41.5 - layer as f64 * contour_spacing;
-            let points = (0..point_count)
-                .map(|point| {
-                    let score = &dimensions[(point + layer * 2) % dimensions.len()];
-                    let signal = (score.value - 50.0) / 50.0;
-                    let angle = phase
-                        + counter_phase * layer as f64
-                        + std::f64::consts::TAU * point as f64 / point_count as f64;
-                    let radius = base_radius + signal * (2.7 + layer as f64 * 0.16);
-                    let x = 50.0 + angle.cos() * radius * aspect;
-                    let y = 50.0 + angle.sin() * radius / aspect;
-                    (x.clamp(3.0, 97.0), y.clamp(3.0, 97.0))
-                })
-                .collect::<Vec<_>>();
-            VctiIdentityPath {
-                d: smooth_closed_path(&points),
-                stroke_width: 0.72 + (contour_count - layer) as f64 * 0.08,
-                opacity: (0.28 + (contour_count - layer) as f64 * 0.075).min(0.88),
-            }
-        })
-        .collect();
-    let branches = build_collaboration_branches(&collaboration, phase);
-    let details = build_detail_marks(&detail_diversity, phase);
-    let variations = build_process_variations(&process_variation, phase);
-
-    VctiIdentityVisual {
-        algorithm_version: ALGORITHM_VERSION.into(),
-        version: IDENTITY_VISUAL_VERSION.into(),
-        range: range.into(),
-        available,
-        inputs,
+    VctiIdentityEvidence {
         rhythm,
-        paths,
         collaboration,
-        branches,
         detail_diversity,
-        details,
         process_variation,
-        variations,
-    }
-}
-
-fn identity_input(id: &str, available: bool) -> VctiIdentityInput {
-    VctiIdentityInput {
-        id: id.into(),
-        available,
-        status: if available {
-            "recorded"
-        } else {
-            "not-recorded"
-        }
-        .into(),
     }
 }
 
@@ -437,18 +312,6 @@ fn aggregate_collaboration(behavior: &BehaviorSummary) -> VctiCollaboration {
     let available = behavior.orchestration_capable_sessions > 0;
     let subagent_starts = available.then_some(behavior.subagent_starts as f64);
     let parallel_batches = available.then_some(behavior.parallel_batches as f64);
-    let branch_count = available.then(|| {
-        let weighted = behavior
-            .subagent_starts
-            .saturating_add(behavior.parallel_batches.saturating_mul(2));
-        if weighted == 0 {
-            0
-        } else {
-            (1 + u64::from(weighted.ilog2())).min(6)
-        }
-    });
-    let parallel_spread =
-        available.then(|| (behavior.parallel_batches as f64 / 8.0).clamp(0.0, 1.0));
     VctiCollaboration {
         subagent_starts: VctiOptionalMetric {
             value: subagent_starts,
@@ -458,39 +321,7 @@ fn aggregate_collaboration(behavior: &BehaviorSummary) -> VctiCollaboration {
             value: parallel_batches,
             available,
         },
-        branch_count,
-        parallel_spread,
     }
-}
-
-fn build_collaboration_branches(
-    collaboration: &VctiCollaboration,
-    phase: f64,
-) -> Vec<VctiIdentityPath> {
-    let count = collaboration.branch_count.unwrap_or(0) as usize;
-    let spread = collaboration.parallel_spread.unwrap_or(0.0);
-    (0..count)
-        .map(|index| {
-            let centered = index as f64 - (count.saturating_sub(1)) as f64 / 2.0;
-            let angle = phase + centered * (0.34 + spread * 0.26);
-            let start_radius = 8.0 + index as f64 * 1.2;
-            let end_radius = 37.0 + spread * 6.0;
-            let start_x = 50.0 + angle.cos() * start_radius;
-            let start_y = 50.0 + angle.sin() * start_radius;
-            let end_x = 50.0 + angle.cos() * end_radius;
-            let end_y = 50.0 + angle.sin() * end_radius;
-            let bend_angle = angle + if index % 2 == 0 { 0.34 } else { -0.34 };
-            let control_x = 50.0 + bend_angle.cos() * (22.0 + spread * 5.0);
-            let control_y = 50.0 + bend_angle.sin() * (22.0 + spread * 5.0);
-            VctiIdentityPath {
-                d: format!(
-                    "M{start_x:.2},{start_y:.2}Q{control_x:.2},{control_y:.2} {end_x:.2},{end_y:.2}"
-                ),
-                stroke_width: 0.8 + spread * 0.4,
-                opacity: 0.48 + index as f64 * 0.055,
-            }
-        })
-        .collect()
 }
 
 fn aggregate_detail(records: &[SessionBehaviorRecord]) -> VctiDetailDiversity {
@@ -502,47 +333,25 @@ fn aggregate_detail(records: &[SessionBehaviorRecord]) -> VctiDetailDiversity {
         .flat_map(|record| record.tool_categories.iter().cloned())
         .collect::<HashSet<_>>()
         .len() as u64;
+    let explicit_skills_available = !records.is_empty()
+        && records
+            .iter()
+            .all(|record| record.explicit_skills_available);
     let explicit_skills = records
         .iter()
         .flat_map(|record| record.explicit_skills.iter().cloned())
         .collect::<HashSet<_>>()
         .len() as u64;
-    let tool_detail_count = if tool_categories_available {
-        tool_categories.min(8)
-    } else {
-        0
-    };
-    let detail_count = tool_detail_count.saturating_add(explicit_skills.min(4));
     VctiDetailDiversity {
         tool_categories: VctiOptionalMetric {
             value: tool_categories_available.then_some(tool_categories as f64),
             available: tool_categories_available,
         },
         explicit_skills: VctiOptionalMetric {
-            value: Some(explicit_skills as f64),
-            available: true,
+            value: explicit_skills_available.then_some(explicit_skills as f64),
+            available: explicit_skills_available,
         },
-        detail_count: Some(detail_count),
     }
-}
-
-fn build_detail_marks(detail: &VctiDetailDiversity, phase: f64) -> Vec<VctiIdentityMark> {
-    let count = detail.detail_count.unwrap_or(0) as usize;
-    (0..count)
-        .map(|index| {
-            let ring = index % 3;
-            let angle = phase
-                + std::f64::consts::TAU * index as f64 / count.max(1) as f64
-                + ring as f64 * 0.18;
-            let distance = 22.0 + ring as f64 * 8.0;
-            VctiIdentityMark {
-                cx: 50.0 + angle.cos() * distance,
-                cy: 50.0 + angle.sin() * distance,
-                radius: 0.65 + ring as f64 * 0.16,
-                opacity: 0.42 + (index % 4) as f64 * 0.1,
-            }
-        })
-        .collect()
 }
 
 fn aggregate_process_variation(
@@ -557,12 +366,6 @@ fn aggregate_process_variation(
     let retries =
         retries_available.then_some(records.iter().map(|record| record.retries).sum::<u64>());
     let rollbacks = rollbacks_available.then_some(behavior.rollbacks);
-    let available_count = [errors, retries, rollbacks]
-        .into_iter()
-        .flatten()
-        .map(variation_weight)
-        .sum::<u64>()
-        .min(9);
     VctiProcessVariation {
         errors: VctiOptionalMetric {
             value: errors.map(|value| value as f64),
@@ -576,43 +379,7 @@ fn aggregate_process_variation(
             value: rollbacks.map(|value| value as f64),
             available: rollbacks_available,
         },
-        variation_count: (errors_available || retries_available || rollbacks_available)
-            .then_some(available_count),
     }
-}
-
-fn variation_weight(value: u64) -> u64 {
-    if value == 0 {
-        0
-    } else {
-        (1 + u64::from(value.ilog2())).min(3)
-    }
-}
-
-fn build_process_variations(process: &VctiProcessVariation, phase: f64) -> Vec<VctiIdentityPath> {
-    let count = process.variation_count.unwrap_or(0) as usize;
-    (0..count)
-        .map(|index| {
-            let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-            let tangent = angle + std::f64::consts::FRAC_PI_2;
-            let center_x = 50.0 + angle.cos() * 31.0;
-            let center_y = 50.0 + angle.sin() * 31.0;
-            let span = 2.6 + (index % 3) as f64 * 0.75;
-            let start_x = center_x - tangent.cos() * span;
-            let start_y = center_y - tangent.sin() * span;
-            let end_x = center_x + tangent.cos() * span;
-            let end_y = center_y + tangent.sin() * span;
-            let control_x = center_x + angle.cos() * (2.2 + (index % 2) as f64);
-            let control_y = center_y + angle.sin() * (2.2 + (index % 2) as f64);
-            VctiIdentityPath {
-                d: format!(
-                    "M{start_x:.2},{start_y:.2}Q{control_x:.2},{control_y:.2} {end_x:.2},{end_y:.2}"
-                ),
-                stroke_width: 1.15,
-                opacity: 0.48 + (index % 3) as f64 * 0.1,
-            }
-        })
-        .collect()
 }
 
 fn aggregate_work_rhythm(records: &[SessionBehaviorRecord], window_days: i64) -> VctiWorkRhythm {
@@ -651,21 +418,6 @@ fn aggregate_work_rhythm(records: &[SessionBehaviorRecord], window_days: i64) ->
         .collect::<Vec<_>>();
     let sessions_per_day = records.len() as f64 / window_days.max(1) as f64;
     let active_day_value = timestamps_available.then_some(active_days.len() as f64);
-    let active_day_ratio =
-        active_day_value.map(|value| (value / window_days.max(1) as f64).clamp(0.0, 1.0));
-    let density = normalize_session_density(sessions_per_day);
-    let phase_offset = timestamps_available.then(|| {
-        work_periods
-            .iter()
-            .enumerate()
-            .map(|(index, period)| period.share * index as f64 * std::f64::consts::FRAC_PI_2)
-            .sum::<f64>()
-    });
-    let active_day_contribution = active_day_ratio.unwrap_or(0.0);
-    let contour_count =
-        Some((5.0 + (active_day_contribution * 2.0).round() + (density * 2.0).round()) as u64);
-    let contour_spacing = Some(5.45 - density * 1.15 - active_day_contribution * 0.35);
-
     VctiWorkRhythm {
         work_periods,
         work_periods_available: timestamps_available,
@@ -677,9 +429,6 @@ fn aggregate_work_rhythm(records: &[SessionBehaviorRecord], window_days: i64) ->
             value: Some(sessions_per_day),
             available: true,
         },
-        phase_offset,
-        contour_count,
-        contour_spacing,
     }
 }
 
@@ -690,39 +439,6 @@ fn work_period(hour: u32) -> &'static str {
         12..=17 => "afternoon",
         _ => "evening",
     }
-}
-
-fn normalize_session_density(sessions_per_day: f64) -> f64 {
-    (sessions_per_day / 4.0).clamp(0.0, 1.0)
-}
-
-fn smooth_closed_path(points: &[(f64, f64)]) -> String {
-    let first = points[0];
-    let last = points[points.len() - 1];
-    let mut output = format!(
-        "M{:.2},{:.2}",
-        (last.0 + first.0) / 2.0,
-        (last.1 + first.1) / 2.0
-    );
-    for (index, point) in points.iter().enumerate() {
-        let next = points[(index + 1) % points.len()];
-        output.push_str(&format!(
-            "Q{:.2},{:.2} {:.2},{:.2}",
-            point.0,
-            point.1,
-            (point.0 + next.0) / 2.0,
-            (point.1 + next.1) / 2.0
-        ));
-    }
-    output.push('Z');
-    output
-}
-
-fn stable_fraction(value: &str) -> f64 {
-    let hash = value.bytes().fold(2_166_136_261u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
-    });
-    f64::from(hash % 10_000) / 10_000.0
 }
 
 fn derive_features(
@@ -1400,29 +1116,119 @@ fn public_scores(features: &Features, behavior: &BehaviorSummary) -> Vec<VctiSco
     ]
 }
 
-fn dimension_scores(features: &Features) -> Vec<VctiScore> {
+fn dimension_scores(
+    features: &Features,
+    behavior: &BehaviorSummary,
+    structure_enabled: bool,
+    git_enabled: bool,
+) -> Vec<VctiScore> {
+    let session_coverage = f64::from(behavior.sessions > 0);
+    let structure_coverage = if structure_enabled && features.prompt_signal {
+        behavior.structure_coverage
+    } else {
+        0.0
+    };
+    let modification_coverage = if features.modification_signal {
+        session_coverage
+    } else {
+        0.0
+    };
+    let first_result_coverage = if features.first_tool_signal {
+        session_coverage
+    } else {
+        0.0
+    };
+    let token_coverage = if features.token_signal {
+        session_coverage
+    } else {
+        0.0
+    };
     [
-        ("requirementClarity", features.requirement_clarity),
-        ("exploration", features.exploration),
-        ("scopeDrift", features.scope_drift),
-        ("delegation", features.delegation),
-        ("humanIntervention", features.human_intervention),
-        ("parallelOrchestration", features.parallel_orchestration),
-        ("diffReview", features.diff_review),
-        ("automatedVerification", features.automated_verification),
-        ("rollbackAwareness", features.rollback_awareness),
-        ("rootCause", features.root_cause),
-        ("localFix", features.local_fix),
-        ("automation", features.automation),
-        ("firstResultSpeed", features.first_result_speed),
-        ("iterationGranularity", features.iteration_granularity),
-        ("shippingTendency", features.shipping_tendency),
-        ("toolSwitching", features.tool_switching),
-        ("costRouting", features.cost_routing),
-        ("contextReuse", features.context_reuse),
+        (
+            "requirementClarity",
+            features.requirement_clarity,
+            structure_coverage,
+        ),
+        ("exploration", features.exploration, session_coverage),
+        (
+            "scopeDrift",
+            features.scope_drift,
+            behavior.process_control_coverage,
+        ),
+        (
+            "delegation",
+            features.delegation,
+            behavior.orchestration_coverage,
+        ),
+        (
+            "humanIntervention",
+            features.human_intervention,
+            behavior.lifecycle_coverage,
+        ),
+        (
+            "parallelOrchestration",
+            features.parallel_orchestration,
+            behavior.orchestration_coverage,
+        ),
+        (
+            "diffReview",
+            features.diff_review,
+            if git_enabled {
+                modification_coverage
+            } else {
+                modification_coverage.min(behavior.tool_result_coverage)
+            },
+        ),
+        (
+            "automatedVerification",
+            features.automated_verification,
+            modification_coverage.min(behavior.tool_result_coverage),
+        ),
+        (
+            "rollbackAwareness",
+            features.rollback_awareness,
+            modification_coverage.min(behavior.process_control_coverage),
+        ),
+        (
+            "rootCause",
+            features.root_cause,
+            behavior.tool_result_coverage,
+        ),
+        ("localFix", features.local_fix, modification_coverage),
+        (
+            "automation",
+            features.automation,
+            behavior.tool_result_coverage,
+        ),
+        (
+            "firstResultSpeed",
+            features.first_result_speed,
+            first_result_coverage,
+        ),
+        (
+            "iterationGranularity",
+            features.iteration_granularity,
+            modification_coverage,
+        ),
+        (
+            "shippingTendency",
+            features.shipping_tendency,
+            behavior.lifecycle_coverage.max(if git_enabled {
+                modification_coverage
+            } else {
+                0.0
+            }),
+        ),
+        ("toolSwitching", features.tool_switching, session_coverage),
+        ("costRouting", features.cost_routing, token_coverage),
+        (
+            "contextReuse",
+            features.context_reuse,
+            token_coverage.max(behavior.process_control_coverage),
+        ),
     ]
     .into_iter()
-    .map(|(id, value)| score(id, value, 1.0))
+    .map(|(id, value, coverage)| score(id, value, coverage))
     .collect()
 }
 
@@ -1863,6 +1669,7 @@ mod tests {
             shell_events: 8,
             tool_categories: vec!["shell".into(), "edit".into(), "test".into()],
             explicit_skills: Vec::new(),
+            explicit_skills_available: true,
             behavior: BehaviorSignals {
                 prompt_count: 2,
                 prompt_characters: 400,
@@ -1914,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_visual_is_versioned_and_deterministic() {
+    fn identity_evidence_is_deterministic_without_generated_geometry() {
         let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1934,23 +1741,20 @@ mod tests {
         let first = calculate(&records, behavior.clone(), 3, true, true, now, 90);
         let replay = calculate(&records, behavior, 3, true, true, now, 90);
 
-        assert_eq!(first.identity_visual.version, "1.0.0");
-        assert_eq!(first.identity_visual.algorithm_version, ALGORITHM_VERSION);
-        assert_eq!(first.identity_visual.range, "90d");
-        assert!(first.identity_visual.available);
-        assert_eq!(first.identity_visual.inputs.len(), 12);
-        assert!((5..=9).contains(&first.identity_visual.paths.len()));
         assert_eq!(
-            serde_json::to_value(&first.identity_visual).unwrap(),
-            serde_json::to_value(&replay.identity_visual).unwrap()
+            serde_json::to_value(&first.identity_evidence).unwrap(),
+            serde_json::to_value(&replay.identity_evidence).unwrap()
         );
-        assert!(
-            first
-                .identity_visual
-                .paths
-                .iter()
-                .all(|path| path.d.starts_with('M') && path.d.ends_with('Z'))
-        );
+        let serialized = serde_json::to_string(&first).unwrap();
+        for retired_field in [
+            "paths",
+            "branches",
+            "details",
+            "variations",
+            "identityVisual",
+        ] {
+            assert!(!serialized.contains(retired_field));
+        }
     }
 
     #[test]
@@ -1959,10 +1763,6 @@ mod tests {
         assert_eq!(work_period(9), "morning");
         assert_eq!(work_period(15), "afternoon");
         assert_eq!(work_period(21), "evening");
-        assert_eq!(normalize_session_density(0.0), 0.0);
-        assert_eq!(normalize_session_density(4.0), 1.0);
-        assert_eq!(normalize_session_density(400.0), 1.0);
-
         let empty = aggregate_work_rhythm(&[], 30);
         assert!(empty.work_periods_available);
         assert_eq!(empty.active_days.value, Some(0.0));
@@ -1979,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn collaboration_branches_are_bounded_and_distinguish_missing_from_zero() {
+    fn collaboration_counts_distinguish_missing_from_zero() {
         let observed_zero = aggregate_collaboration(&BehaviorSummary {
             sessions: 4,
             orchestration_capable_sessions: 4,
@@ -1988,27 +1788,15 @@ mod tests {
         });
         assert_eq!(observed_zero.subagent_starts.value, Some(0.0));
         assert_eq!(observed_zero.parallel_batches.value, Some(0.0));
-        assert_eq!(observed_zero.branch_count, Some(0));
 
-        let single = aggregate_collaboration(&BehaviorSummary {
+        let observed = aggregate_collaboration(&BehaviorSummary {
             sessions: 4,
             subagent_starts: 1,
             orchestration_capable_sessions: 4,
             orchestration_coverage: 1.0,
             ..BehaviorSummary::default()
         });
-        assert_eq!(single.branch_count, Some(1));
-
-        let extreme = aggregate_collaboration(&BehaviorSummary {
-            sessions: 4,
-            subagent_starts: 500,
-            parallel_batches: 500,
-            orchestration_capable_sessions: 4,
-            orchestration_coverage: 1.0,
-            ..BehaviorSummary::default()
-        });
-        assert_eq!(extreme.branch_count, Some(6));
-        assert_eq!(extreme.parallel_spread, Some(1.0));
+        assert_eq!(observed.subagent_starts.value, Some(1.0));
 
         let missing = aggregate_collaboration(&BehaviorSummary {
             sessions: 4,
@@ -2017,23 +1805,16 @@ mod tests {
         assert!(!missing.subagent_starts.available);
         assert_eq!(missing.subagent_starts.value, None);
         assert_eq!(missing.parallel_batches.value, None);
-        assert_eq!(missing.branch_count, None);
     }
 
     #[test]
-    fn explicit_tool_and_skill_detail_is_bounded_without_names() {
+    fn explicit_tool_and_skill_counts_preserve_missing_without_names() {
         let mut one = record("2026-07-23");
         one.tool_categories = vec!["edit".into()];
         one.explicit_skills = vec!["tdd".into()];
         let observed = aggregate_detail(&[one]);
         assert_eq!(observed.tool_categories.value, Some(1.0));
         assert_eq!(observed.explicit_skills.value, Some(1.0));
-        assert_eq!(observed.detail_count, Some(2));
-
-        let mut extreme = record("2026-07-23");
-        extreme.tool_categories = (0..50).map(|index| format!("tool-{index}")).collect();
-        extreme.explicit_skills = (0..50).map(|index| format!("skill-{index}")).collect();
-        assert_eq!(aggregate_detail(&[extreme]).detail_count, Some(12));
 
         let mut missing = record("2026-07-23");
         missing.tool_calls = 3;
@@ -2043,10 +1824,17 @@ mod tests {
         assert_eq!(partial.tool_categories.value, None);
         assert!(partial.explicit_skills.available);
         assert_eq!(partial.explicit_skills.value, Some(0.0));
+
+        let mut legacy = record("2026-07-23");
+        legacy.explicit_skills_available = false;
+        legacy.explicit_skills.clear();
+        let legacy_detail = aggregate_detail(&[legacy]);
+        assert!(!legacy_detail.explicit_skills.available);
+        assert_eq!(legacy_detail.explicit_skills.value, None);
     }
 
     #[test]
-    fn process_variation_is_descriptive_bounded_and_missing_aware() {
+    fn process_counts_are_descriptive_and_missing_aware() {
         let behavior = BehaviorSummary {
             sessions: 1,
             process_control_capable_sessions: 1,
@@ -2057,29 +1845,6 @@ mod tests {
         assert_eq!(observed_zero.errors.value, Some(0.0));
         assert_eq!(observed_zero.retries.value, Some(0.0));
         assert_eq!(observed_zero.rollbacks.value, Some(0.0));
-        assert_eq!(observed_zero.variation_count, Some(0));
-
-        let mut active = record("2026-07-23");
-        active.errors = 4;
-        active.retries = 2;
-        let active_behavior = BehaviorSummary {
-            rollbacks: 1,
-            ..behavior.clone()
-        };
-        let varied = aggregate_process_variation(&[active], &active_behavior);
-        assert!(varied.variation_count.is_some_and(|value| value > 0));
-
-        let mut extreme = record("2026-07-23");
-        extreme.errors = 10_000;
-        extreme.retries = 10_000;
-        let extreme_behavior = BehaviorSummary {
-            rollbacks: 10_000,
-            ..behavior.clone()
-        };
-        assert_eq!(
-            aggregate_process_variation(&[extreme], &extreme_behavior).variation_count,
-            Some(9)
-        );
 
         let mut missing = record("2026-07-23");
         missing.error_events_available = false;
@@ -2088,7 +1853,6 @@ mod tests {
         assert_eq!(unavailable.errors.value, None);
         assert_eq!(unavailable.retries.value, None);
         assert_eq!(unavailable.rollbacks.value, None);
-        assert_eq!(unavailable.variation_count, None);
     }
 
     #[test]

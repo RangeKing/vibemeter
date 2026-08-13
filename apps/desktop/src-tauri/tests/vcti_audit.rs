@@ -19,17 +19,8 @@ fn audits_real_profile_ranges() {
         populated_ranges += u64::from(profile.session_count > 0);
         temporary_ranges += u64::from(profile.temporary && profile.session_count > 0);
         collecting_ranges += u64::from(profile.status == "collecting");
-        assert_eq!(profile.identity_visual.range, range);
-        assert_eq!(
-            profile.identity_visual.algorithm_version,
-            profile.algorithm_version
-        );
-        if profile.status == "collecting" {
-            assert!(!profile.identity_visual.available);
-            assert!(profile.identity_visual.paths.is_empty());
-        }
         println!(
-            "{range}: primary={} secondary={} badges={} status={} confidence={:.1}% margin={:.1}% sessions={} days={} visual={} paths={}",
+            "{range}: primary={} secondary={} badges={} status={} confidence={:.1}% margin={:.1}% sessions={} days={} rhythm_recorded={}",
             profile.primary_type.as_deref().unwrap_or("unassigned"),
             profile.secondary_type.as_deref().unwrap_or("none"),
             profile
@@ -43,8 +34,7 @@ fn audits_real_profile_ranges() {
             profile.type_margin * 100.0,
             profile.session_count,
             profile.active_days,
-            profile.identity_visual.version,
-            profile.identity_visual.paths.len()
+            profile.identity_evidence.rhythm.work_periods_available
         );
     }
     assert!(

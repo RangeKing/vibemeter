@@ -576,18 +576,6 @@ export interface VctiTrendPoint {
   dominantType?: string;
 }
 
-export interface VctiIdentityInput {
-  id: string;
-  available: boolean;
-  status: "recorded" | "not-recorded" | "not-authorized" | "not-found";
-}
-
-export interface VctiIdentityPath {
-  d: string;
-  strokeWidth: number;
-  opacity: number;
-}
-
 export interface VctiOptionalMetric {
   value?: number;
   available: boolean;
@@ -604,52 +592,29 @@ export interface VctiWorkRhythm {
   workPeriodsAvailable: boolean;
   activeDays: VctiOptionalMetric;
   sessionsPerDay: VctiOptionalMetric;
-  phaseOffset?: number;
-  contourCount?: number;
-  contourSpacing?: number;
 }
 
 export interface VctiCollaboration {
   subagentStarts: VctiOptionalMetric;
   parallelBatches: VctiOptionalMetric;
-  branchCount?: number;
-  parallelSpread?: number;
 }
 
 export interface VctiDetailDiversity {
   toolCategories: VctiOptionalMetric;
   explicitSkills: VctiOptionalMetric;
-  detailCount?: number;
-}
-
-export interface VctiIdentityMark {
-  cx: number;
-  cy: number;
-  radius: number;
-  opacity: number;
 }
 
 export interface VctiProcessVariation {
   errors: VctiOptionalMetric;
   retries: VctiOptionalMetric;
   rollbacks: VctiOptionalMetric;
-  variationCount?: number;
 }
 
-export interface VctiIdentityVisual {
-  algorithmVersion: string;
-  version: string;
-  range: string;
-  available: boolean;
-  inputs: VctiIdentityInput[];
+export interface VctiIdentityEvidence {
   rhythm: VctiWorkRhythm;
-  paths: VctiIdentityPath[];
   collaboration: VctiCollaboration;
-  branches: VctiIdentityPath[];
   detailDiversity: VctiDetailDiversity;
-  details: VctiIdentityMark[];
   processVariation: VctiProcessVariation;
-  variations: VctiIdentityPath[];
 }
 
 export interface VctiProfile {
@@ -672,7 +637,7 @@ export interface VctiProfile {
   badges: VctiBadge[];
   evidence: VctiEvidenceItem[];
   trend: VctiTrendPoint[];
-  identityVisual: VctiIdentityVisual;
+  identityEvidence: VctiIdentityEvidence;
   behavior: BehaviorSummary;
   missingCapabilities: string[];
   structureAnalysisEnabled: boolean;

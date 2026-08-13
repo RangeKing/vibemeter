@@ -97,7 +97,8 @@ fn validates_the_release_export_matrix() {
                     assert!(first.can_export, "default sanitized model should export");
                     assert!(first.svg.starts_with("<svg"));
                     if template == "vcti-card" {
-                        assert!(first.svg.contains("data-vcti-visual-version=\"1.0.0\""));
+                        assert!(first.svg.contains("data:image/webp;base64,"));
+                        assert!(!first.svg.contains("data-vcti-visual-version"));
                         assert!(!first.svg.contains("Fingerprint"));
                         for forbidden in ["/Users/", "SKILL.md", "apply_patch", "exec_command"] {
                             assert!(!first.svg.contains(forbidden), "private token in VCTI SVG");
