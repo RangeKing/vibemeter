@@ -54,7 +54,30 @@ const profile = {
     processControlCoverage: 1,
     processControlCapableSessions: 24,
   },
-  identityEvidence: {},
+  identityEvidence: {
+    rhythm: {
+      workPeriods: [
+        { id: "morning", sessions: 8, share: 2 / 3 },
+        { id: "afternoon", sessions: 4, share: 1 / 3 },
+      ],
+      workPeriodsAvailable: true,
+      activeDays: { available: true, value: 12 },
+      sessionsPerDay: { available: true, value: 2 },
+    },
+    collaboration: {
+      subagentStarts: { available: true, value: 7 },
+      parallelBatches: { available: true, value: 2 },
+    },
+    detailDiversity: {
+      toolCategories: { available: true, value: 5 },
+      explicitSkills: { available: true, value: 3 },
+    },
+    processVariation: {
+      errors: { available: true, value: 0 },
+      retries: { available: true, value: 2 },
+      rollbacks: { available: false },
+    },
+  },
 } as unknown as VctiProfile;
 
 function renderPage() {
@@ -89,5 +112,23 @@ describe("VctiPage identity art", () => {
     expect(character.classList.contains("vcti-avatar")).toBe(true);
     expect(character.querySelector(".vcti-avatar-art")).toBeTruthy();
     expect(container.querySelector("[data-vcti-visual-version]")).toBeNull();
+  });
+
+  it("shows all four identity evidence summaries before opening the detail drawer", async () => {
+    useUiStore.setState({ range: "90d" });
+    vctiProfile.mockResolvedValue(profile);
+    insights.mockResolvedValue({ items: [] });
+    phraseCloud.mockRejectedValue(new Error("not needed"));
+
+    renderPage();
+
+    expect(await screen.findByRole("region", { name: "人格依据" })).toBeTruthy();
+    expect(screen.getByText("工作节奏")).toBeTruthy();
+    expect(screen.getByText("协作方式")).toBeTruthy();
+    expect(screen.getByText("工具与 Skill")).toBeTruthy();
+    expect(screen.getByText("过程记录")).toBeTruthy();
+    expect(screen.getByText(/错误 0/)).toBeTruthy();
+    expect(screen.getByText(/回滚 未记录/)).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "为什么是这个人格" })).toBeNull();
   });
 });

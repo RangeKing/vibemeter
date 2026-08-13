@@ -14,12 +14,70 @@ import { formatCompact, formatDate, formatDuration, formatPercent } from "../lib
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { VCTI_BADGES, VCTI_GUILDS, VCTI_TYPES } from "../lib/vctiCatalog";
 import { useUiStore } from "../store";
-import type { Locale, VctiEvidenceItem, VctiProfile } from "../types";
+import type { Locale, VctiEvidenceItem, VctiOptionalMetric, VctiProfile } from "../types";
 
 function evidenceValue(item: VctiEvidenceItem, locale: Locale): string {
   if (item.format === "percent") return formatPercent(item.value / 100, locale);
   if (item.format === "duration") return formatDuration(Math.round(item.value), locale);
   return formatCompact(item.value, locale);
+}
+
+function IdentityEvidenceSummary({ profile }: { profile: VctiProfile }) {
+  const { t } = useTranslation();
+  const metric = (item: VctiOptionalMetric, key: "count" | "category") => item.available
+    ? t(key === "category" ? "vcti.categoryCountValue" : "vcti.countValue", { value: item.value ?? 0 })
+    : t("vcti.shortNotRecorded");
+  const rhythm = profile.identityEvidence.rhythm;
+  const workPeriods = rhythm.workPeriodsAvailable
+    ? rhythm.workPeriods
+      .filter((period) => period.sessions > 0)
+      .map((period) => `${t(`vcti.periods.${period.id}`)} ${t("vcti.countValue", { value: period.sessions })}`)
+      .join(" · ") || t("vcti.noActivity")
+    : t("vcti.shortNotRecorded");
+  const summaries = [
+    {
+      id: "rhythm",
+      label: t("vcti.identityEvidence.rhythm"),
+      value: [
+        workPeriods,
+        rhythm.activeDays.available
+          ? t("vcti.daysValue", { value: rhythm.activeDays.value ?? 0 })
+          : t("vcti.shortNotRecorded"),
+      ].join(" · "),
+    },
+    {
+      id: "collaboration",
+      label: t("vcti.identityEvidence.collaboration"),
+      value: `${t("vcti.subagentShort")} ${metric(profile.identityEvidence.collaboration.subagentStarts, "count")} · ${t("vcti.parallelShort")} ${metric(profile.identityEvidence.collaboration.parallelBatches, "count")}`,
+    },
+    {
+      id: "detail",
+      label: t("vcti.identityEvidence.detail"),
+      value: `${t("vcti.toolsShort")} ${metric(profile.identityEvidence.detailDiversity.toolCategories, "category")} · Skill ${metric(profile.identityEvidence.detailDiversity.explicitSkills, "category")}`,
+    },
+    {
+      id: "process",
+      label: t("vcti.identityEvidence.process"),
+      value: `${t("vcti.errorsShort")} ${metric(profile.identityEvidence.processVariation.errors, "count")} · ${t("vcti.retriesShort")} ${metric(profile.identityEvidence.processVariation.retries, "count")} · ${t("vcti.rollbacksShort")} ${metric(profile.identityEvidence.processVariation.rollbacks, "count")}`,
+    },
+  ];
+
+  return (
+    <section className="vcti-identity-evidence" aria-labelledby="vcti-identity-evidence-title">
+      <header>
+        <strong id="vcti-identity-evidence-title">{t("vcti.identityEvidence.title")}</strong>
+        <span>{t("vcti.identityEvidence.body")}</span>
+      </header>
+      <div>
+        {summaries.map((item, index) => (
+          <article key={item.id}>
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <div><b>{item.label}</b><p>{item.value}</p></div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function BehaviorCoverage({ profile }: { profile: VctiProfile }) {
@@ -151,6 +209,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
           ) : (
             <div className="vcti-collecting-track"><span style={{ width: `${Math.min(92, profile.confidence)}%` }} /></div>
           )}
+          <IdentityEvidenceSummary profile={profile} />
           <div className="vcti-actions">
             <button className="button primary" disabled={!profile.primaryType} onClick={() => openShare("vcti-card")}><Sparkles size={14} />{t("vcti.makeShareCard")}</button>
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
