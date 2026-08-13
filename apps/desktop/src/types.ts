@@ -664,6 +664,13 @@ export interface VctiIdentityVisual {
     toolMarks: VctiVisualMark[];
     skillMarks: VctiVisualMark[];
   };
+  process: {
+    available: boolean;
+    errorIntensity?: number;
+    retryIntensity?: number;
+    rollbackIntensity?: number;
+    paths: VctiVisualPath[];
+  };
 }
 
 export interface VctiProfile {

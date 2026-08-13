@@ -1236,6 +1236,9 @@ fn render_vcti_art_field(
     for mark in &visual.detail.skill_marks {
         write!(svg, "<circle class=\"vcti-art-skill\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"none\" stroke=\"{}\" stroke-width=\"0.65\" opacity=\"{:.2}\"/>", mark.cx, mark.cy, mark.radius, accent, mark.opacity).ok();
     }
+    for path in &visual.process.paths {
+        write!(svg, "<path class=\"vcti-art-process\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
+    }
     svg.push_str("</g>");
 }
 

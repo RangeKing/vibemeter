@@ -87,6 +87,7 @@ const profile = {
     rhythm: { available: true, phase: 0.25, density: 0.6, paths: [{ d: "M 4 42 Q 50 18 96 58", strokeWidth: 0.7, opacity: 0.4 }] },
     collaboration: { available: true, branchIntensity: 0.5, parallelIntensity: 0.25, paths: [{ d: "M 50 50 Q 72 35 92 20", strokeWidth: 0.7, opacity: 0.5 }] },
     detail: { available: true, toolIntensity: 0.5, skillIntensity: 0.4, toolMarks: [{ cx: 12, cy: 34, radius: 1, opacity: 0.7 }], skillMarks: [{ cx: 86, cy: 62, radius: 1.5, opacity: 0.8 }] },
+    process: { available: true, errorIntensity: 0.2, retryIntensity: 0.3, rollbackIntensity: 0.1, paths: [{ d: "M 18 70 Q 50 55 82 70", strokeWidth: 0.8, opacity: 0.6 }] },
   },
 } as unknown as VctiProfile;
 
@@ -127,6 +128,7 @@ describe("VctiPage identity art", () => {
     expect(container.querySelectorAll(".vcti-art-branches path")).toHaveLength(1);
     expect(container.querySelectorAll(".vcti-art-tools circle")).toHaveLength(1);
     expect(container.querySelectorAll(".vcti-art-skills circle")).toHaveLength(1);
+    expect(container.querySelectorAll(".vcti-art-process path")).toHaveLength(1);
   });
 
   it("shows all four identity evidence summaries before opening the detail drawer", async () => {

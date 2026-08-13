@@ -1,9 +1,9 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiCollaborationVisual,
     VctiDetailDiversity, VctiDetailVisual, VctiEvidenceItem, VctiIdentityEvidence,
-    VctiIdentityVisual, VctiOptionalMetric, VctiProcessVariation, VctiProfile, VctiRhythmPeriod,
-    VctiRhythmVisual, VctiScore, VctiTrendPoint, VctiVisualInput, VctiVisualMark, VctiVisualPath,
-    VctiWorkRhythm,
+    VctiIdentityVisual, VctiOptionalMetric, VctiProcessVariation, VctiProcessVisual, VctiProfile,
+    VctiRhythmPeriod, VctiRhythmVisual, VctiScore, VctiTrendPoint, VctiVisualInput, VctiVisualMark,
+    VctiVisualPath, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -324,23 +324,6 @@ fn build_identity_visual(
 ) -> VctiIdentityVisual {
     let dimensions_available = dimensions.iter().any(|score| score.coverage > 0.0);
     let available = primary_type.is_some() && guild.is_some() && dimensions_available;
-    let inputs = vec![
-        visual_input("identity", primary_type.is_some() && guild.is_some()),
-        visual_input("dimensions", dimensions_available),
-        visual_input("rhythm", evidence.rhythm.work_periods_available),
-        visual_input(
-            "collaboration",
-            evidence.collaboration.subagent_starts.available,
-        ),
-        visual_input(
-            "detail-diversity",
-            evidence.detail_diversity.tool_categories.available,
-        ),
-        visual_input(
-            "process-variation",
-            evidence.process_variation.errors.available,
-        ),
-    ];
     let rhythm = build_rhythm_visual(&evidence.rhythm, primary_type.unwrap_or("collecting"));
     let collaboration = build_collaboration_visual(
         &evidence.collaboration,
@@ -350,6 +333,18 @@ fn build_identity_visual(
         &evidence.detail_diversity,
         primary_type.unwrap_or("collecting"),
     );
+    let process = build_process_visual(
+        &evidence.process_variation,
+        primary_type.unwrap_or("collecting"),
+    );
+    let inputs = vec![
+        visual_input("identity", primary_type.is_some() && guild.is_some()),
+        visual_input("dimensions", dimensions_available),
+        visual_input("rhythm", rhythm.available),
+        visual_input("collaboration", collaboration.available),
+        visual_input("detail-diversity", detail.available),
+        visual_input("process-variation", process.available),
+    ];
     if !available {
         return VctiIdentityVisual {
             algorithm_version: ALGORITHM_VERSION.into(),
@@ -361,6 +356,7 @@ fn build_identity_visual(
             rhythm,
             collaboration,
             detail,
+            process,
         };
     }
 
@@ -406,6 +402,81 @@ fn build_identity_visual(
         rhythm,
         collaboration,
         detail,
+        process,
+    }
+}
+
+fn build_process_visual(process: &VctiProcessVariation, identity_seed: &str) -> VctiProcessVisual {
+    let available = process.errors.available
+        && process.retries.available
+        && process.rollbacks.available
+        && process.errors.value.is_some()
+        && process.retries.value.is_some()
+        && process.rollbacks.value.is_some();
+    if !available {
+        return VctiProcessVisual {
+            available: false,
+            error_intensity: None,
+            retry_intensity: None,
+            rollback_intensity: None,
+            paths: Vec::new(),
+        };
+    }
+    let error_intensity = (process.errors.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
+    let retry_intensity = (process.retries.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
+    let rollback_intensity = (process.rollbacks.value.unwrap_or(0.0) / 4.0).clamp(0.0, 1.0);
+    let mut paths = Vec::new();
+    let seed = stable_fraction(identity_seed) * std::f64::consts::TAU;
+    let mut add = |count: usize, radius: f64, bend: f64, phase: f64, width: f64, opacity: f64| {
+        for index in 0..count {
+            let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
+            let start = angle - 0.32;
+            let end = angle + 0.32;
+            paths.push(VctiVisualPath {
+                d: format!(
+                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
+                    50.0 + start.cos() * radius,
+                    50.0 + start.sin() * radius,
+                    50.0 + angle.cos() * (radius + bend),
+                    50.0 + angle.sin() * (radius + bend),
+                    50.0 + end.cos() * radius,
+                    50.0 + end.sin() * radius
+                ),
+                stroke_width: width,
+                opacity,
+            });
+        }
+    };
+    add(
+        (process.errors.value.unwrap_or(0.0).round() as usize).min(3),
+        33.0,
+        4.0,
+        seed,
+        0.72,
+        0.46,
+    );
+    add(
+        (process.retries.value.unwrap_or(0.0).round() as usize).min(3),
+        39.0,
+        -3.0,
+        seed + 0.53,
+        0.62,
+        0.40,
+    );
+    add(
+        (process.rollbacks.value.unwrap_or(0.0).round() as usize).min(3),
+        45.0,
+        5.5,
+        seed + 1.07,
+        0.86,
+        0.52,
+    );
+    VctiProcessVisual {
+        available: true,
+        error_intensity: Some(error_intensity),
+        retry_intensity: Some(retry_intensity),
+        rollback_intensity: Some(rollback_intensity),
+        paths,
     }
 }
 
@@ -2208,6 +2279,97 @@ mod tests {
             },
         };
         assert!(!build_detail_visual(&missing, "SPEC").available);
+    }
+
+    #[test]
+    fn process_visual_keeps_error_retry_and_rollback_semantics_distinct() {
+        let process = |errors: Option<f64>, retries: Option<f64>, rollbacks: Option<f64>| {
+            VctiProcessVariation {
+                errors: VctiOptionalMetric {
+                    value: errors,
+                    available: errors.is_some(),
+                },
+                retries: VctiOptionalMetric {
+                    value: retries,
+                    available: retries.is_some(),
+                },
+                rollbacks: VctiOptionalMetric {
+                    value: rollbacks,
+                    available: rollbacks.is_some(),
+                },
+            }
+        };
+        let error_only = build_process_visual(&process(Some(2.0), Some(0.0), Some(0.0)), "SPEC");
+        let retry = build_process_visual(&process(Some(2.0), Some(3.0), Some(0.0)), "SPEC");
+        let rollback = build_process_visual(&process(Some(2.0), Some(3.0), Some(1.0)), "SPEC");
+        assert_ne!(error_only.paths, retry.paths);
+        assert_ne!(retry.paths, rollback.paths);
+        assert!(rollback.paths.len() <= 9);
+        assert!(!build_process_visual(&process(None, None, None), "SPEC").available);
+    }
+
+    #[test]
+    fn public_visual_input_availability_matches_each_complete_channel() {
+        let evidence = VctiIdentityEvidence {
+            rhythm: aggregate_work_rhythm(&[], 7),
+            collaboration: VctiCollaboration {
+                subagent_starts: VctiOptionalMetric {
+                    value: Some(1.0),
+                    available: true,
+                },
+                parallel_batches: VctiOptionalMetric {
+                    value: None,
+                    available: false,
+                },
+            },
+            detail_diversity: VctiDetailDiversity {
+                tool_categories: VctiOptionalMetric {
+                    value: Some(2.0),
+                    available: true,
+                },
+                explicit_skills: VctiOptionalMetric {
+                    value: None,
+                    available: false,
+                },
+            },
+            process_variation: VctiProcessVariation {
+                errors: VctiOptionalMetric {
+                    value: Some(1.0),
+                    available: true,
+                },
+                retries: VctiOptionalMetric {
+                    value: None,
+                    available: false,
+                },
+                rollbacks: VctiOptionalMetric {
+                    value: None,
+                    available: false,
+                },
+            },
+        };
+        let dimensions = vec![VctiScore {
+            id: "test".into(),
+            value: 50.0,
+            coverage: 1.0,
+        }];
+        let visual =
+            build_identity_visual("7d", Some("SPEC"), Some("start"), &dimensions, &evidence);
+        for (id, available) in [
+            ("rhythm", visual.rhythm.available),
+            ("collaboration", visual.collaboration.available),
+            ("detail-diversity", visual.detail.available),
+            ("process-variation", visual.process.available),
+        ] {
+            assert_eq!(
+                visual
+                    .inputs
+                    .iter()
+                    .find(|input| input.id == id)
+                    .unwrap()
+                    .available,
+                available
+            );
+        }
     }
 
     #[test]
