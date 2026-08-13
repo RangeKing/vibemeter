@@ -629,6 +629,13 @@ export interface VctiVisualPath {
   opacity: number;
 }
 
+export interface VctiVisualMark {
+  cx: number;
+  cy: number;
+  radius: number;
+  opacity: number;
+}
+
 export interface VctiIdentityVisual {
   algorithmVersion: string;
   version: string;
@@ -649,6 +656,13 @@ export interface VctiIdentityVisual {
     branchIntensity?: number;
     parallelIntensity?: number;
     paths: VctiVisualPath[];
+  };
+  detail: {
+    available: boolean;
+    toolIntensity?: number;
+    skillIntensity?: number;
+    toolMarks: VctiVisualMark[];
+    skillMarks: VctiVisualMark[];
   };
 }
 

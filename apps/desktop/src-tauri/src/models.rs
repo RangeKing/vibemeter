@@ -1162,6 +1162,25 @@ pub struct VctiCollaborationVisual {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct VctiVisualMark {
+    pub cx: f64,
+    pub cy: f64,
+    pub radius: f64,
+    pub opacity: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VctiDetailVisual {
+    pub available: bool,
+    pub tool_intensity: Option<f64>,
+    pub skill_intensity: Option<f64>,
+    pub tool_marks: Vec<VctiVisualMark>,
+    pub skill_marks: Vec<VctiVisualMark>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VctiIdentityVisual {
     pub algorithm_version: String,
     pub version: String,
@@ -1171,6 +1190,7 @@ pub struct VctiIdentityVisual {
     pub contours: Vec<VctiVisualPath>,
     pub rhythm: VctiRhythmVisual,
     pub collaboration: VctiCollaborationVisual,
+    pub detail: VctiDetailVisual,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

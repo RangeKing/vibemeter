@@ -1,8 +1,9 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiCollaborationVisual,
-    VctiDetailDiversity, VctiEvidenceItem, VctiIdentityEvidence, VctiIdentityVisual,
-    VctiOptionalMetric, VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiRhythmVisual,
-    VctiScore, VctiTrendPoint, VctiVisualInput, VctiVisualPath, VctiWorkRhythm,
+    VctiDetailDiversity, VctiDetailVisual, VctiEvidenceItem, VctiIdentityEvidence,
+    VctiIdentityVisual, VctiOptionalMetric, VctiProcessVariation, VctiProfile, VctiRhythmPeriod,
+    VctiRhythmVisual, VctiScore, VctiTrendPoint, VctiVisualInput, VctiVisualMark, VctiVisualPath,
+    VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -345,6 +346,10 @@ fn build_identity_visual(
         &evidence.collaboration,
         primary_type.unwrap_or("collecting"),
     );
+    let detail = build_detail_visual(
+        &evidence.detail_diversity,
+        primary_type.unwrap_or("collecting"),
+    );
     if !available {
         return VctiIdentityVisual {
             algorithm_version: ALGORITHM_VERSION.into(),
@@ -355,6 +360,7 @@ fn build_identity_visual(
             contours: Vec::new(),
             rhythm,
             collaboration,
+            detail,
         };
     }
 
@@ -399,6 +405,51 @@ fn build_identity_visual(
         contours,
         rhythm,
         collaboration,
+        detail,
+    }
+}
+
+fn build_detail_visual(detail: &VctiDetailDiversity, identity_seed: &str) -> VctiDetailVisual {
+    let available = detail.tool_categories.available
+        && detail.explicit_skills.available
+        && detail.tool_categories.value.is_some()
+        && detail.explicit_skills.value.is_some();
+    if !available {
+        return VctiDetailVisual {
+            available: false,
+            tool_intensity: None,
+            skill_intensity: None,
+            tool_marks: Vec::new(),
+            skill_marks: Vec::new(),
+        };
+    }
+    let tool_count = (detail.tool_categories.value.unwrap_or(0.0).round() as usize).min(10);
+    let skill_count = (detail.explicit_skills.value.unwrap_or(0.0).round() as usize).min(7);
+    let seed = stable_fraction(identity_seed) * std::f64::consts::TAU;
+    let marks = |count: usize, radius: f64, phase: f64, is_skill: bool| {
+        (0..count)
+            .map(|index| {
+                let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
+                let band = radius + (index % 3) as f64 * 2.8;
+                VctiVisualMark {
+                    cx: 50.0 + angle.cos() * band,
+                    cy: 50.0 + angle.sin() * band,
+                    radius: if is_skill {
+                        1.25 + (index % 2) as f64 * 0.35
+                    } else {
+                        0.72 + (index % 3) as f64 * 0.18
+                    },
+                    opacity: if is_skill { 0.72 } else { 0.48 },
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    VctiDetailVisual {
+        available: true,
+        tool_intensity: Some((tool_count as f64 / 10.0).clamp(0.0, 1.0)),
+        skill_intensity: Some((skill_count as f64 / 7.0).clamp(0.0, 1.0)),
+        tool_marks: marks(tool_count, 44.0, seed, false),
+        skill_marks: marks(skill_count, 38.0, seed + 0.41, true),
     }
 }
 
@@ -2124,6 +2175,39 @@ mod tests {
         assert!(build_collaboration_visual(&zero, "SPEC").paths.is_empty());
         assert!(build_collaboration_visual(&high, "SPEC").paths.len() <= 8);
         assert!(!build_collaboration_visual(&missing, "SPEC").available);
+    }
+
+    #[test]
+    fn detail_visual_uses_aggregate_counts_without_names_and_caps_marks() {
+        let detail = VctiDetailDiversity {
+            tool_categories: VctiOptionalMetric {
+                value: Some(99.0),
+                available: true,
+            },
+            explicit_skills: VctiOptionalMetric {
+                value: Some(99.0),
+                available: true,
+            },
+        };
+        let visual = build_detail_visual(&detail, "SPEC");
+        assert!(visual.available);
+        assert!(visual.tool_marks.len() <= 10);
+        assert!(visual.skill_marks.len() <= 7);
+        let serialized = serde_json::to_string(&visual).unwrap();
+        for private in ["shell", "edit", "tdd", "/Users/"] {
+            assert!(!serialized.contains(private));
+        }
+        let missing = VctiDetailDiversity {
+            tool_categories: VctiOptionalMetric {
+                value: None,
+                available: false,
+            },
+            explicit_skills: VctiOptionalMetric {
+                value: None,
+                available: false,
+            },
+        };
+        assert!(!build_detail_visual(&missing, "SPEC").available);
     }
 
     #[test]

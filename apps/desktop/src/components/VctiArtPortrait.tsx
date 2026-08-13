@@ -34,6 +34,12 @@ export function VctiArtPortrait({ visual, type, guild, label }: {
             <path key={`${index}-${path.d}`} d={path.d} fill="none" stroke="currentColor" strokeWidth={path.strokeWidth} opacity={path.opacity} />
           ))}
         </g>
+        <g className="vcti-art-tools">
+          {visual.detail.toolMarks.map((mark, index) => <circle key={index} cx={mark.cx} cy={mark.cy} r={mark.radius} fill="currentColor" opacity={mark.opacity} />)}
+        </g>
+        <g className="vcti-art-skills">
+          {visual.detail.skillMarks.map((mark, index) => <circle key={index} cx={mark.cx} cy={mark.cy} r={mark.radius} fill="none" stroke="currentColor" strokeWidth="0.65" opacity={mark.opacity} />)}
+        </g>
       </svg>
       <VctiAvatar type={type} guild={guild} label={label} />
     </div>
