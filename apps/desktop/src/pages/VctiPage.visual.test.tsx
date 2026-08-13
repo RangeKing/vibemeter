@@ -2,12 +2,14 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
+import { act } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
 import { useUiStore } from "../store";
 import type { VctiProfile } from "../types";
 import { VctiPage } from "./VctiPage";
+import { VctiArtPortrait } from "../components/VctiArtPortrait";
 
 const { insights, phraseCloud, vctiProfile } = vi.hoisted(() => ({
   insights: vi.fn(),
@@ -186,5 +188,20 @@ describe("VctiPage identity art", () => {
     expect(await screen.findByText("还在了解你")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "人格依据" })).toBeNull();
     expect(document.querySelector("[data-vcti-visual-version]")).toBeNull();
+  });
+
+  it("finishes the short generation motion and reduced motion starts at the same final state", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({ matches: false })) });
+    const { container, unmount } = render(<VctiArtPortrait visual={profile.identityVisual} type="SPEC" guild="start" label="开工判官" />);
+    expect(container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("true");
+    act(() => vi.advanceTimersByTime(900));
+    expect(container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("false");
+    unmount();
+
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({ matches: true })) });
+    const reduced = render(<VctiArtPortrait visual={profile.identityVisual} type="SPEC" guild="start" label="开工判官" />);
+    expect(reduced.container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("false");
+    vi.useRealTimers();
   });
 });

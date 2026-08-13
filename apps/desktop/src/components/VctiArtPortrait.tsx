@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { VCTI_GUILD_ACCENT, type VctiGuild } from "../lib/vctiCatalog";
 import type { VctiIdentityVisual } from "../types";
 import { VctiAvatar } from "./VctiAvatar";
@@ -9,6 +9,19 @@ export function VctiArtPortrait({ visual, type, guild, label }: {
   guild?: string;
   label: string;
 }) {
+  const reduceMotion = typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    : false;
+  const [generating, setGenerating] = useState(!reduceMotion);
+  useEffect(() => {
+    if (reduceMotion || !visual.available || !type) {
+      setGenerating(false);
+      return;
+    }
+    setGenerating(true);
+    const timeout = window.setTimeout(() => setGenerating(false), 800);
+    return () => window.clearTimeout(timeout);
+  }, [reduceMotion, type, visual.algorithmVersion, visual.range, visual.version, visual.available]);
   if (!visual.available || !type) return <VctiAvatar type={type} guild={guild} label={label} />;
   const resolvedGuild = (guild || "start") as VctiGuild;
   return (
@@ -18,6 +31,7 @@ export function VctiArtPortrait({ visual, type, guild, label }: {
       data-vcti-visual-version={visual.version}
       data-vcti-range={visual.range}
       aria-label={`${label} · VCTI`}
+      data-generating={generating ? "true" : "false"}
     >
       <svg className="vcti-art-field" viewBox="0 0 100 100" aria-hidden="true">
         <g className="vcti-art-contours">
