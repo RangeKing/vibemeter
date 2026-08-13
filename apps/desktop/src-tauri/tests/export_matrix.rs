@@ -38,6 +38,9 @@ fn validates_the_release_export_matrix() {
     let template_filter = std::env::var("VIBEMETER_EXPORT_TEMPLATE")
         .or_else(|_| std::env::var("AFTERVIBE_EXPORT_TEMPLATE"))
         .ok();
+    let locale_filter = std::env::var("VIBEMETER_EXPORT_LOCALE").ok();
+    let theme_filter = std::env::var("VIBEMETER_EXPORT_THEME").ok();
+    let aspect_filter = std::env::var("VIBEMETER_EXPORT_ASPECT").ok();
     let templates = [
         "usage-overview",
         "developer-wrapped",
@@ -53,18 +56,35 @@ fn validates_the_release_export_matrix() {
             .is_none_or(|value| value == *template)
     })
     .collect::<Vec<_>>();
-    let locales = ["en-US", "zh-CN"];
-    let themes = ["light", "dark"];
-    let aspects = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "16:9", "9:16"];
+    let locales = ["en-US", "zh-CN"]
+        .into_iter()
+        .filter(|locale| {
+            locale_filter
+                .as_deref()
+                .is_none_or(|value| value == *locale)
+        })
+        .collect::<Vec<_>>();
+    let themes = ["light", "dark"]
+        .into_iter()
+        .filter(|theme| theme_filter.as_deref().is_none_or(|value| value == *theme))
+        .collect::<Vec<_>>();
+    let aspects = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "16:9", "9:16"]
+        .into_iter()
+        .filter(|aspect| {
+            aspect_filter
+                .as_deref()
+                .is_none_or(|value| value == *aspect)
+        })
+        .collect::<Vec<_>>();
     let formats = ["svg", "png"];
     let mut count = 0;
 
     let expected_count =
         templates.len() * locales.len() * themes.len() * aspects.len() * formats.len();
     for template in templates {
-        for locale in locales {
-            for theme in themes {
-                for aspect in aspects {
+        for &locale in &locales {
+            for &theme in &themes {
+                for &aspect in &aspects {
                     let render = ShareRenderRequest {
                         template_id: template.into(),
                         locale: locale.into(),
@@ -98,7 +118,7 @@ fn validates_the_release_export_matrix() {
                     assert!(first.svg.starts_with("<svg"));
                     if template == "vcti-card" {
                         assert!(first.svg.contains("data:image/webp;base64,"));
-                        assert!(first.svg.contains("data-vcti-visual-version=\"2.0.0\""));
+                        assert!(first.svg.contains("data-vcti-visual-version=\"2.1.0\""));
                         for visual_layer in [
                             "vcti-art-contour",
                             "vcti-art-rhythm",

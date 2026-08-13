@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const ALGORITHM_VERSION: &str = "1.6.0";
-pub const IDENTITY_VISUAL_VERSION: &str = "2.0.0";
+pub const IDENTITY_VISUAL_VERSION: &str = "2.1.0";
 const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 
@@ -426,21 +426,22 @@ fn build_process_visual(process: &VctiProcessVariation, identity_seed: &str) -> 
     let retry_intensity = (process.retries.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
     let rollback_intensity = (process.rollbacks.value.unwrap_or(0.0) / 4.0).clamp(0.0, 1.0);
     let mut paths = Vec::new();
-    let seed = stable_fraction(identity_seed) * std::f64::consts::TAU;
-    let mut add = |count: usize, radius: f64, bend: f64, phase: f64, width: f64, opacity: f64| {
+    let seed = stable_fraction(identity_seed);
+    let mut add = |count: usize, lane_offset: usize, bend: f64, width: f64, opacity: f64| {
         for index in 0..count {
-            let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-            let start = angle - 0.32;
-            let end = angle + 0.32;
+            let lane = (index * 2 + lane_offset) % 7;
+            let x = 18.0 + ((index as f64 * 23.0 + seed * 31.0) % 56.0);
+            let y = 14.0 + lane as f64 * 12.0;
             paths.push(VctiVisualPath {
                 d: format!(
-                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
-                    50.0 + start.cos() * radius,
-                    50.0 + start.sin() * radius,
-                    50.0 + angle.cos() * (radius + bend),
-                    50.0 + angle.sin() * (radius + bend),
-                    50.0 + end.cos() * radius,
-                    50.0 + end.sin() * radius
+                    "M{x:.2},{y:.2} Q{:.2},{:.2} {:.2},{:.2} Q{:.2},{:.2} {:.2},{y:.2}",
+                    x + 6.0,
+                    y + bend,
+                    x + 12.0,
+                    y + bend * 0.35,
+                    x + 18.0,
+                    y - bend * 0.45,
+                    x + 24.0,
                 ),
                 stroke_width: width,
                 opacity,
@@ -449,25 +450,22 @@ fn build_process_visual(process: &VctiProcessVariation, identity_seed: &str) -> 
     };
     add(
         (process.errors.value.unwrap_or(0.0).round() as usize).min(3),
-        33.0,
+        0,
         4.0,
-        seed,
         0.72,
         0.46,
     );
     add(
         (process.retries.value.unwrap_or(0.0).round() as usize).min(3),
-        39.0,
+        1,
         -3.0,
-        seed + 0.53,
         0.62,
         0.40,
     );
     add(
         (process.rollbacks.value.unwrap_or(0.0).round() as usize).min(3),
-        45.0,
+        2,
         5.5,
-        seed + 1.07,
         0.86,
         0.52,
     );
@@ -496,15 +494,16 @@ fn build_detail_visual(detail: &VctiDetailDiversity, identity_seed: &str) -> Vct
     }
     let tool_count = (detail.tool_categories.value.unwrap_or(0.0).round() as usize).min(10);
     let skill_count = (detail.explicit_skills.value.unwrap_or(0.0).round() as usize).min(7);
-    let seed = stable_fraction(identity_seed) * std::f64::consts::TAU;
-    let marks = |count: usize, radius: f64, phase: f64, is_skill: bool| {
+    let seed = stable_fraction(identity_seed);
+    let marks = |count: usize, lane_offset: usize, is_skill: bool| {
         (0..count)
             .map(|index| {
-                let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-                let band = radius + (index % 3) as f64 * 2.8;
+                let lane = (index * 2 + lane_offset) % 7;
+                let x = 12.0 + ((index as f64 * 11.0 + seed * 19.0) % 82.0);
+                let y = 14.0 + lane as f64 * 12.0 + ((x * 0.12 + seed).sin() * 1.8);
                 VctiVisualMark {
-                    cx: 50.0 + angle.cos() * band,
-                    cy: 50.0 + angle.sin() * band,
+                    cx: x,
+                    cy: y,
                     radius: if is_skill {
                         1.25 + (index % 2) as f64 * 0.35
                     } else {
@@ -519,8 +518,8 @@ fn build_detail_visual(detail: &VctiDetailDiversity, identity_seed: &str) -> Vct
         available: true,
         tool_intensity: Some((tool_count as f64 / 10.0).clamp(0.0, 1.0)),
         skill_intensity: Some((skill_count as f64 / 7.0).clamp(0.0, 1.0)),
-        tool_marks: marks(tool_count, 44.0, seed, false),
-        skill_marks: marks(skill_count, 38.0, seed + 0.41, true),
+        tool_marks: marks(tool_count, 0, false),
+        skill_marks: marks(skill_count, 1, true),
     }
 }
 
@@ -545,21 +544,24 @@ fn build_collaboration_visual(
     let parallel_intensity =
         (collaboration.parallel_batches.value.unwrap_or(0.0) / 5.0).clamp(0.0, 1.0);
     let count = (collaboration.subagent_starts.value.unwrap_or(0.0).round() as usize).min(8);
-    let seed_phase = stable_fraction(identity_seed) * std::f64::consts::TAU;
+    let seed = stable_fraction(identity_seed);
     let paths = (0..count)
         .map(|index| {
-            let angle = seed_phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-            let spread = 18.0 + parallel_intensity * 18.0;
-            let start_angle = angle - (0.24 + parallel_intensity * 0.12);
+            let source_lane = (index * 2) % 7;
+            let target_lane = (source_lane + 1 + (index % 2)) % 7;
+            let x = 24.0 + ((index as f64 * 13.0 + seed * 17.0) % 48.0);
+            let source_y = 14.0 + source_lane as f64 * 12.0;
+            let target_y = 14.0 + target_lane as f64 * 12.0;
+            let reach = 16.0 + parallel_intensity * 13.0;
             VctiVisualPath {
                 d: format!(
                     "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
-                    50.0 + start_angle.cos() * 24.0,
-                    50.0 + start_angle.sin() * 24.0,
-                    50.0 + angle.cos() * spread,
-                    50.0 + angle.sin() * spread,
-                    50.0 + angle.cos() * 48.0,
-                    50.0 + angle.sin() * 48.0,
+                    x,
+                    source_y,
+                    x + reach * 0.54,
+                    (source_y + target_y) * 0.5,
+                    x + reach,
+                    target_y,
                 ),
                 stroke_width: 0.48 + parallel_intensity * 0.42,
                 opacity: 0.25 + branch_intensity * 0.42,
@@ -628,27 +630,17 @@ fn build_rhythm_visual(rhythm: &VctiWorkRhythm, identity_seed: &str) -> VctiRhyt
     let count = (3.0 + active_intensity * 3.0 + session_intensity * 3.0).round() as usize;
     let paths = (0..count.min(9))
         .map(|index| {
-            let spread =
-                (index as f64 - (count.saturating_sub(1)) as f64 / 2.0) * (7.6 - density * 2.4);
-            let perpendicular = phase + std::f64::consts::FRAC_PI_2;
-            let start = (
-                50.0 - phase.cos() * 49.0 + perpendicular.cos() * spread,
-                50.0 - phase.sin() * 49.0 + perpendicular.sin() * spread,
-            );
-            let end = (
-                50.0 + phase.cos() * 49.0 + perpendicular.cos() * spread,
-                50.0 + phase.sin() * 49.0 + perpendicular.sin() * spread,
-            );
-            let bend = ((index % 3) as f64 - 1.0) * (5.0 + session_intensity * 4.0);
+            let lane_y = 14.0 + index as f64 * (72.0 / count.saturating_sub(1).max(1) as f64);
+            let tilt = phase.sin() * (5.0 + active_intensity * 5.0);
+            let wave = ((index % 3) as f64 - 1.0) * (2.6 + session_intensity * 2.4);
             VctiVisualPath {
                 d: format!(
-                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
-                    start.0,
-                    start.1,
-                    50.0 + perpendicular.cos() * (spread + bend),
-                    50.0 + perpendicular.sin() * (spread + bend),
-                    end.0,
-                    end.1
+                    "M-6.00,{:.2} Q20.00,{:.2} 48.00,{:.2} Q76.00,{:.2} 106.00,{:.2}",
+                    lane_y - tilt,
+                    lane_y + wave,
+                    lane_y + wave * 0.35,
+                    lane_y - wave,
+                    lane_y + tilt,
                 ),
                 stroke_width: 0.42 + session_intensity * 0.38,
                 opacity: 0.18 + active_intensity * 0.30,
