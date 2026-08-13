@@ -1,12 +1,14 @@
 use crate::models::{
     BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
-    VctiEvidenceItem, VctiIdentityEvidence, VctiOptionalMetric, VctiProcessVariation, VctiProfile,
-    VctiRhythmPeriod, VctiScore, VctiTrendPoint, VctiWorkRhythm,
+    VctiEvidenceItem, VctiIdentityEvidence, VctiIdentityVisual, VctiOptionalMetric,
+    VctiProcessVariation, VctiProfile, VctiRhythmPeriod, VctiScore, VctiTrendPoint,
+    VctiVisualInput, VctiVisualPath, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const ALGORITHM_VERSION: &str = "1.6.0";
+pub const IDENTITY_VISUAL_VERSION: &str = "2.0.0";
 const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 
@@ -20,6 +22,19 @@ pub fn window_days_for_range(range: &str) -> i64 {
         "year" => 365,
         "all" => 3651,
         _ => 30,
+    }
+}
+
+fn range_for_window_days(window_days: i64) -> &'static str {
+    match window_days {
+        1 => "today",
+        7 => "7d",
+        30 => "30d",
+        90 => "90d",
+        180 => "180d",
+        365 => "year",
+        3651 => "all",
+        _ => "custom",
     }
 }
 
@@ -228,6 +243,13 @@ pub fn calculate(
         git_evidence_enabled,
     );
     let identity_evidence = build_identity_evidence(records, window_days, &behavior);
+    let identity_visual = build_identity_visual(
+        range_for_window_days(window_days),
+        top.map(|candidate| candidate.code),
+        top.map(|candidate| candidate.guild),
+        &dimensions,
+        &identity_evidence,
+    );
     let badges = badges(
         &features,
         &behavior,
@@ -284,11 +306,127 @@ pub fn calculate(
         evidence,
         trend,
         identity_evidence,
+        identity_visual,
         behavior,
         missing_capabilities,
         structure_analysis_enabled,
         git_evidence_enabled,
     }
+}
+
+fn build_identity_visual(
+    range: &str,
+    primary_type: Option<&str>,
+    guild: Option<&str>,
+    dimensions: &[VctiScore],
+    evidence: &VctiIdentityEvidence,
+) -> VctiIdentityVisual {
+    let dimensions_available = dimensions.iter().any(|score| score.coverage > 0.0);
+    let available = primary_type.is_some() && guild.is_some() && dimensions_available;
+    let inputs = vec![
+        visual_input("identity", primary_type.is_some() && guild.is_some()),
+        visual_input("dimensions", dimensions_available),
+        visual_input("rhythm", evidence.rhythm.work_periods_available),
+        visual_input(
+            "collaboration",
+            evidence.collaboration.subagent_starts.available,
+        ),
+        visual_input(
+            "detail-diversity",
+            evidence.detail_diversity.tool_categories.available,
+        ),
+        visual_input(
+            "process-variation",
+            evidence.process_variation.errors.available,
+        ),
+    ];
+    if !available {
+        return VctiIdentityVisual {
+            algorithm_version: ALGORITHM_VERSION.into(),
+            version: IDENTITY_VISUAL_VERSION.into(),
+            range: range.into(),
+            available,
+            inputs,
+            contours: Vec::new(),
+        };
+    }
+
+    let primary_type = primary_type.unwrap_or_default();
+    let guild = guild.unwrap_or("start");
+    let phase = stable_fraction(primary_type) * std::f64::consts::TAU;
+    let aspect = 0.94 + stable_fraction(guild) * 0.12;
+    let observed = dimensions
+        .iter()
+        .filter(|score| score.coverage > 0.0)
+        .collect::<Vec<_>>();
+    let contours = (0..6usize)
+        .map(|layer| {
+            let base_radius = 45.0 - layer as f64 * 5.1;
+            let points = (0..12usize)
+                .map(|point| {
+                    let score = observed[(point + layer * 2) % observed.len()];
+                    let signal = (score.value - 50.0) / 50.0;
+                    let angle = phase
+                        + stable_fraction(score.id.as_str()) * 0.18
+                        + std::f64::consts::TAU * point as f64 / 12.0;
+                    let radius = base_radius + signal * (2.4 + layer as f64 * 0.14);
+                    (
+                        (50.0 + angle.cos() * radius * aspect).clamp(2.0, 98.0),
+                        (50.0 + angle.sin() * radius / aspect).clamp(2.0, 98.0),
+                    )
+                })
+                .collect::<Vec<_>>();
+            VctiVisualPath {
+                d: smooth_closed_path(&points),
+                stroke_width: 0.72 + (6 - layer) as f64 * 0.08,
+                opacity: 0.30 + (6 - layer) as f64 * 0.075,
+            }
+        })
+        .collect();
+    VctiIdentityVisual {
+        algorithm_version: ALGORITHM_VERSION.into(),
+        version: IDENTITY_VISUAL_VERSION.into(),
+        range: range.into(),
+        available,
+        inputs,
+        contours,
+    }
+}
+
+fn visual_input(id: &str, available: bool) -> VctiVisualInput {
+    VctiVisualInput {
+        id: id.into(),
+        available,
+    }
+}
+
+fn smooth_closed_path(points: &[(f64, f64)]) -> String {
+    let first = points[0];
+    let last = points[points.len() - 1];
+    let mut output = format!(
+        "M{:.2},{:.2}",
+        (last.0 + first.0) / 2.0,
+        (last.1 + first.1) / 2.0
+    );
+    for (index, point) in points.iter().enumerate() {
+        let next = points[(index + 1) % points.len()];
+        output.push_str(&format!(
+            "Q{:.2},{:.2} {:.2},{:.2}",
+            point.0,
+            point.1,
+            (point.0 + next.0) / 2.0,
+            (point.1 + next.1) / 2.0
+        ));
+    }
+    output.push('Z');
+    output
+}
+
+fn stable_fraction(value: &str) -> f64 {
+    let hash = value.bytes().fold(2_166_136_261u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
+    });
+    f64::from(hash % 10_000) / 10_000.0
 }
 
 fn build_identity_evidence(
@@ -1721,7 +1859,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_evidence_is_deterministic_without_generated_geometry() {
+    fn identity_art_foundation_is_deterministic_and_keeps_a_versioned_range() {
         let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -1745,16 +1883,14 @@ mod tests {
             serde_json::to_value(&first.identity_evidence).unwrap(),
             serde_json::to_value(&replay.identity_evidence).unwrap()
         );
-        let serialized = serde_json::to_string(&first).unwrap();
-        for retired_field in [
-            "paths",
-            "branches",
-            "details",
-            "variations",
-            "identityVisual",
-        ] {
-            assert!(!serialized.contains(retired_field));
-        }
+        assert_eq!(first.identity_visual.version, IDENTITY_VISUAL_VERSION);
+        assert_eq!(first.identity_visual.range, "90d");
+        assert!(first.identity_visual.available);
+        assert!(!first.identity_visual.contours.is_empty());
+        assert_eq!(
+            serde_json::to_value(&first.identity_visual).unwrap(),
+            serde_json::to_value(&replay.identity_visual).unwrap()
+        );
     }
 
     #[test]

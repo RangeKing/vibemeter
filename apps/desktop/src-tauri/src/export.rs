@@ -721,6 +721,14 @@ fn render_vcti_card(
     };
     let avatar_x = margin + 48.0;
     let avatar_y = panel_y + 62.0;
+    render_vcti_art_field(
+        svg,
+        avatar_x - avatar_size * 0.14,
+        avatar_y - avatar_size * 0.14,
+        avatar_size * 1.28,
+        accent,
+        &profile.identity_visual,
+    );
     render_vcti_avatar(
         svg,
         avatar_x,
@@ -1194,6 +1202,29 @@ fn render_vcti_card(
             );
         }
     }
+}
+
+fn render_vcti_art_field(
+    svg: &mut String,
+    x: f64,
+    y: f64,
+    size: f64,
+    accent: &str,
+    visual: &crate::models::VctiIdentityVisual,
+) {
+    if !visual.available {
+        return;
+    }
+    let scale = size / 100.0;
+    write!(
+        svg,
+        "<g data-vcti-visual-version=\"{}\" data-vcti-range=\"{}\" transform=\"translate({x:.2} {y:.2}) scale({scale:.4})\">",
+        xml(&visual.version), xml(&visual.range)
+    ).ok();
+    for path in &visual.contours {
+        write!(svg, "<path class=\"vcti-art-contour\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
+    }
+    svg.push_str("</g>");
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -978,6 +978,10 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .vcti-avatar-art { position: absolute; inset: 0; background-repeat: no-repeat; background-size: 600% 400%; transform: scale(1.2); transform-origin: center; }
 .vcti-avatar-code { position: absolute; z-index: 3; right: 14px; bottom: 12px; padding: 5px 7px; border-radius: 7px; color: #fff; background: color-mix(in srgb, var(--vcti-accent) 88%, #202020); font-family: "SFMono-Regular", Menlo, monospace; font-size: 11px; letter-spacing: .06em; box-shadow: 0 4px 14px rgb(0 0 0 / 15%); }
 .vcti-avatar.small .vcti-avatar-code { right: 5px; bottom: 5px; padding: 2px 3px; border-radius: 4px; font-size: 7.5px; }
+.vcti-art-portrait { position: relative; display: grid; width: min(450px, 100%); aspect-ratio: 1; place-items: center; justify-self: center; isolation: isolate; }
+.vcti-art-field { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; overflow: visible; color: var(--vcti-accent); filter: drop-shadow(0 0 15px color-mix(in srgb, var(--vcti-accent) 25%, transparent)); }
+.vcti-art-portrait .vcti-avatar.large { z-index: 1; width: 72%; transform: rotate(1.5deg); }
+.vcti-art-contours path { vector-effect: non-scaling-stroke; }
 .vcti-dashboard-grid { display: grid; grid-template-columns: 1.08fr .92fr; gap: 16px; }
 .vcti-panel { padding: 23px; border: 1px solid var(--line); border-radius: 17px; background: var(--surface); }
 .vcti-panel > header { display: grid; grid-template-columns: auto 1fr; gap: 11px; margin-bottom: 20px; }

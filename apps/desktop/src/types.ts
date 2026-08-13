@@ -618,6 +618,26 @@ export interface VctiIdentityEvidence {
   processVariation: VctiProcessVariation;
 }
 
+export interface VctiVisualInput {
+  id: string;
+  available: boolean;
+}
+
+export interface VctiVisualPath {
+  d: string;
+  strokeWidth: number;
+  opacity: number;
+}
+
+export interface VctiIdentityVisual {
+  algorithmVersion: string;
+  version: string;
+  range: string;
+  available: boolean;
+  inputs: VctiVisualInput[];
+  contours: VctiVisualPath[];
+}
+
 export interface VctiProfile {
   status: "collecting" | "preview" | "stable" | "high-confidence";
   algorithmVersion: string;
@@ -639,6 +659,7 @@ export interface VctiProfile {
   evidence: VctiEvidenceItem[];
   trend: VctiTrendPoint[];
   identityEvidence: VctiIdentityEvidence;
+  identityVisual: VctiIdentityVisual;
   behavior: BehaviorSummary;
   missingCapabilities: string[];
   structureAnalysisEnabled: boolean;

@@ -78,6 +78,13 @@ const profile = {
       rollbacks: { available: false },
     },
   },
+  identityVisual: {
+    algorithmVersion: "1.6.0",
+    version: "2.0.0",
+    range: "90d",
+    available: true,
+    contours: [{ d: "M 10 50 Q 50 10 90 50 Q 50 90 10 50 Z", strokeWidth: 0.8, opacity: 0.5 }],
+  },
 } as unknown as VctiProfile;
 
 function renderPage() {
@@ -111,7 +118,8 @@ describe("VctiPage identity art", () => {
     const character = await screen.findByRole("img", { name: "开工判官" });
     expect(character.classList.contains("vcti-avatar")).toBe(true);
     expect(character.querySelector(".vcti-avatar-art")).toBeTruthy();
-    expect(container.querySelector("[data-vcti-visual-version]")).toBeNull();
+    expect(container.querySelector('[data-vcti-visual-version="2.0.0"]')).toBeTruthy();
+    expect(container.querySelectorAll(".vcti-art-contours path")).toHaveLength(1);
   });
 
   it("shows all four identity evidence summaries before opening the detail drawer", async () => {
@@ -167,5 +175,6 @@ describe("VctiPage identity art", () => {
 
     expect(await screen.findByText("还在了解你")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "人格依据" })).toBeNull();
+    expect(document.querySelector("[data-vcti-visual-version]")).toBeNull();
   });
 });
