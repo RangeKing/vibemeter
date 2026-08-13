@@ -4,7 +4,7 @@ use crate::export_localization as loc;
 use crate::models::{
     ComparisonItem, ExportRequest, ExportResult, IndexStatus, OverviewResponse,
     PhraseCloudResponse, SessionDetail, SharePreview, ShareRenderRequest, VctiEvidenceItem,
-    VctiProfile,
+    VctiOptionalMetric, VctiProfile,
 };
 use crate::privacy;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use uuid::Uuid;
 
-const TEMPLATE_VERSION: &str = "16.0.0";
+const TEMPLATE_VERSION: &str = "17.0.0";
 const SAVITZKY_GOLAY_7: [f64; 7] = [
     -2.0 / 21.0,
     3.0 / 21.0,
@@ -898,71 +898,17 @@ fn render_vcti_card(
     let evidence_y = scores_y + score_height * 2.0 + gap + 34.0;
     if !landscape {
         let footer_y = panel_y + panel_height - 224.0;
-        text(
+        let evidence_end = render_vcti_identity_evidence(
             svg,
+            locale,
+            profile,
             margin + 48.0,
             evidence_y,
-            24.0,
-            720,
+            panel_width - 96.0,
+            false,
             accent,
-            if locale == "zh-CN" {
-                "为什么是这个人格"
-            } else {
-                "WHY THIS TYPE"
-            },
-            None,
+            palette,
         );
-        let visible_evidence = profile
-            .evidence
-            .iter()
-            .filter(|item| !item.structural)
-            .take(4)
-            .collect::<Vec<_>>();
-        let evidence_gap = 18.0;
-        let evidence_card_width = (panel_width - 96.0 - evidence_gap) / 2.0;
-        let evidence_card_height = 176.0;
-        for (index, item) in visible_evidence.iter().enumerate() {
-            let column = index % 2;
-            let row = index / 2;
-            let x = margin + 48.0 + column as f64 * (evidence_card_width + evidence_gap);
-            let y = evidence_y + 48.0 + row as f64 * (evidence_card_height + evidence_gap);
-            rect(
-                svg,
-                x,
-                y,
-                evidence_card_width,
-                evidence_card_height,
-                24.0,
-                palette.tile,
-                None,
-            );
-            rect(svg, x + 24.0, y + 25.0, 12.0, 12.0, 4.0, accent, None);
-            text(
-                svg,
-                x + 50.0,
-                y + 41.0,
-                22.0,
-                620,
-                palette.muted,
-                vcti_evidence_name(locale, &item.id),
-                None,
-            );
-            text(
-                svg,
-                x + 24.0,
-                y + 123.0,
-                58.0,
-                750,
-                palette.text,
-                &vcti_evidence_value(locale, item),
-                Some("dn"),
-            );
-        }
-        let evidence_rows = visible_evidence.len().div_ceil(2).max(1);
-        let evidence_end = evidence_y
-            + 48.0
-            + evidence_rows as f64 * evidence_card_height
-            + evidence_rows.saturating_sub(1) as f64 * evidence_gap;
         let mut content_end = evidence_end;
         if request.show_behavior_evidence {
             let structural = profile
@@ -1187,14 +1133,29 @@ fn render_vcti_card(
             },
             None,
         );
-    } else if request.show_behavior_evidence {
-        let structural = profile
-            .evidence
-            .iter()
-            .filter(|item| item.structural)
-            .take(2)
-            .collect::<Vec<_>>();
-        if !structural.is_empty() && evidence_y + 80.0 < panel_y + panel_height {
+    } else {
+        render_vcti_identity_evidence(
+            svg,
+            locale,
+            profile,
+            identity_x,
+            avatar_y + 370.0,
+            identity_width,
+            true,
+            accent,
+            palette,
+        );
+        let structural = request.show_behavior_evidence.then(|| {
+            profile
+                .evidence
+                .iter()
+                .filter(|item| item.structural)
+                .take(2)
+                .collect::<Vec<_>>()
+        });
+        if let Some(structural) = structural
+            .filter(|items| !items.is_empty() && evidence_y + 80.0 < panel_y + panel_height)
+        {
             text(
                 svg,
                 margin + 48.0,
@@ -1232,21 +1193,202 @@ fn render_vcti_card(
                 2,
             );
         }
-    } else if evidence_y + 60.0 < panel_y + panel_height {
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_vcti_identity_evidence(
+    svg: &mut String,
+    locale: &str,
+    profile: &VctiProfile,
+    x: f64,
+    y: f64,
+    width: f64,
+    landscape: bool,
+    accent: &str,
+    palette: Palette,
+) -> f64 {
+    let summaries = vcti_identity_evidence_summaries(locale, profile);
+    let columns = if landscape { 4 } else { 2 };
+    let gap = if landscape { 12.0 } else { 18.0 };
+    let card_width = (width - gap * (columns - 1) as f64) / columns as f64;
+    let card_height = if landscape { 122.0 } else { 144.0 };
+    let heading_size = if landscape { 18.0 } else { 24.0 };
+    text(
+        svg,
+        x,
+        y,
+        heading_size,
+        720,
+        accent,
+        if locale == "zh-CN" {
+            "人格依据"
+        } else {
+            "IDENTITY EVIDENCE"
+        },
+        None,
+    );
+    let cards_y = y + if landscape { 20.0 } else { 30.0 };
+    for (index, (label, value)) in summaries.iter().enumerate() {
+        let column = index % columns;
+        let row = index / columns;
+        let card_x = x + column as f64 * (card_width + gap);
+        let card_y = cards_y + row as f64 * (card_height + gap);
+        rect(
+            svg,
+            card_x,
+            card_y,
+            card_width,
+            card_height,
+            if landscape { 18.0 } else { 24.0 },
+            palette.tile,
+            Some(palette.hairline),
+        );
         text(
             svg,
-            margin + 48.0,
-            evidence_y,
-            22.0,
-            540,
-            palette.muted,
-            if locale == "zh-CN" {
-                "由本机可读 Coding Agent 行为自动生成 · 不上传 Prompt 或代码"
-            } else {
-                "Generated from readable local agent behavior · no prompts or code uploaded"
-            },
+            card_x + 20.0,
+            card_y + 34.0,
+            if landscape { 16.0 } else { 20.0 },
+            700,
+            accent,
+            label,
             None,
         );
+        text_block(
+            svg,
+            card_x + 20.0,
+            card_y + 70.0,
+            card_width - 40.0,
+            if landscape { 17.0 } else { 21.0 },
+            560,
+            palette.text,
+            value,
+            2,
+        );
+    }
+    let rows = summaries.len().div_ceil(columns);
+    cards_y + rows as f64 * card_height + rows.saturating_sub(1) as f64 * gap
+}
+
+fn vcti_identity_evidence_summaries(
+    locale: &str,
+    profile: &VctiProfile,
+) -> Vec<(&'static str, String)> {
+    let zh = locale == "zh-CN";
+    let identity = &profile.identity_evidence;
+    let rhythm = if identity.rhythm.work_periods_available {
+        let periods = identity
+            .rhythm
+            .work_periods
+            .iter()
+            .filter(|period| period.sessions > 0)
+            .map(|period| {
+                format!(
+                    "{} {}",
+                    vcti_period_name(locale, &period.id),
+                    vcti_count(locale, period.sessions as f64)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        if periods.is_empty() {
+            if zh {
+                "该范围内没有活动".into()
+            } else {
+                "No activity in this range".into()
+            }
+        } else {
+            periods
+        }
+    } else {
+        vcti_not_recorded(locale).into()
+    };
+    let collaboration = format!(
+        "{} {} · {} {}",
+        "Subagent",
+        vcti_optional_count(locale, &identity.collaboration.subagent_starts),
+        if zh { "并行" } else { "Parallel" },
+        vcti_optional_count(locale, &identity.collaboration.parallel_batches),
+    );
+    let detail = format!(
+        "{} {} · Skill {}",
+        if zh { "工具" } else { "Tools" },
+        vcti_optional_categories(locale, &identity.detail_diversity.tool_categories),
+        vcti_optional_categories(locale, &identity.detail_diversity.explicit_skills),
+    );
+    let process = format!(
+        "{} {} · {} {} · {} {}",
+        if zh { "错误" } else { "Errors" },
+        vcti_optional_count(locale, &identity.process_variation.errors),
+        if zh { "重试" } else { "Retries" },
+        vcti_optional_count(locale, &identity.process_variation.retries),
+        if zh { "回滚" } else { "Rollbacks" },
+        vcti_optional_count(locale, &identity.process_variation.rollbacks),
+    );
+    vec![
+        (if zh { "工作节奏" } else { "WORK RHYTHM" }, rhythm),
+        (if zh { "协作方式" } else { "COLLABORATION" }, collaboration),
+        (
+            if zh {
+                "工具与 Skill"
+            } else {
+                "TOOLS & SKILL"
+            },
+            detail,
+        ),
+        (if zh { "过程记录" } else { "PROCESS RECORD" }, process),
+    ]
+}
+
+fn vcti_optional_count(locale: &str, metric: &VctiOptionalMetric) -> String {
+    if metric.available {
+        vcti_count(locale, metric.value.unwrap_or(0.0))
+    } else {
+        vcti_not_recorded(locale).into()
+    }
+}
+
+fn vcti_optional_categories(locale: &str, metric: &VctiOptionalMetric) -> String {
+    if !metric.available {
+        return vcti_not_recorded(locale).into();
+    }
+    let value = format!("{:.0}", metric.value.unwrap_or(0.0));
+    if locale == "zh-CN" {
+        format!("{value} 类")
+    } else {
+        format!("{value} categories")
+    }
+}
+
+fn vcti_count(locale: &str, value: f64) -> String {
+    let value = format!("{value:.0}");
+    if locale == "zh-CN" {
+        format!("{value} 次")
+    } else {
+        value
+    }
+}
+
+fn vcti_not_recorded(locale: &str) -> &'static str {
+    if locale == "zh-CN" {
+        "未记录"
+    } else {
+        "Not recorded"
+    }
+}
+
+fn vcti_period_name(locale: &str, period: &str) -> &'static str {
+    match (locale, period) {
+        ("zh-CN", "night") => "深夜",
+        ("zh-CN", "morning") => "上午",
+        ("zh-CN", "afternoon") => "下午",
+        ("zh-CN", "evening") => "晚上",
+        (_, "night") => "Night",
+        (_, "morning") => "Morning",
+        (_, "afternoon") => "Afternoon",
+        (_, "evening") => "Evening",
+        ("zh-CN", _) => "其他时段",
+        _ => "Other",
     }
 }
 
