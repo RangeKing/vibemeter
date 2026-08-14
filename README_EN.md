@@ -21,13 +21,13 @@
   <a href="README.md">🇨🇳 中文</a> · 🇺🇸 <strong>English</strong>
 </p>
 
-VibeMeter brings live status, long-term analytics, and your VCTI profile into one local-first macOS app. A glance at the Notch tells you whether Claude Code or Codex is thinking, reading, using a tool, or waiting for you. Sessions, tokens, cost, models, tools, and Skill usage stay on your Mac and become a history you can inspect and share. Once the evidence is strong enough, 24 VCTI personalities turn that history into a recognizable picture of how you build with agents.
+VibeMeter brings live status, long-term analytics, and your VCTI profile into one local-first macOS app. A glance at the Notch tells you whether Claude Code, Codex, or DeepSeek Harness is thinking, reading, using a tool, or waiting for you. Sessions, tokens, cost, models, tools, and Skill usage stay on your Mac and become a history you can inspect and share. Once the evidence is strong enough, 24 VCTI personalities turn that history into a recognizable picture of how you build with agents.
 
 VibeMeter does not control your agents, approve requests, or modify source repositories. If a signal is unavailable, the UI says so instead of dressing missing data up as zero.
 
 ## ✨ Three views. One clear picture.
 
-- **Understand at a glance.** The Notch shows live Claude Code and Codex stages, priority, and recent structured actions. The menu-bar popover covers time ranges, tokens, cost, activity trends, and remaining quota.
+- **Understand at a glance.** The Notch shows live Claude Code, Codex, and DeepSeek Harness stages, priority, and recent structured actions. The menu-bar popover covers time ranges, tokens, cost, activity trends, and remaining quota.
 - **Learn from every session.** Data brings together sessions, input/output/cache tokens, time, cost, agents, models, tools, Skills, activity patterns, and work events.
 - **Turn behavior into identity.** VCTI maps verifiable local behavior to 24 AI coding personalities, with dimensions, confidence, and evidence. Thin evidence stays explicitly incomplete.
 
@@ -127,7 +127,9 @@ After onboarding, VibeMeter can install managed local hooks for detected Claude 
 - background waiting and error transitions send silent notifications; background CLI completion may notify, while Codex Desktop completion never receives a duplicate VibeMeter notification;
 - repair and uninstall touch only VibeMeter-managed entries.
 
-The Notch disappears into the physical cutout while idle. With one active session, the compact left wing shows its source icon and project name; with multiple sessions, it shows per-source session counts. The right wing shows one highest-priority state. Click or deliberately hover over the cutout/wings for about 300 ms to expand. A hover-opened panel collapses about 500 ms after exit; clicking elsewhere also collapses unless that expansion is temporarily pinned. Manual close and app restart reset the pin. Notch and menu-bar visibility can be controlled independently. Macs without a physical Notch keep the menu-bar and main-window paths. Claude Code and Codex provide exact live lifecycle status. Kimi Code and ZCode provide experimental recent activity without promising complete lifecycle or exact completion status. Cursor, OpenClaw, and Hermes contribute only readable historical evidence to Data, replay, and VCTI.
+DeepSeek Harness needs no installed hook. VibeMeter read-only observes its local structured session stream to provide Codex-level exact lifecycle status, historical analytics, trajectory replay, source health, and a validated jump-back entry without changing Harness configuration or sessions.
+
+The Notch disappears into the physical cutout while idle. With one active session, the compact left wing shows its source icon and project name; with multiple sessions, it shows per-source session counts. The right wing shows one highest-priority state. Click or deliberately hover over the cutout/wings for about 300 ms to expand. A hover-opened panel collapses about 500 ms after exit; clicking elsewhere also collapses unless that expansion is temporarily pinned. Manual close and app restart reset the pin. Notch and menu-bar visibility can be controlled independently. Macs without a physical Notch keep the menu-bar and main-window paths. Claude Code, Codex, and DeepSeek Harness provide exact live lifecycle status. Kimi Code and ZCode provide experimental recent activity without promising complete lifecycle or exact completion status. Cursor, OpenClaw, and Hermes contribute only readable historical evidence to Data, replay, and VCTI.
 
 ## 💬 Catchphrases
 

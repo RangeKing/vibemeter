@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -469,19 +470,19 @@ impl LiveMonitor {
                     known_ids.insert(id.clone());
                     let transition = merge_session(&external_sessions, session.clone());
                     if let Some(status) = transition {
+                        if status == "completed" && session.agent == "deepseek-harness" {
+                            let _ = external_database.complete_notch_session(&session);
+                        }
                         transitions.push((id.clone(), status));
                         changed = true;
                     }
                     if should_record {
                         recorded.insert(id, fingerprint);
-                        let _ = external_database.record_live_event(
-                            &session.updated_at,
-                            &session.agent,
-                            &session.source_session_id,
-                            "runtime.activity",
-                            &session.project_label,
-                            &session.status,
+                        let observed = observed_live_event_from_runtime_session(
+                            &session,
+                            Utc::now().to_rfc3339(),
                         );
+                        let _ = external_database.record_observed_live_event(&observed);
                         changed = true;
                     }
                 }
@@ -494,7 +495,10 @@ impl LiveMonitor {
                 {
                     for id in &stale_ids {
                         if sessions.get(id).is_some_and(|session| {
-                            matches!(session.agent.as_str(), "kimi-code" | "zcode")
+                            matches!(
+                                session.agent.as_str(),
+                                "deepseek-harness" | "kimi-code" | "zcode"
+                            )
                         }) {
                             sessions.remove(id);
                             recorded.remove(id);
@@ -648,6 +652,51 @@ impl LiveMonitor {
     }
 }
 
+fn observed_live_event_from_runtime_session(
+    session: &LiveSession,
+    observed_at: String,
+) -> ObservedLiveEvent {
+    let action = session.actions.last();
+    let event_name = match session.status.as_str() {
+        "waiting" => "PermissionRequest",
+        "completed" => "SessionEnd",
+        "error" => "PostToolUseFailure",
+        _ => match action.map(|action| action.kind.as_str()) {
+            Some("tool") => "PreToolUse",
+            Some("compact") => "PreCompact",
+            _ => "Resume",
+        },
+    };
+    let safe_tool = action
+        .filter(|action| action.kind == "tool")
+        .map(|action| crate::privacy::sanitize_tool_name(&action.label));
+    let payload_json = safe_tool.map_or_else(
+        || "{}".into(),
+        |tool| json!({ "tool_name": tool }).to_string(),
+    );
+    ObservedLiveEvent {
+        occurred_at: session.updated_at.clone(),
+        observed_at,
+        agent: session.agent.clone(),
+        source_session_id: session.source_session_id.clone(),
+        source_event_id: None,
+        source_sequence: None,
+        source_event_fingerprint: Some(crate::privacy::stable_hash(&format!(
+            "{}|{}|{}|{}|{}",
+            session.agent,
+            session.source_session_id,
+            event_name,
+            session.status,
+            session.event_order_key,
+        ))),
+        event_name: event_name.into(),
+        project_label: session.project_label.clone(),
+        payload_json,
+        status: session.status.clone(),
+        phase: Some(session.phase.clone()),
+    }
+}
+
 pub fn install_hooks() -> AppResult<HookStatus> {
     let script = hook_script_path()?;
     if let Some(parent) = script.parent() {
@@ -732,6 +781,7 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
         codex_hook_runtime_status()
     };
     let kimi_available = live_sources::provider_available("kimi-code");
+    let deepseek_available = live_sources::provider_available("deepseek-harness");
     let zcode_available = live_sources::provider_available("zcode");
     let providers = vec![
         HookProviderStatus {
@@ -745,6 +795,17 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
             available: codex_available,
             installed: codex_health.working,
             detail: codex_health.detail.into(),
+        },
+        HookProviderStatus {
+            provider: "deepseek-harness".into(),
+            available: deepseek_available,
+            installed: deepseek_available,
+            detail: if deepseek_available {
+                "ready"
+            } else {
+                "not-found"
+            }
+            .into(),
         },
         HookProviderStatus {
             provider: "kimi-code".into(),
@@ -1077,6 +1138,7 @@ fn codex_hook_health_from_list(result: &Value) -> CodexHookHealth {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JumpRoute {
     CodexDesktop,
+    DeepSeekWeb,
     ZCodeDesktop,
     Cmux,
     Tmux,
@@ -1092,6 +1154,9 @@ struct ProcessRecord {
 fn jump_route(session: &LiveSession) -> JumpRoute {
     if session.agent == "codex" && session.origin.as_deref() == Some("desktop") {
         return JumpRoute::CodexDesktop;
+    }
+    if session.agent == "deepseek-harness" {
+        return JumpRoute::DeepSeekWeb;
     }
     if session.agent == "zcode" && session.origin.as_deref() == Some("desktop") {
         return JumpRoute::ZCodeDesktop;
@@ -1114,11 +1179,50 @@ fn jump_route(session: &LiveSession) -> JumpRoute {
 pub fn jump_to_session(session: &LiveSession) -> AppResult<()> {
     match jump_route(session) {
         JumpRoute::CodexDesktop => jump_to_codex_desktop(session),
+        JumpRoute::DeepSeekWeb => jump_to_deepseek_harness(),
         JumpRoute::ZCodeDesktop => jump_to_zcode_desktop(),
         JumpRoute::Cmux => jump_to_cmux(session),
         JumpRoute::Tmux => jump_to_tmux(session),
         JumpRoute::DirectTerminal => jump_to_direct_terminal(session),
     }
+}
+
+fn jump_to_deepseek_harness() -> AppResult<()> {
+    let port = deepseek_harness_port();
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    TcpStream::connect_timeout(&address, StdDuration::from_millis(350)).map_err(|_| {
+        AppError::ProviderUnavailable("DeepSeek Harness web interface is not running".into())
+    })?;
+    run_checked(
+        Command::new("/usr/bin/open").arg(format!("http://127.0.0.1:{port}")),
+        "DeepSeek Harness could not be opened",
+    )
+}
+
+fn deepseek_harness_port() -> u16 {
+    let Ok(output) = Command::new("/bin/ps").args(["-axo", "command="]).output() else {
+        return 3080;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            let dsh_index = fields
+                .iter()
+                .position(|field| field.rsplit('/').next() == Some("dsh"))?;
+            (fields.get(dsh_index + 1).copied() == Some("web")).then_some(())?;
+            fields.iter().enumerate().find_map(|(index, field)| {
+                field
+                    .strip_prefix("--port=")
+                    .or_else(|| {
+                        (*field == "--port")
+                            .then(|| fields.get(index + 1).copied())
+                            .flatten()
+                    })
+                    .and_then(|value| value.parse::<u16>().ok())
+            })
+        })
+        .unwrap_or(3080)
 }
 
 fn jump_to_zcode_desktop() -> AppResult<()> {
@@ -3424,6 +3528,11 @@ fn source_is_foreground(session: &LiveSession) -> bool {
 
 fn source_matches_frontmost(session: &LiveSession, name: &str) -> bool {
     let name = name.to_ascii_lowercase();
+    if session.agent == "deepseek-harness" && session.origin.as_deref() == Some("web") {
+        return ["safari", "chrome", "arc", "firefox", "edge"]
+            .iter()
+            .any(|browser| name.contains(browser));
+    }
     if session.origin.as_deref() == Some("desktop") {
         return match session.agent.as_str() {
             "codex" => name.contains("codex"),
@@ -3474,6 +3583,7 @@ fn provider_label(agent: &str) -> &'static str {
     match agent {
         "claude-code" => "Claude Code",
         "codex" => "Codex",
+        "deepseek-harness" => "DeepSeek Harness",
         "kimi-code" => "Kimi Code",
         "zcode" => "ZCode",
         _ => "Agent",

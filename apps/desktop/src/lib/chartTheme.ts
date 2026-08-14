@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 export type ChartColors = {
   /** ordered categorical tones for generic series (treemap, bars) */
   series: string[];
-  /** agent tones: codex, claude, kimi, cursor, openclaw, hermes, zcode */
+  /** agent tones: codex, claude, kimi, cursor, openclaw, hermes, zcode, DeepSeek Harness */
   agent: string[];
   /** model ring tones */
   model: string[];
@@ -33,10 +33,11 @@ function readChartColors(): ChartColors {
   const openclaw = token("--agent-openclaw", "#b6792e");
   const hermes = token("--agent-hermes", "#a85c91");
   const zcode = token("--agent-zcode", "#b86b2d");
+  const deepseek = token("--agent-deepseek", "#168a68");
   const textTertiary = token("--text-tertiary", "#8b929e");
   return {
     series: [chart1, chart2, chart3, chart4, warning, textTertiary],
-    agent: [chart1, chart2, chart3, cursor, openclaw, hermes, zcode],
+    agent: [chart1, chart2, chart3, cursor, openclaw, hermes, zcode, deepseek],
     model: [chart3, chart4, warning, textTertiary, chart1, chart2],
     text: token("--text", "#1d2129"),
     textSecondary: token("--text-secondary", "#59616d"),

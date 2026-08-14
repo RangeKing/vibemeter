@@ -246,7 +246,7 @@ export interface WorkPulse {
 export interface LiveSession {
   id: string;
   sourceSessionId: string;
-  agent: "claude-code" | "codex" | "kimi-code" | "zcode";
+  agent: "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode";
   projectLabel: string;
   conversationTitle?: string;
   status: "waiting" | "error" | "running" | "paused" | "idle" | "completed";
@@ -257,7 +257,7 @@ export interface LiveSession {
   waitingReason?: string;
   actions: LiveAction[];
   processId?: number;
-  origin?: "cli" | "desktop";
+  origin?: "cli" | "desktop" | "web";
   pulse: WorkPulse;
 }
 

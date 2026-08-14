@@ -3,9 +3,9 @@
 VibeMeter is a Tauri 2 macOS application with a React frontend, a Rust core, and a local SQLite evidence store.
 
 ```text
-Historical agent records                  Claude Code / Codex Hook events
-  → read-only provider adapters             → managed Python bridge
-  → normalized sessions and evidence        → 0600 local Unix socket
+Historical agent records                  Exact live event sources
+  → read-only provider adapters             → Claude Code / Codex managed hooks
+  → normalized sessions and evidence        → DeepSeek Harness read-only observer
                  ↘                         ↙
                     SQLite evidence store
                     ├─ canonical event ledger and activity cycles
@@ -43,7 +43,7 @@ Historical agent records                  Claude Code / Codex Hook events
 
 `canonical_events` is the only event-level fact source used by Live and historical replay. Provider adapters may produce richer source records transiently, but shared queries consume normalized event types, lifecycle state, process phase, evidence level, coverage, privacy level, stable identity, and tombstone state. Session aggregates, activity cycles, tasks, and VCTI are derived models; they do not reintroduce provider-specific event tables.
 
-Exact Claude Code and Codex hooks publish `live-hook` lifecycle evidence. Experimental Kimi Code and ZCode observers publish `live-observer` recent-activity evidence only and cannot create exact waiting, error, completion, or activity-cycle claims. Historical evidence uses `history-index` and remains isolated from live queries.
+Exact Claude Code and Codex hooks publish `live-hook` lifecycle evidence. The DeepSeek Harness adapter converts its durable structured local session stream into the same exact canonical lifecycle contract without installing a Hook or changing Harness state. Experimental Kimi Code and ZCode observers publish `live-observer` recent-activity evidence only and cannot create exact waiting, error, completion, or activity-cycle claims. Historical evidence uses `history-index` and remains isolated from live queries.
 
 Every active live session exposes one explainable work pulse with four independent dimensions: lifecycle, work phase, attention signal, and freshness. Exact sources may populate all four from canonical lifecycle evidence. Experimental observers populate recent activity and freshness only; lifecycle and attention stay explicitly unknown. Freshness is derived from the last structured update using fixed 30-second fresh and 120-second lost-update boundaries. Live renders the full pulse, while Notch renders a compact value from the same model.
 
@@ -63,6 +63,6 @@ Reindexing uses one transaction to mark the prior source generation, upsert the 
 
 Source records and repositories remain read-only. Historical text used for catchphrases is processed transiently and is not stored as phrase source text. Raw Hook envelopes are discarded after normalization by default. An explicitly enabled diagnostic mode encrypts them with a macOS Keychain-protected key for at most seven days; long-term features use canonical events, derived counters, and evidence references.
 
-Provider-specific fields must not leak into shared UI or query contracts. A provider is considered supported only when its data is represented end-to-end in analytics, VCTI, replay, sharing, source status, and attribution. Exact live monitoring is currently limited to Claude Code and Codex.
+Provider-specific fields must not leak into shared UI or query contracts. A provider is considered supported only when its data is represented end-to-end in analytics, VCTI, replay, sharing, source status, and attribution. Exact live monitoring currently covers Claude Code, Codex, and DeepSeek Harness.
 
 Preview and export share one deterministic render model. Privacy review and Share Guard run before every exposed export path.

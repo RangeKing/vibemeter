@@ -16,6 +16,13 @@
       "jumpSupported": true
     },
     {
+      "agent": "deepseek-harness",
+      "displayName": "DeepSeek Harness",
+      "historyCapability": "full",
+      "liveCapability": "exact",
+      "jumpSupported": true
+    },
+    {
       "agent": "kimi-code",
       "displayName": "Kimi Code",
       "historyCapability": "partial",

@@ -21,7 +21,7 @@ describe("Data source capability legend", () => {
     );
 
     expect(screen.getByRole("complementary", { name: "来源能力" })).toBeTruthy();
-    expect(screen.getByText("Claude Code、Codex")).toBeTruthy();
+    expect(screen.getByText("Claude Code、Codex、DeepSeek Harness")).toBeTruthy();
     expect(screen.getByText("Kimi Code、ZCode")).toBeTruthy();
     expect(screen.getByText("Cursor、OpenClaw、Hermes")).toBeTruthy();
     expect(screen.getByText("精确实时")).toBeTruthy();

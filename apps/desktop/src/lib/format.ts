@@ -73,6 +73,7 @@ export function formatDuration(seconds: number, locale: Locale): string {
 export function agentName(value: string): string {
   if (value === "claude-code") return "Claude Code";
   if (value === "codex") return "Codex";
+  if (value === "deepseek-harness") return "DeepSeek Harness";
   if (value === "kimi-code") return "Kimi Code";
   if (value === "cursor") return "Cursor";
   if (value === "openclaw") return "OpenClaw";

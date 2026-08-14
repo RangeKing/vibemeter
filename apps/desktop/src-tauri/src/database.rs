@@ -1139,7 +1139,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
 
 fn history_evidence_coverage(agent: &str) -> Option<&'static str> {
     match agent {
-        "claude-code" | "codex" => Some("full-history"),
+        "claude-code" | "codex" | "deepseek-harness" => Some("full-history"),
         "kimi-code" | "cursor" | "openclaw" | "hermes" | "zcode" => Some("partial-history"),
         _ => None,
     }
@@ -6890,6 +6890,12 @@ fn upsert_warning_rows(
     state: &ParseState,
     now: &str,
 ) -> AppResult<()> {
+    transaction.execute(
+        "DELETE FROM parser_warnings
+         WHERE source_file_hash=?1
+           AND warning_code IN('malformed-record','unknown-record')",
+        params![file_hash],
+    )?;
     for (code, count) in [
         ("malformed-record", state.malformed_records),
         ("unknown-record", state.unknown_records),
@@ -7592,6 +7598,7 @@ fn stored_agent_kind(agent: &str) -> Option<AgentKind> {
     match agent {
         "claude-code" => Some(AgentKind::ClaudeCode),
         "codex" => Some(AgentKind::Codex),
+        "deepseek-harness" => Some(AgentKind::DeepSeekHarness),
         "kimi-code" => Some(AgentKind::KimiCode),
         "cursor" => Some(AgentKind::Cursor),
         "openclaw" => Some(AgentKind::OpenClaw),
@@ -7911,7 +7918,7 @@ fn query_task_for_session(
 
 fn capabilities_for_agent(agent: &str) -> Vec<String> {
     let capabilities = match agent {
-        "claude-code" | "codex" => &[
+        "claude-code" | "codex" | "deepseek-harness" => &[
             "session_timestamps",
             "model_name",
             "token_usage",
@@ -8710,7 +8717,7 @@ fn add_rate_count(current: Option<f64>, value: u64) -> Option<f64> {
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
-    use crate::adapters::{claude, codex, common};
+    use crate::adapters::{claude, codex, common, deepseek_harness};
     use crate::models::{DailyAggregate, ObservedLiveEvent, PhraseAggregate};
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -9084,6 +9091,20 @@ mod concurrency_tests {
                     }),
                 );
             }
+            AgentKind::DeepSeekHarness => {
+                for record in [
+                    json!({"version":0,"id":"deepseek-harness-history-session","createdAt":1786323600000_i64,"cwd":"/tmp/vibemeter-history"}),
+                    json!({"type":"turn/start","seq":1,"time":1786323600000_i64,"data":{"turn":1}}),
+                    json!({"type":"user/message","seq":2,"time":1786323600001_i64,"data":{"source":{"kind":"user"},"content":[{"type":"text","text":"private prompt must stay out"}]}}),
+                    json!({"type":"tool/call","seq":3,"time":1786323601000_i64,"data":{"name":"write","arguments":"{\"path\":\"/tmp/vibemeter-history/src/lib.rs\",\"content\":\"private source body\"}"}}),
+                    json!({"type":"tool/result","seq":4,"time":1786323601500_i64,"data":{"error":null}}),
+                    json!({"type":"tool/call","seq":5,"time":1786323602000_i64,"data":{"name":"bash","arguments":"{\"command\":\"cargo test --token sk-abcdefghijklmnop\"}"}}),
+                    json!({"type":"tool/result","seq":6,"time":1786323602500_i64,"data":{"error":null}}),
+                    json!({"type":"turn/end","seq":7,"time":1786323603000_i64,"data":{"turn":1,"reason":{"kind":"completed"}}}),
+                ] {
+                    deepseek_harness::parse_record(&mut state, &record);
+                }
+            }
             _ => unreachable!("fixture is limited to exact history sources"),
         }
         common::finalize_run(&mut state);
@@ -9237,6 +9258,7 @@ mod concurrency_tests {
             vec![
                 ("claude-code", "full", "exact", PARSER_VERSION),
                 ("codex", "full", "exact", PARSER_VERSION),
+                ("deepseek-harness", "full", "exact", PARSER_VERSION),
                 ("kimi-code", "partial", "experimental", PARSER_VERSION),
                 ("zcode", "partial", "experimental", PARSER_VERSION),
                 ("cursor", "partial", "none", PARSER_VERSION),
@@ -9279,6 +9301,49 @@ mod concurrency_tests {
     }
 
     #[test]
+    fn clean_reindex_removes_stale_parser_warnings() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("parser-warning-cleanup.sqlite"))
+            .expect("database should open");
+        let mut state = ParseState::new(AgentKind::DeepSeekHarness, "warning-session".into());
+        state.unknown_records = 6;
+        database
+            .persist_parse_state("warning-file", 10, 1, 10, &state)
+            .expect("warning state should persist");
+        database
+            .upsert_source(AgentKind::DeepSeekHarness, "path", true, "ready")
+            .expect("source should persist");
+        assert_eq!(
+            database
+                .sources()
+                .expect("sources should load")
+                .into_iter()
+                .find(|source| source.agent == "deepseek-harness")
+                .expect("source should exist")
+                .warning_count,
+            6
+        );
+
+        state.unknown_records = 0;
+        database
+            .persist_parse_state("warning-file", 10, 2, 10, &state)
+            .expect("clean state should replace warnings");
+        database
+            .upsert_source(AgentKind::DeepSeekHarness, "path", true, "ready")
+            .expect("source should refresh");
+        assert_eq!(
+            database
+                .sources()
+                .expect("sources should load")
+                .into_iter()
+                .find(|source| source.agent == "deepseek-harness")
+                .expect("source should exist")
+                .warning_count,
+            0
+        );
+    }
+
+    #[test]
     fn zcode_source_selection_uses_the_canonical_registry() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("zcode-selection.sqlite"))
@@ -9302,7 +9367,11 @@ mod concurrency_tests {
 
     #[test]
     fn exact_history_reindex_is_canonical_idempotent_private_and_user_safe() {
-        for agent in [AgentKind::ClaudeCode, AgentKind::Codex] {
+        for agent in [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::DeepSeekHarness,
+        ] {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let database = Database::open(
                 temporary

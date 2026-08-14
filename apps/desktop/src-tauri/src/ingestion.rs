@@ -1,4 +1,6 @@
-use crate::adapters::{claude, codex, common, cursor, database_history, kimi, openclaw, zcode};
+use crate::adapters::{
+    claude, codex, common, cursor, database_history, deepseek_harness, kimi, openclaw, zcode,
+};
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
@@ -32,6 +34,7 @@ enum SourceAdapter {
     Claude,
     Codex,
     Cursor,
+    DeepSeekHarness,
     Kimi,
     OpenClaw,
     ZCode,
@@ -207,6 +210,7 @@ fn run_index(
     for agent in [
         AgentKind::ClaudeCode,
         AgentKind::Codex,
+        AgentKind::DeepSeekHarness,
         AgentKind::KimiCode,
         AgentKind::Cursor,
         AgentKind::OpenClaw,
@@ -278,8 +282,10 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
             .map(ToString::to_string)
             .unwrap_or_else(|| file_hash.clone())
     };
-    let can_resume = source.adapter != SourceAdapter::ZCode
-        && !force
+    let can_resume = !matches!(
+        source.adapter,
+        SourceAdapter::ZCode | SourceAdapter::DeepSeekHarness
+    ) && !force
         && cursor.as_ref().is_some_and(|cursor| {
             cursor.source_size < source.size
                 && cursor.byte_offset <= source.size
@@ -323,6 +329,14 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         .is_none_or(|value| value == "true");
     common::set_prompt_structure_enabled(&mut state, prompt_structure_enabled);
 
+    if source.adapter == SourceAdapter::DeepSeekHarness {
+        deepseek_harness::read_records(&source.path, |record| {
+            deepseek_harness::parse_record(&mut state, record);
+        })?;
+        common::finalize_run(&mut state);
+        persist_complete_state(database, &file_hash, source, &mut state)?;
+        return Ok(true);
+    }
     if source.adapter == SourceAdapter::ZCode {
         let mut content = Vec::new();
         File::open(&source.path)?.read_to_end(&mut content)?;
@@ -421,6 +435,9 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
                     SourceAdapter::Codex => codex::parse_record(&mut state, &record),
                     SourceAdapter::Claude => claude::parse_record(&mut state, &record),
                     SourceAdapter::Cursor => cursor::parse_record(&mut state, &record),
+                    SourceAdapter::DeepSeekHarness => {
+                        deepseek_harness::parse_record(&mut state, &record)
+                    }
                     SourceAdapter::Kimi => kimi::parse_record(&mut state, &record),
                     SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, &record),
                     SourceAdapter::ZCode => zcode::parse_record(&mut state, &record),
@@ -461,6 +478,37 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         &state,
     )?;
     Ok(true)
+}
+
+fn persist_complete_state(
+    database: &Database,
+    file_hash: &str,
+    source: &SourceFile,
+    state: &mut ParseState,
+) -> AppResult<()> {
+    let git_allowed = database
+        .setting("gitReadAllowed")?
+        .is_some_and(|value| value == "true");
+    state.git_evidence = Some(if git_allowed {
+        state.project_root.as_deref().map_or_else(
+            || crate::models::GitEvidence {
+                available: false,
+                state: "project-unavailable".into(),
+                ..crate::models::GitEvidence::default()
+            },
+            |root| {
+                git_evidence::inspect(root, state.started_at.as_deref(), state.ended_at.as_deref())
+            },
+        )
+    } else {
+        crate::models::GitEvidence {
+            available: false,
+            state: "not-authorized".into(),
+            ..crate::models::GitEvidence::default()
+        }
+    });
+    database.persist_parse_state(file_hash, source.size, source.modified, source.size, state)?;
+    Ok(())
 }
 
 fn restore_transient_project_context(
@@ -515,8 +563,13 @@ fn collect_jsonl_files(
         }
         let extension = entry.path().extension().and_then(|value| value.to_str());
         let is_zcode_json = adapter == SourceAdapter::ZCode && extension == Some("json");
+        let is_deepseek_log = adapter == SourceAdapter::DeepSeekHarness
+            && entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name == "session.jsonl.zstd");
         let is_jsonl = extension == Some("jsonl");
-        if !is_jsonl && !is_zcode_json {
+        if !is_jsonl && !is_zcode_json && !is_deepseek_log {
             continue;
         }
         let file_name = entry.file_name().to_string_lossy();
@@ -558,6 +611,11 @@ fn source_roots() -> Vec<SourceRoot> {
         agent: AgentKind::Codex,
         path: codex_home.join("sessions"),
         adapter: SourceAdapter::Codex,
+    });
+    roots.push(SourceRoot {
+        agent: AgentKind::DeepSeekHarness,
+        path: home.join(".dsh/sessions"),
+        adapter: SourceAdapter::DeepSeekHarness,
     });
     roots.push(SourceRoot {
         agent: AgentKind::OpenClaw,
@@ -685,6 +743,7 @@ fn agent_kind_from_name(value: &str) -> Option<AgentKind> {
     match value {
         "claude-code" => Some(AgentKind::ClaudeCode),
         "codex" => Some(AgentKind::Codex),
+        "deepseek-harness" => Some(AgentKind::DeepSeekHarness),
         "kimi-code" => Some(AgentKind::KimiCode),
         "cursor" => Some(AgentKind::Cursor),
         "openclaw" => Some(AgentKind::OpenClaw),
@@ -711,11 +770,14 @@ fn read_content_preview_from_source(
             SourceAdapter::Codex => codex::parse_record(&mut state, record),
             SourceAdapter::Claude => claude::parse_record(&mut state, record),
             SourceAdapter::Cursor => cursor::parse_record(&mut state, record),
+            SourceAdapter::DeepSeekHarness => deepseek_harness::parse_record(&mut state, record),
             SourceAdapter::Kimi => kimi::parse_record(&mut state, record),
             SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, record),
             SourceAdapter::ZCode => zcode::parse_record(&mut state, record),
         };
-        if source.adapter == SourceAdapter::ZCode
+        if source.adapter == SourceAdapter::DeepSeekHarness {
+            deepseek_harness::read_records(&source.path, |record| parse_record(record))?;
+        } else if source.adapter == SourceAdapter::ZCode
             && source.path.extension().and_then(|value| value.to_str()) == Some("json")
         {
             let mut content = Vec::new();

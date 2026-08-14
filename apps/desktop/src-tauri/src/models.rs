@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.7.0";
+pub const PARSER_VERSION: &str = "6.8.3";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+    DeepSeekHarness,
     KimiCode,
     Cursor,
     OpenClaw,
@@ -21,6 +22,7 @@ impl AgentKind {
         match self {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
+            Self::DeepSeekHarness => "deepseek-harness",
             Self::KimiCode => "kimi-code",
             Self::Cursor => "cursor",
             Self::OpenClaw => "openclaw",

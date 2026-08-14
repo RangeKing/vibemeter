@@ -19,7 +19,7 @@ describe("source status language", () => {
   });
 
   it("groups sources by the shared live capability contract", () => {
-    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex"]);
+    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex", "DeepSeek Harness"]);
     expect(sourceNamesForLiveCapability("experimental")).toEqual(["Kimi Code", "ZCode"]);
     expect(sourceNamesForLiveCapability("none")).toEqual(["Cursor", "OpenClaw", "Hermes"]);
     expect(sourceLiveTranslationKey("exact", true)).toBe("sources.liveCapabilities.exactReady");
@@ -31,7 +31,7 @@ describe("source status language", () => {
 
   it("builds the product-copy source groups from the same registry", () => {
     expect(sourceCapabilityNameGroups()).toEqual({
-      exact: "Claude Code、Codex",
+      exact: "Claude Code、Codex、DeepSeek Harness",
       experimental: "Kimi Code、ZCode",
       historyOnly: "Cursor、OpenClaw、Hermes",
     });

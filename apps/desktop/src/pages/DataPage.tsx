@@ -23,6 +23,7 @@ const COMPARISON_COLORS = [
   "var(--chart-1)",
   "var(--chart-2)",
   "var(--chart-3)",
+  "var(--agent-deepseek)",
   "var(--agent-cursor)",
   "var(--warning)",
   "var(--agent-hermes)",
@@ -99,6 +100,7 @@ function agentSeries(daily: DailyUsagePoint[], hourly: HourlyUsagePoint[], useHo
 function agentColor(agent: string, colors: ReturnType<typeof useChartColors>, fallbackIndex = 0): string {
   if (agent === "claude-code" || agent === "claude") return colors.agent[1];
   if (agent === "codex") return colors.agent[0];
+  if (agent === "deepseek-harness") return colors.agent[7];
   if (agent === "kimi-code" || agent === "kimi") return colors.agent[2];
   if (agent === "cursor") return colors.agent[3];
   if (agent === "openclaw") return colors.agent[4];

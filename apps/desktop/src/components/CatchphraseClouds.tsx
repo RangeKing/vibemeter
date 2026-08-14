@@ -6,6 +6,7 @@ import { EmptyState } from "./ui";
 
 const AGENT_COLORS: Record<string, string> = {
   codex: "#ff7a59",
+  "deepseek-harness": "#25a48a",
   "claude-code": "#d8a06f",
   claude: "#d8a06f",
   "kimi-code": "#62a9ff",

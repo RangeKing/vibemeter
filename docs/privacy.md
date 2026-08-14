@@ -38,6 +38,8 @@ VibeMeter does not change Agent configuration until onboarding is complete. For 
 
 The managed script sends bounded events only to `~/.vibemeter/vibemeter.sock`, which is created with mode `0600`.
 
+DeepSeek Harness uses no VibeMeter-managed Hook. VibeMeter reads its local structured session records in place, normalizes only bounded lifecycle and analytics evidence, and never edits Harness configuration or source sessions.
+
 ## Optional features
 
 Git evidence, prompt-structure analysis, and Cursor Dashboard usage require separate user choices. Account-level Cursor usage is kept separate from local session evidence and does not affect local VCTI.

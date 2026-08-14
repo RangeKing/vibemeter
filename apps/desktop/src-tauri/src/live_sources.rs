@@ -12,6 +12,8 @@ use std::process::Command;
 use std::time::{Duration as StdDuration, SystemTime};
 
 const KIMI_LIVE_WINDOW: StdDuration = StdDuration::from_secs(90);
+const DEEPSEEK_LIVE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const DEEPSEEK_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
 const ZCODE_LIVE_WINDOW: StdDuration = StdDuration::from_secs(90);
 const ZCODE_MODEL_IO_WINDOW: StdDuration = StdDuration::from_secs(20);
 const MAX_DISCOVERY_FILES: usize = 64;
@@ -36,6 +38,9 @@ pub(crate) fn discover() -> Vec<LiveSession> {
         for session in discover_kimi(&home.join(".kimi-code"), now) {
             sessions.insert(session.id.clone(), session);
         }
+        for session in discover_deepseek_harness(&home.join(".dsh"), now) {
+            sessions.insert(session.id.clone(), session);
+        }
         for session in discover_zcode(&zcode_root(&home), now) {
             sessions
                 .entry(session.id.clone())
@@ -58,12 +63,156 @@ pub(crate) fn provider_available(provider: &str) -> bool {
     };
     match provider {
         "kimi-code" => home.join(".kimi-code").is_dir(),
+        "deepseek-harness" => home.join(".dsh/sessions").is_dir(),
         "zcode" => {
             let root = zcode_root(&home);
             root.is_dir() || Path::new("/Applications/ZCode.app").is_dir()
         }
         _ => false,
     }
+}
+
+fn discover_deepseek_harness(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
+    recent_files(&root.join("sessions"), 5, |path| {
+        path.file_name().and_then(|value| value.to_str()) == Some("session.jsonl.zstd")
+    })
+    .into_iter()
+    .filter_map(|path| deepseek_harness_session(&path, now))
+    .collect()
+}
+
+fn deepseek_harness_session(path: &Path, now: DateTime<Utc>) -> Option<LiveSession> {
+    let modified = modified_at(path)?;
+    if !is_recent(modified, DEEPSEEK_LIVE_WINDOW) {
+        return None;
+    }
+    let mut source_session_id = None;
+    let mut project_label = "Unknown project".to_string();
+    let mut started_at = None;
+    let mut latest = None;
+    let mut turn_open = false;
+    crate::adapters::deepseek_harness::read_records(path, |record| {
+        if record.get("version").is_some() && record.get("id").is_some() {
+            source_session_id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| valid_identifier(value))
+                .map(ToString::to_string);
+            project_label = project_label_from_cwd(
+                record
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+            started_at = timestamp_from_value(record.get("createdAt"));
+            return;
+        }
+        let event_type = record
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let data = record.get("data").unwrap_or(&Value::Null);
+        let occurred_at = timestamp_from_value(record.get("time"))
+            .unwrap_or_else(|| system_time_timestamp(modified));
+        match event_type {
+            "turn/start" => {
+                turn_open = true;
+                latest = Some(runtime_signal(
+                    "running",
+                    "thinking",
+                    "think",
+                    "Thinking",
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "step/start" | "approval/decided" | "tool/result" => {
+                if turn_open {
+                    latest = Some(runtime_signal(
+                        "running",
+                        "thinking",
+                        "think",
+                        "Thinking",
+                        occurred_at,
+                        started_at.clone(),
+                    ));
+                }
+            }
+            "tool/call" => {
+                turn_open = true;
+                let label = data
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(safe_label)
+                    .unwrap_or_else(|| "Tool".into());
+                latest = Some(runtime_signal(
+                    "running",
+                    runtime_phase(&label),
+                    "tool",
+                    label,
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "approval/asked" => {
+                turn_open = true;
+                latest = Some(runtime_signal(
+                    "waiting",
+                    "needs-you",
+                    "waiting",
+                    "Permission",
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "compaction/start" => {
+                turn_open = true;
+                latest = Some(runtime_signal(
+                    "running",
+                    "compacting",
+                    "compact",
+                    "Compacting context",
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "turn/end" => {
+                turn_open = false;
+                let reason = data
+                    .get("reason")
+                    .and_then(|reason| reason.get("kind"))
+                    .and_then(Value::as_str);
+                let (status, phase, kind, label) = match reason {
+                    Some("error") | Some("blocked") => ("error", "error", "error", "Error"),
+                    _ => ("completed", "completed", "complete", "Completed"),
+                };
+                latest = Some(runtime_signal(
+                    status,
+                    phase,
+                    kind,
+                    label,
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            _ => {}
+        }
+    })
+    .ok()?;
+    let source_session_id = source_session_id?;
+    let signal = latest?;
+    if signal.status == "completed"
+        && !is_recent_timestamp(&signal.occurred_at, now, DEEPSEEK_COMPLETED_WINDOW)
+    {
+        return None;
+    }
+    Some(runtime_session(
+        "deepseek-harness",
+        source_session_id,
+        project_label,
+        signal,
+        process_for("deepseek-harness").map(|(pid, _)| (pid, "web")),
+    ))
 }
 
 fn zcode_root(home: &Path) -> PathBuf {
@@ -767,7 +916,7 @@ fn system_time_timestamp(value: SystemTime) -> String {
 
 fn process_for(provider: &str) -> Option<(u32, bool)> {
     let output = Command::new("/bin/ps")
-        .args(["-axo", "pid=,tty=,comm="])
+        .args(["-axo", "pid=,tty=,command="])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -788,6 +937,9 @@ fn process_for(provider: &str) -> Option<(u32, bool)> {
                     lower.ends_with("/kimi") || lower == "kimi" || lower.contains("kimi-code")
                 }
                 "zcode" => lower == "zcode" || lower.contains("zcode-host-local"),
+                "deepseek-harness" => {
+                    lower.ends_with("/dsh") || lower.contains("/dsh web") || lower == "dsh"
+                }
                 _ => false,
             };
             matches.then_some((pid, tty != "??"))
@@ -855,6 +1007,56 @@ mod tests {
         assert_eq!(session.agent, "zcode");
         assert_eq!(session.status, "running");
         assert_eq!(session.actions[0].label, "apply_patch");
+        assert!(!format!("{session:?}").contains("private"));
+    }
+
+    #[test]
+    fn deepseek_harness_log_reports_exact_waiting_state_without_payload_text() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("session.jsonl.zstd");
+        let now = Utc::now();
+        let lines = [
+            serde_json::json!({
+                "version": 0,
+                "id": "session-deepseek-live",
+                "createdAt": (now - chrono::Duration::seconds(3)).timestamp_millis(),
+                "cwd": "/tmp/deepseek-project"
+            }),
+            serde_json::json!({
+                "type": "turn/start",
+                "seq": 1,
+                "time": (now - chrono::Duration::seconds(2)).timestamp_millis(),
+                "data": {"turn": 1}
+            }),
+            serde_json::json!({
+                "type": "user/message",
+                "seq": 2,
+                "time": (now - chrono::Duration::seconds(1)).timestamp_millis(),
+                "data": {"content": [{"type":"text","text":"private prompt"}], "source":{"kind":"user"}}
+            }),
+            serde_json::json!({
+                "type": "approval/asked",
+                "seq": 3,
+                "time": now.timestamp_millis(),
+                "data": {"id":"approval-1","toolName":"bash","reason":"private command"}
+            }),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(
+            &path,
+            zstd::stream::encode_all(lines.as_bytes(), 1).expect("zstd"),
+        )
+        .expect("session log");
+
+        let session = deepseek_harness_session(&path, now).expect("live session");
+        assert_eq!(session.agent, "deepseek-harness");
+        assert_eq!(session.status, "waiting");
+        assert_eq!(session.phase, "needs-you");
+        assert_eq!(session.project_label, "deepseek-project");
         assert!(!format!("{session:?}").contains("private"));
     }
 }

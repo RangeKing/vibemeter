@@ -3597,6 +3597,7 @@ fn agent_mark(svg: &mut String, x: f64, y: f64, agent: &str, size: f64, palette:
     rect(svg, x, y, size, size, size * 0.3, color, None);
     let letter = match agent {
         "claude-code" => "C",
+        "deepseek-harness" => "D",
         "kimi-code" => "K",
         "zcode" => "Z",
         _ => "O",

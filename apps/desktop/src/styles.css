@@ -50,6 +50,7 @@
   --agent-openclaw: #b6792e;
   --agent-hermes: #a85c91;
   --agent-zcode: #b86b2d;
+  --agent-deepseek: #168a68;
   --trajectory-input: #168a68;
   --trajectory-agent: #6b4fd8;
   --trajectory-tools: #d36b16;
@@ -108,6 +109,7 @@
   --agent-openclaw: #e0ae62;
   --agent-hermes: #e39ac7;
   --agent-zcode: #f2b66d;
+  --agent-deepseek: #4dd3a0;
   --trajectory-input: #4dd3a0;
   --trajectory-agent: #a58bff;
   --trajectory-tools: #f5a238;
@@ -159,6 +161,7 @@
     --agent-openclaw: #e0ae62;
     --agent-hermes: #e39ac7;
     --agent-zcode: #f2b66d;
+    --agent-deepseek: #4dd3a0;
     --trajectory-input: #4dd3a0;
     --trajectory-agent: #a58bff;
     --trajectory-tools: #f5a238;
@@ -765,6 +768,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .agent-badge.compact .agent-glyph { width: 23px; height: 23px; border-radius: 7px; font-size: 10px; }
 .agent-glyph.claude { color: #9b573c; background: #f2ded2; }
 .agent-glyph.codex { color: #306252; background: #dcebe5; }
+.agent-glyph.deepseek { color: #176c58; background: #d8eee7; }
 .agent-glyph.kimi { color: #3f63aa; background: #dee7f7; }
 .agent-glyph.cursor { color: #0b6071; background: #d8eff1; }
 .agent-glyph.openclaw { color: #9a621b; background: #f8e5c8; }
