@@ -721,14 +721,6 @@ fn render_vcti_card(
     };
     let avatar_x = margin + 48.0;
     let avatar_y = panel_y + 62.0;
-    render_vcti_art_field(
-        svg,
-        avatar_x - avatar_size * 0.14,
-        avatar_y - avatar_size * 0.14,
-        avatar_size * 1.28,
-        accent,
-        &profile.identity_visual,
-    );
     render_vcti_avatar(
         svg,
         avatar_x,
@@ -1204,44 +1196,6 @@ fn render_vcti_card(
     }
 }
 
-fn render_vcti_art_field(
-    svg: &mut String,
-    x: f64,
-    y: f64,
-    size: f64,
-    accent: &str,
-    visual: &crate::models::VctiIdentityVisual,
-) {
-    if !visual.available {
-        return;
-    }
-    let scale = size / 100.0;
-    write!(
-        svg,
-        "<g data-vcti-visual-version=\"{}\" data-vcti-range=\"{}\" transform=\"translate({x:.2} {y:.2}) scale({scale:.4})\">",
-        xml(&visual.version), xml(&visual.range)
-    ).ok();
-    for path in &visual.contours {
-        write!(svg, "<path class=\"vcti-art-contour\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
-    }
-    for path in &visual.rhythm.paths {
-        write!(svg, "<path class=\"vcti-art-rhythm\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
-    }
-    for path in &visual.collaboration.paths {
-        write!(svg, "<path class=\"vcti-art-branch\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
-    }
-    for mark in &visual.detail.tool_marks {
-        write!(svg, "<circle class=\"vcti-art-tool\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"{}\" opacity=\"{:.2}\"/>", mark.cx, mark.cy, mark.radius, accent, mark.opacity).ok();
-    }
-    for mark in &visual.detail.skill_marks {
-        write!(svg, "<circle class=\"vcti-art-skill\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"none\" stroke=\"{}\" stroke-width=\"0.65\" opacity=\"{:.2}\"/>", mark.cx, mark.cy, mark.radius, accent, mark.opacity).ok();
-    }
-    for path in &visual.process.paths {
-        write!(svg, "<path class=\"vcti-art-process\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
-    }
-    svg.push_str("</g>");
-}
-
 #[allow(clippy::too_many_arguments)]
 fn render_vcti_identity_evidence(
     svg: &mut String,
@@ -1258,7 +1212,7 @@ fn render_vcti_identity_evidence(
     let columns = if landscape { 4 } else { 2 };
     let gap = if landscape { 12.0 } else { 18.0 };
     let card_width = (width - gap * (columns - 1) as f64) / columns as f64;
-    let card_height = if landscape { 108.0 } else { 144.0 };
+    let card_height = if landscape { 122.0 } else { 144.0 };
     let heading_size = if landscape { 18.0 } else { 24.0 };
     text(
         svg,
@@ -1303,9 +1257,9 @@ fn render_vcti_identity_evidence(
         text_block(
             svg,
             card_x + 20.0,
-            card_y + if landscape { 62.0 } else { 70.0 },
+            card_y + 70.0,
             card_width - 40.0,
-            if landscape { 15.0 } else { 21.0 },
+            if landscape { 17.0 } else { 21.0 },
             560,
             palette.text,
             value,
@@ -1322,7 +1276,7 @@ fn vcti_identity_evidence_summaries(
 ) -> Vec<(&'static str, String)> {
     let zh = locale == "zh-CN";
     let identity = &profile.identity_evidence;
-    let work_periods = if identity.rhythm.work_periods_available {
+    let rhythm = if identity.rhythm.work_periods_available {
         let periods = identity
             .rhythm
             .work_periods
@@ -1349,11 +1303,6 @@ fn vcti_identity_evidence_summaries(
     } else {
         vcti_not_recorded(locale).into()
     };
-    let rhythm = format!(
-        "{} · {}",
-        work_periods,
-        vcti_optional_days(locale, &identity.rhythm.active_days)
-    );
     let collaboration = format!(
         "{} {} · {} {}",
         "Subagent",
@@ -1392,35 +1341,22 @@ fn vcti_identity_evidence_summaries(
 }
 
 fn vcti_optional_count(locale: &str, metric: &VctiOptionalMetric) -> String {
-    metric
-        .available
-        .then_some(metric.value)
-        .flatten()
-        .map(|value| vcti_count(locale, value))
-        .unwrap_or_else(|| vcti_not_recorded(locale).into())
+    if metric.available {
+        vcti_count(locale, metric.value.unwrap_or(0.0))
+    } else {
+        vcti_not_recorded(locale).into()
+    }
 }
 
 fn vcti_optional_categories(locale: &str, metric: &VctiOptionalMetric) -> String {
-    let Some(value) = metric.available.then_some(metric.value).flatten() else {
+    if !metric.available {
         return vcti_not_recorded(locale).into();
-    };
-    let value = format!("{value:.0}");
+    }
+    let value = format!("{:.0}", metric.value.unwrap_or(0.0));
     if locale == "zh-CN" {
         format!("{value} 类")
     } else {
         format!("{value} categories")
-    }
-}
-
-fn vcti_optional_days(locale: &str, metric: &VctiOptionalMetric) -> String {
-    let Some(value) = metric.available.then_some(metric.value).flatten() else {
-        return vcti_not_recorded(locale).into();
-    };
-    let value = format!("{value:.0}");
-    if locale == "zh-CN" {
-        format!("{value} 天")
-    } else {
-        format!("{value} days")
     }
 }
 
@@ -4147,59 +4083,6 @@ mod tests {
     }
 
     #[test]
-    fn vcti_art_export_contains_no_raw_work_content_fields() {
-        let private_fields = [
-            "sourceSessionId",
-            "projectName",
-            "prompt",
-            "command",
-            "toolOutput",
-            "skillName",
-        ];
-        let mut svg = String::new();
-        let visual = crate::models::VctiIdentityVisual {
-            algorithm_version: "1.6.0".into(),
-            version: "2.0.0".into(),
-            range: "90d".into(),
-            available: false,
-            inputs: Vec::new(),
-            contours: Vec::new(),
-            rhythm: crate::models::VctiRhythmVisual {
-                available: false,
-                phase: None,
-                active_intensity: None,
-                session_intensity: None,
-                density: None,
-                paths: Vec::new(),
-            },
-            collaboration: crate::models::VctiCollaborationVisual {
-                available: false,
-                branch_intensity: None,
-                parallel_intensity: None,
-                paths: Vec::new(),
-            },
-            detail: crate::models::VctiDetailVisual {
-                available: false,
-                tool_intensity: None,
-                skill_intensity: None,
-                tool_marks: Vec::new(),
-                skill_marks: Vec::new(),
-            },
-            process: crate::models::VctiProcessVisual {
-                available: false,
-                error_intensity: None,
-                retry_intensity: None,
-                rollback_intensity: None,
-                paths: Vec::new(),
-            },
-        };
-        render_vcti_art_field(&mut svg, 0.0, 0.0, 100.0, "#fff", &visual);
-        for field in private_fields {
-            assert!(!svg.contains(field));
-        }
-    }
-
-    #[test]
     fn vcti_identity_evidence_keeps_zero_distinct_from_unrecorded() {
         let zero = crate::models::VctiOptionalMetric {
             value: Some(0.0),
@@ -4212,21 +4095,8 @@ mod tests {
 
         assert_eq!(vcti_optional_count("zh-CN", &zero), "0 次");
         assert_eq!(vcti_optional_count("zh-CN", &missing), "未记录");
-        assert_eq!(
-            vcti_optional_count(
-                "zh-CN",
-                &crate::models::VctiOptionalMetric {
-                    value: None,
-                    available: true,
-                }
-            ),
-            "未记录"
-        );
         assert_eq!(vcti_optional_count("en-US", &zero), "0");
         assert_eq!(vcti_optional_count("en-US", &missing), "Not recorded");
-        assert_eq!(vcti_optional_days("zh-CN", &zero), "0 天");
-        assert_eq!(vcti_optional_days("en-US", &zero), "0 days");
-        assert_eq!(vcti_optional_days("zh-CN", &missing), "未记录");
     }
 
     #[test]

@@ -2,14 +2,12 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
-import { act } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
 import { useUiStore } from "../store";
 import type { VctiProfile } from "../types";
 import { VctiPage } from "./VctiPage";
-import { VctiArtPortrait } from "../components/VctiArtPortrait";
 
 const { insights, phraseCloud, vctiProfile } = vi.hoisted(() => ({
   insights: vi.fn(),
@@ -80,17 +78,6 @@ const profile = {
       rollbacks: { available: false },
     },
   },
-  identityVisual: {
-    algorithmVersion: "1.6.0",
-    version: "2.0.0",
-    range: "90d",
-    available: true,
-    contours: [{ d: "M 10 50 Q 50 10 90 50 Q 50 90 10 50 Z", strokeWidth: 0.8, opacity: 0.5 }],
-    rhythm: { available: true, phase: 0.25, density: 0.6, paths: [{ d: "M 4 42 Q 50 18 96 58", strokeWidth: 0.7, opacity: 0.4 }] },
-    collaboration: { available: true, branchIntensity: 0.5, parallelIntensity: 0.25, paths: [{ d: "M 50 50 Q 72 35 92 20", strokeWidth: 0.7, opacity: 0.5 }] },
-    detail: { available: true, toolIntensity: 0.5, skillIntensity: 0.4, toolMarks: [{ cx: 12, cy: 34, radius: 1, opacity: 0.7 }], skillMarks: [{ cx: 86, cy: 62, radius: 1.5, opacity: 0.8 }] },
-    process: { available: true, errorIntensity: 0.2, retryIntensity: 0.3, rollbackIntensity: 0.1, paths: [{ d: "M 18 70 Q 50 55 82 70", strokeWidth: 0.8, opacity: 0.6 }] },
-  },
 } as unknown as VctiProfile;
 
 function renderPage() {
@@ -124,84 +111,24 @@ describe("VctiPage identity art", () => {
     const character = await screen.findByRole("img", { name: "开工判官" });
     expect(character.classList.contains("vcti-avatar")).toBe(true);
     expect(character.querySelector(".vcti-avatar-art")).toBeTruthy();
-    expect(container.querySelector('[data-vcti-visual-version="2.0.0"]')).toBeTruthy();
-    expect(container.querySelectorAll(".vcti-art-contours path")).toHaveLength(1);
-    expect(container.querySelectorAll(".vcti-art-rhythm path")).toHaveLength(1);
-    expect(container.querySelectorAll(".vcti-art-branches path")).toHaveLength(1);
-    expect(container.querySelectorAll(".vcti-art-tools circle")).toHaveLength(1);
-    expect(container.querySelectorAll(".vcti-art-skills circle")).toHaveLength(1);
-    expect(container.querySelectorAll(".vcti-art-process path")).toHaveLength(1);
+    expect(container.querySelector("[data-vcti-visual-version]")).toBeNull();
   });
 
-  it("makes the four-channel art the primary composition and keeps text as a compact legend", async () => {
+  it("shows all four identity evidence summaries before opening the detail drawer", async () => {
     useUiStore.setState({ range: "90d" });
     vctiProfile.mockResolvedValue(profile);
     insights.mockResolvedValue({ items: [] });
     phraseCloud.mockRejectedValue(new Error("not needed"));
 
-    const { container } = renderPage();
+    renderPage();
 
-    expect(await screen.findByRole("figure", { name: /开工判官/ })).toBeTruthy();
-    expect(container.querySelectorAll(".vcti-art-field > g")).toHaveLength(5);
-    expect(screen.getByRole("list", { name: "人格依据" })).toBeTruthy();
+    expect(await screen.findByRole("region", { name: "人格依据" })).toBeTruthy();
     expect(screen.getByText("工作节奏")).toBeTruthy();
     expect(screen.getByText("协作方式")).toBeTruthy();
     expect(screen.getByText("工具与 Skill")).toBeTruthy();
     expect(screen.getByText("过程记录")).toBeTruthy();
-    expect(screen.queryByText(/错误 0/)).toBeNull();
+    expect(screen.getByText(/错误 0/)).toBeTruthy();
+    expect(screen.getByText(/回滚 未记录/)).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "为什么是这个人格" })).toBeNull();
-  });
-
-  it("treats an available metric without a value as not recorded", async () => {
-    useUiStore.setState({ range: "90d" });
-    vctiProfile.mockResolvedValue({
-      ...profile,
-      identityEvidence: {
-        ...profile.identityEvidence,
-        processVariation: {
-          ...profile.identityEvidence.processVariation,
-          errors: { available: true },
-        },
-      },
-    });
-    insights.mockResolvedValue({ items: [] });
-    phraseCloud.mockRejectedValue(new Error("not needed"));
-
-    renderPage();
-
-    expect(await screen.findByText("过程记录")).toBeTruthy();
-  });
-
-  it("keeps the collecting state focused on progress instead of a finished evidence summary", async () => {
-    useUiStore.setState({ range: "today" });
-    vctiProfile.mockResolvedValue({
-      ...profile,
-      status: "collecting",
-      primaryType: undefined,
-      confidence: 4,
-    });
-    insights.mockResolvedValue({ items: [] });
-    phraseCloud.mockRejectedValue(new Error("not needed"));
-
-    renderPage();
-
-    expect(await screen.findByText("还在了解你")).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "人格依据" })).toBeNull();
-    expect(document.querySelector("[data-vcti-visual-version]")).toBeNull();
-  });
-
-  it("finishes the short generation motion and reduced motion starts at the same final state", async () => {
-    vi.useFakeTimers();
-    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({ matches: false })) });
-    const { container, unmount } = render(<VctiArtPortrait visual={profile.identityVisual} type="SPEC" guild="start" label="开工判官" />);
-    expect(container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("true");
-    act(() => vi.advanceTimersByTime(900));
-    expect(container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("false");
-    unmount();
-
-    Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({ matches: true })) });
-    const reduced = render(<VctiArtPortrait visual={profile.identityVisual} type="SPEC" guild="start" label="开工判官" />);
-    expect(reduced.container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("false");
-    vi.useRealTimers();
   });
 });

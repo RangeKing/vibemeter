@@ -1,15 +1,12 @@
 use crate::models::{
-    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiCollaborationVisual,
-    VctiDetailDiversity, VctiDetailVisual, VctiEvidenceItem, VctiIdentityEvidence,
-    VctiIdentityVisual, VctiOptionalMetric, VctiProcessVariation, VctiProcessVisual, VctiProfile,
-    VctiRhythmPeriod, VctiRhythmVisual, VctiScore, VctiTrendPoint, VctiVisualInput, VctiVisualMark,
-    VctiVisualPath, VctiWorkRhythm,
+    BehaviorSignals, BehaviorSummary, VctiBadge, VctiCollaboration, VctiDetailDiversity,
+    VctiEvidenceItem, VctiIdentityEvidence, VctiOptionalMetric, VctiProcessVariation, VctiProfile,
+    VctiRhythmPeriod, VctiScore, VctiTrendPoint, VctiWorkRhythm,
 };
 use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const ALGORITHM_VERSION: &str = "1.6.0";
-pub const IDENTITY_VISUAL_VERSION: &str = "2.0.0";
 const CANONICAL_WINDOW_DAYS: i64 = 90;
 const HALF_LIFE_DAYS: f64 = 45.0;
 
@@ -23,19 +20,6 @@ pub fn window_days_for_range(range: &str) -> i64 {
         "year" => 365,
         "all" => 3651,
         _ => 30,
-    }
-}
-
-fn range_for_window_days(window_days: i64) -> &'static str {
-    match window_days {
-        1 => "today",
-        7 => "7d",
-        30 => "30d",
-        90 => "90d",
-        180 => "180d",
-        365 => "year",
-        3651 => "all",
-        _ => "custom",
     }
 }
 
@@ -244,13 +228,6 @@ pub fn calculate(
         git_evidence_enabled,
     );
     let identity_evidence = build_identity_evidence(records, window_days, &behavior);
-    let identity_visual = build_identity_visual(
-        range_for_window_days(window_days),
-        top.map(|candidate| candidate.code),
-        top.map(|candidate| candidate.guild),
-        &dimensions,
-        &identity_evidence,
-    );
     let badges = badges(
         &features,
         &behavior,
@@ -307,398 +284,11 @@ pub fn calculate(
         evidence,
         trend,
         identity_evidence,
-        identity_visual,
         behavior,
         missing_capabilities,
         structure_analysis_enabled,
         git_evidence_enabled,
     }
-}
-
-fn build_identity_visual(
-    range: &str,
-    primary_type: Option<&str>,
-    guild: Option<&str>,
-    dimensions: &[VctiScore],
-    evidence: &VctiIdentityEvidence,
-) -> VctiIdentityVisual {
-    let dimensions_available = dimensions.iter().any(|score| score.coverage > 0.0);
-    let available = primary_type.is_some() && guild.is_some() && dimensions_available;
-    let rhythm = build_rhythm_visual(&evidence.rhythm, primary_type.unwrap_or("collecting"));
-    let collaboration = build_collaboration_visual(
-        &evidence.collaboration,
-        primary_type.unwrap_or("collecting"),
-    );
-    let detail = build_detail_visual(
-        &evidence.detail_diversity,
-        primary_type.unwrap_or("collecting"),
-    );
-    let process = build_process_visual(
-        &evidence.process_variation,
-        primary_type.unwrap_or("collecting"),
-    );
-    let inputs = vec![
-        visual_input("identity", primary_type.is_some() && guild.is_some()),
-        visual_input("dimensions", dimensions_available),
-        visual_input("rhythm", rhythm.available),
-        visual_input("collaboration", collaboration.available),
-        visual_input("detail-diversity", detail.available),
-        visual_input("process-variation", process.available),
-    ];
-    if !available {
-        return VctiIdentityVisual {
-            algorithm_version: ALGORITHM_VERSION.into(),
-            version: IDENTITY_VISUAL_VERSION.into(),
-            range: range.into(),
-            available,
-            inputs,
-            contours: Vec::new(),
-            rhythm,
-            collaboration,
-            detail,
-            process,
-        };
-    }
-
-    let primary_type = primary_type.unwrap_or_default();
-    let guild = guild.unwrap_or("start");
-    let phase = stable_fraction(primary_type) * std::f64::consts::TAU;
-    let aspect = 0.94 + stable_fraction(guild) * 0.12;
-    let observed = dimensions
-        .iter()
-        .filter(|score| score.coverage > 0.0)
-        .collect::<Vec<_>>();
-    let contours = (0..6usize)
-        .map(|layer| {
-            let base_radius = 45.0 - layer as f64 * 5.1;
-            let points = (0..12usize)
-                .map(|point| {
-                    let score = observed[(point + layer * 2) % observed.len()];
-                    let signal = (score.value - 50.0) / 50.0;
-                    let angle = phase
-                        + stable_fraction(score.id.as_str()) * 0.18
-                        + std::f64::consts::TAU * point as f64 / 12.0;
-                    let radius = base_radius + signal * (2.4 + layer as f64 * 0.14);
-                    (
-                        (50.0 + angle.cos() * radius * aspect).clamp(2.0, 98.0),
-                        (50.0 + angle.sin() * radius / aspect).clamp(2.0, 98.0),
-                    )
-                })
-                .collect::<Vec<_>>();
-            VctiVisualPath {
-                d: smooth_closed_path(&points),
-                stroke_width: 0.72 + (6 - layer) as f64 * 0.08,
-                opacity: 0.30 + (6 - layer) as f64 * 0.075,
-            }
-        })
-        .collect();
-    VctiIdentityVisual {
-        algorithm_version: ALGORITHM_VERSION.into(),
-        version: IDENTITY_VISUAL_VERSION.into(),
-        range: range.into(),
-        available,
-        inputs,
-        contours,
-        rhythm,
-        collaboration,
-        detail,
-        process,
-    }
-}
-
-fn build_process_visual(process: &VctiProcessVariation, identity_seed: &str) -> VctiProcessVisual {
-    let available = process.errors.available
-        && process.retries.available
-        && process.rollbacks.available
-        && process.errors.value.is_some()
-        && process.retries.value.is_some()
-        && process.rollbacks.value.is_some();
-    if !available {
-        return VctiProcessVisual {
-            available: false,
-            error_intensity: None,
-            retry_intensity: None,
-            rollback_intensity: None,
-            paths: Vec::new(),
-        };
-    }
-    let error_intensity = (process.errors.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
-    let retry_intensity = (process.retries.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
-    let rollback_intensity = (process.rollbacks.value.unwrap_or(0.0) / 4.0).clamp(0.0, 1.0);
-    let mut paths = Vec::new();
-    let seed = stable_fraction(identity_seed) * std::f64::consts::TAU;
-    let mut add = |count: usize, radius: f64, bend: f64, phase: f64, width: f64, opacity: f64| {
-        for index in 0..count {
-            let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-            let start = angle - 0.32;
-            let end = angle + 0.32;
-            paths.push(VctiVisualPath {
-                d: format!(
-                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
-                    50.0 + start.cos() * radius,
-                    50.0 + start.sin() * radius,
-                    50.0 + angle.cos() * (radius + bend),
-                    50.0 + angle.sin() * (radius + bend),
-                    50.0 + end.cos() * radius,
-                    50.0 + end.sin() * radius
-                ),
-                stroke_width: width,
-                opacity,
-            });
-        }
-    };
-    add(
-        (process.errors.value.unwrap_or(0.0).round() as usize).min(3),
-        33.0,
-        4.0,
-        seed,
-        0.72,
-        0.46,
-    );
-    add(
-        (process.retries.value.unwrap_or(0.0).round() as usize).min(3),
-        39.0,
-        -3.0,
-        seed + 0.53,
-        0.62,
-        0.40,
-    );
-    add(
-        (process.rollbacks.value.unwrap_or(0.0).round() as usize).min(3),
-        45.0,
-        5.5,
-        seed + 1.07,
-        0.86,
-        0.52,
-    );
-    VctiProcessVisual {
-        available: true,
-        error_intensity: Some(error_intensity),
-        retry_intensity: Some(retry_intensity),
-        rollback_intensity: Some(rollback_intensity),
-        paths,
-    }
-}
-
-fn build_detail_visual(detail: &VctiDetailDiversity, identity_seed: &str) -> VctiDetailVisual {
-    let available = detail.tool_categories.available
-        && detail.explicit_skills.available
-        && detail.tool_categories.value.is_some()
-        && detail.explicit_skills.value.is_some();
-    if !available {
-        return VctiDetailVisual {
-            available: false,
-            tool_intensity: None,
-            skill_intensity: None,
-            tool_marks: Vec::new(),
-            skill_marks: Vec::new(),
-        };
-    }
-    let tool_count = (detail.tool_categories.value.unwrap_or(0.0).round() as usize).min(10);
-    let skill_count = (detail.explicit_skills.value.unwrap_or(0.0).round() as usize).min(7);
-    let seed = stable_fraction(identity_seed) * std::f64::consts::TAU;
-    let marks = |count: usize, radius: f64, phase: f64, is_skill: bool| {
-        (0..count)
-            .map(|index| {
-                let angle = phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-                let band = radius + (index % 3) as f64 * 2.8;
-                VctiVisualMark {
-                    cx: 50.0 + angle.cos() * band,
-                    cy: 50.0 + angle.sin() * band,
-                    radius: if is_skill {
-                        1.25 + (index % 2) as f64 * 0.35
-                    } else {
-                        0.72 + (index % 3) as f64 * 0.18
-                    },
-                    opacity: if is_skill { 0.72 } else { 0.48 },
-                }
-            })
-            .collect::<Vec<_>>()
-    };
-    VctiDetailVisual {
-        available: true,
-        tool_intensity: Some((tool_count as f64 / 10.0).clamp(0.0, 1.0)),
-        skill_intensity: Some((skill_count as f64 / 7.0).clamp(0.0, 1.0)),
-        tool_marks: marks(tool_count, 44.0, seed, false),
-        skill_marks: marks(skill_count, 38.0, seed + 0.41, true),
-    }
-}
-
-fn build_collaboration_visual(
-    collaboration: &VctiCollaboration,
-    identity_seed: &str,
-) -> VctiCollaborationVisual {
-    let available = collaboration.subagent_starts.available
-        && collaboration.parallel_batches.available
-        && collaboration.subagent_starts.value.is_some()
-        && collaboration.parallel_batches.value.is_some();
-    if !available {
-        return VctiCollaborationVisual {
-            available: false,
-            branch_intensity: None,
-            parallel_intensity: None,
-            paths: Vec::new(),
-        };
-    }
-    let branch_intensity =
-        (collaboration.subagent_starts.value.unwrap_or(0.0) / 8.0).clamp(0.0, 1.0);
-    let parallel_intensity =
-        (collaboration.parallel_batches.value.unwrap_or(0.0) / 5.0).clamp(0.0, 1.0);
-    let count = (collaboration.subagent_starts.value.unwrap_or(0.0).round() as usize).min(8);
-    let seed_phase = stable_fraction(identity_seed) * std::f64::consts::TAU;
-    let paths = (0..count)
-        .map(|index| {
-            let angle = seed_phase + std::f64::consts::TAU * index as f64 / count.max(1) as f64;
-            let spread = 18.0 + parallel_intensity * 18.0;
-            let start_angle = angle - (0.24 + parallel_intensity * 0.12);
-            VctiVisualPath {
-                d: format!(
-                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
-                    50.0 + start_angle.cos() * 24.0,
-                    50.0 + start_angle.sin() * 24.0,
-                    50.0 + angle.cos() * spread,
-                    50.0 + angle.sin() * spread,
-                    50.0 + angle.cos() * 48.0,
-                    50.0 + angle.sin() * 48.0,
-                ),
-                stroke_width: 0.48 + parallel_intensity * 0.42,
-                opacity: 0.25 + branch_intensity * 0.42,
-            }
-        })
-        .collect();
-    VctiCollaborationVisual {
-        available: true,
-        branch_intensity: Some(branch_intensity),
-        parallel_intensity: Some(parallel_intensity),
-        paths,
-    }
-}
-
-fn build_rhythm_visual(rhythm: &VctiWorkRhythm, identity_seed: &str) -> VctiRhythmVisual {
-    let available = rhythm.work_periods_available
-        && rhythm.active_days.available
-        && rhythm.sessions_per_day.available
-        && rhythm.active_days.value.is_some()
-        && rhythm.sessions_per_day.value.is_some();
-    if !available {
-        return VctiRhythmVisual {
-            available: false,
-            phase: None,
-            active_intensity: None,
-            session_intensity: None,
-            density: None,
-            paths: Vec::new(),
-        };
-    }
-    let active_intensity = (rhythm.active_days.value.unwrap_or(0.0) / 21.0).clamp(0.0, 1.0);
-    let session_intensity = (rhythm.sessions_per_day.value.unwrap_or(0.0) / 4.0).clamp(0.0, 1.0);
-    let density = (active_intensity * 0.55 + session_intensity * 0.45).clamp(0.0, 1.0);
-    let total_share = rhythm
-        .work_periods
-        .iter()
-        .map(|period| period.share)
-        .sum::<f64>();
-    if total_share <= f64::EPSILON || density <= f64::EPSILON {
-        return VctiRhythmVisual {
-            available: true,
-            phase: None,
-            active_intensity: Some(active_intensity),
-            session_intensity: Some(session_intensity),
-            density: Some(density),
-            paths: Vec::new(),
-        };
-    }
-    let angle_for = |id: &str| match id {
-        "night" => -2.35,
-        "morning" => -0.78,
-        "afternoon" => 0.76,
-        _ => 2.34,
-    };
-    let vector = rhythm
-        .work_periods
-        .iter()
-        .fold((0.0, 0.0), |(x, y), period| {
-            let angle: f64 = angle_for(&period.id);
-            (
-                x + angle.cos() * period.share,
-                y + angle.sin() * period.share,
-            )
-        });
-    let phase = vector.1.atan2(vector.0) + stable_fraction(identity_seed) * 0.08;
-    let count = (3.0 + active_intensity * 3.0 + session_intensity * 3.0).round() as usize;
-    let paths = (0..count.min(9))
-        .map(|index| {
-            let spread =
-                (index as f64 - (count.saturating_sub(1)) as f64 / 2.0) * (7.6 - density * 2.4);
-            let perpendicular = phase + std::f64::consts::FRAC_PI_2;
-            let start = (
-                50.0 - phase.cos() * 49.0 + perpendicular.cos() * spread,
-                50.0 - phase.sin() * 49.0 + perpendicular.sin() * spread,
-            );
-            let end = (
-                50.0 + phase.cos() * 49.0 + perpendicular.cos() * spread,
-                50.0 + phase.sin() * 49.0 + perpendicular.sin() * spread,
-            );
-            let bend = ((index % 3) as f64 - 1.0) * (5.0 + session_intensity * 4.0);
-            VctiVisualPath {
-                d: format!(
-                    "M{:.2},{:.2} Q{:.2},{:.2} {:.2},{:.2}",
-                    start.0,
-                    start.1,
-                    50.0 + perpendicular.cos() * (spread + bend),
-                    50.0 + perpendicular.sin() * (spread + bend),
-                    end.0,
-                    end.1
-                ),
-                stroke_width: 0.42 + session_intensity * 0.38,
-                opacity: 0.18 + active_intensity * 0.30,
-            }
-        })
-        .collect();
-    VctiRhythmVisual {
-        available: true,
-        phase: Some(phase),
-        active_intensity: Some(active_intensity),
-        session_intensity: Some(session_intensity),
-        density: Some(density),
-        paths,
-    }
-}
-
-fn visual_input(id: &str, available: bool) -> VctiVisualInput {
-    VctiVisualInput {
-        id: id.into(),
-        available,
-    }
-}
-
-fn smooth_closed_path(points: &[(f64, f64)]) -> String {
-    let first = points[0];
-    let last = points[points.len() - 1];
-    let mut output = format!(
-        "M{:.2},{:.2}",
-        (last.0 + first.0) / 2.0,
-        (last.1 + first.1) / 2.0
-    );
-    for (index, point) in points.iter().enumerate() {
-        let next = points[(index + 1) % points.len()];
-        output.push_str(&format!(
-            "Q{:.2},{:.2} {:.2},{:.2}",
-            point.0,
-            point.1,
-            (point.0 + next.0) / 2.0,
-            (point.1 + next.1) / 2.0
-        ));
-    }
-    output.push('Z');
-    output
-}
-
-fn stable_fraction(value: &str) -> f64 {
-    let hash = value.bytes().fold(2_166_136_261u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(16_777_619)
-    });
-    f64::from(hash % 10_000) / 10_000.0
 }
 
 fn build_identity_evidence(
@@ -2131,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_art_foundation_is_deterministic_and_keeps_a_versioned_range() {
+    fn identity_evidence_is_deterministic_without_generated_geometry() {
         let now = DateTime::parse_from_rfc3339("2026-07-23T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
@@ -2155,14 +1745,16 @@ mod tests {
             serde_json::to_value(&first.identity_evidence).unwrap(),
             serde_json::to_value(&replay.identity_evidence).unwrap()
         );
-        assert_eq!(first.identity_visual.version, IDENTITY_VISUAL_VERSION);
-        assert_eq!(first.identity_visual.range, "90d");
-        assert!(first.identity_visual.available);
-        assert!(!first.identity_visual.contours.is_empty());
-        assert_eq!(
-            serde_json::to_value(&first.identity_visual).unwrap(),
-            serde_json::to_value(&replay.identity_visual).unwrap()
-        );
+        let serialized = serde_json::to_string(&first).unwrap();
+        for retired_field in [
+            "paths",
+            "branches",
+            "details",
+            "variations",
+            "identityVisual",
+        ] {
+            assert!(!serialized.contains(retired_field));
+        }
     }
 
     #[test]
@@ -2184,192 +1776,6 @@ mod tests {
         assert_eq!(partial.active_days.value, None);
         assert!(partial.sessions_per_day.available);
         assert!(partial.sessions_per_day.value.is_some());
-    }
-
-    #[test]
-    fn rhythm_visual_distinguishes_period_density_zero_and_missing() {
-        let mut day = record("2026-07-23");
-        day.started_at = "2026-07-23T10:00:00Z".into();
-        let morning = aggregate_work_rhythm(&[day.clone()], 7);
-        day.started_at = "2026-07-23T23:00:00Z".into();
-        let night = aggregate_work_rhythm(&[day], 7);
-        let morning_visual = build_rhythm_visual(&morning, "SPEC");
-        let night_visual = build_rhythm_visual(&night, "SPEC");
-        assert_ne!(morning_visual.phase, night_visual.phase);
-        assert_ne!(morning_visual.paths, night_visual.paths);
-
-        let zero = aggregate_work_rhythm(&[], 7);
-        let zero_visual = build_rhythm_visual(&zero, "SPEC");
-        assert!(zero_visual.available);
-        assert_eq!(zero_visual.density, Some(0.0));
-        assert!(zero_visual.paths.is_empty());
-
-        let mut invalid = record("2026-07-23");
-        invalid.started_at = "not-recorded".into();
-        let missing_visual = build_rhythm_visual(&aggregate_work_rhythm(&[invalid], 7), "SPEC");
-        assert!(!missing_visual.available);
-        assert_eq!(missing_visual.density, None);
-    }
-
-    #[test]
-    fn collaboration_visual_caps_branches_and_separates_zero_from_missing() {
-        let zero = VctiCollaboration {
-            subagent_starts: VctiOptionalMetric {
-                value: Some(0.0),
-                available: true,
-            },
-            parallel_batches: VctiOptionalMetric {
-                value: Some(0.0),
-                available: true,
-            },
-        };
-        let high = VctiCollaboration {
-            subagent_starts: VctiOptionalMetric {
-                value: Some(100.0),
-                available: true,
-            },
-            parallel_batches: VctiOptionalMetric {
-                value: Some(100.0),
-                available: true,
-            },
-        };
-        let missing = VctiCollaboration {
-            subagent_starts: VctiOptionalMetric {
-                value: None,
-                available: false,
-            },
-            parallel_batches: VctiOptionalMetric {
-                value: None,
-                available: false,
-            },
-        };
-        assert!(build_collaboration_visual(&zero, "SPEC").paths.is_empty());
-        assert!(build_collaboration_visual(&high, "SPEC").paths.len() <= 8);
-        assert!(!build_collaboration_visual(&missing, "SPEC").available);
-    }
-
-    #[test]
-    fn detail_visual_uses_aggregate_counts_without_names_and_caps_marks() {
-        let detail = VctiDetailDiversity {
-            tool_categories: VctiOptionalMetric {
-                value: Some(99.0),
-                available: true,
-            },
-            explicit_skills: VctiOptionalMetric {
-                value: Some(99.0),
-                available: true,
-            },
-        };
-        let visual = build_detail_visual(&detail, "SPEC");
-        assert!(visual.available);
-        assert!(visual.tool_marks.len() <= 10);
-        assert!(visual.skill_marks.len() <= 7);
-        let serialized = serde_json::to_string(&visual).unwrap();
-        for private in ["shell", "edit", "tdd", "/Users/"] {
-            assert!(!serialized.contains(private));
-        }
-        let missing = VctiDetailDiversity {
-            tool_categories: VctiOptionalMetric {
-                value: None,
-                available: false,
-            },
-            explicit_skills: VctiOptionalMetric {
-                value: None,
-                available: false,
-            },
-        };
-        assert!(!build_detail_visual(&missing, "SPEC").available);
-    }
-
-    #[test]
-    fn process_visual_keeps_error_retry_and_rollback_semantics_distinct() {
-        let process = |errors: Option<f64>, retries: Option<f64>, rollbacks: Option<f64>| {
-            VctiProcessVariation {
-                errors: VctiOptionalMetric {
-                    value: errors,
-                    available: errors.is_some(),
-                },
-                retries: VctiOptionalMetric {
-                    value: retries,
-                    available: retries.is_some(),
-                },
-                rollbacks: VctiOptionalMetric {
-                    value: rollbacks,
-                    available: rollbacks.is_some(),
-                },
-            }
-        };
-        let error_only = build_process_visual(&process(Some(2.0), Some(0.0), Some(0.0)), "SPEC");
-        let retry = build_process_visual(&process(Some(2.0), Some(3.0), Some(0.0)), "SPEC");
-        let rollback = build_process_visual(&process(Some(2.0), Some(3.0), Some(1.0)), "SPEC");
-        assert_ne!(error_only.paths, retry.paths);
-        assert_ne!(retry.paths, rollback.paths);
-        assert!(rollback.paths.len() <= 9);
-        assert!(!build_process_visual(&process(None, None, None), "SPEC").available);
-    }
-
-    #[test]
-    fn public_visual_input_availability_matches_each_complete_channel() {
-        let evidence = VctiIdentityEvidence {
-            rhythm: aggregate_work_rhythm(&[], 7),
-            collaboration: VctiCollaboration {
-                subagent_starts: VctiOptionalMetric {
-                    value: Some(1.0),
-                    available: true,
-                },
-                parallel_batches: VctiOptionalMetric {
-                    value: None,
-                    available: false,
-                },
-            },
-            detail_diversity: VctiDetailDiversity {
-                tool_categories: VctiOptionalMetric {
-                    value: Some(2.0),
-                    available: true,
-                },
-                explicit_skills: VctiOptionalMetric {
-                    value: None,
-                    available: false,
-                },
-            },
-            process_variation: VctiProcessVariation {
-                errors: VctiOptionalMetric {
-                    value: Some(1.0),
-                    available: true,
-                },
-                retries: VctiOptionalMetric {
-                    value: None,
-                    available: false,
-                },
-                rollbacks: VctiOptionalMetric {
-                    value: None,
-                    available: false,
-                },
-            },
-        };
-        let dimensions = vec![VctiScore {
-            id: "test".into(),
-            value: 50.0,
-            coverage: 1.0,
-        }];
-        let visual =
-            build_identity_visual("7d", Some("SPEC"), Some("start"), &dimensions, &evidence);
-        for (id, available) in [
-            ("rhythm", visual.rhythm.available),
-            ("collaboration", visual.collaboration.available),
-            ("detail-diversity", visual.detail.available),
-            ("process-variation", visual.process.available),
-        ] {
-            assert_eq!(
-                visual
-                    .inputs
-                    .iter()
-                    .find(|input| input.id == id)
-                    .unwrap()
-                    .available,
-                available
-            );
-        }
     }
 
     #[test]

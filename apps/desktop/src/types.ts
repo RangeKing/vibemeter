@@ -618,61 +618,6 @@ export interface VctiIdentityEvidence {
   processVariation: VctiProcessVariation;
 }
 
-export interface VctiVisualInput {
-  id: string;
-  available: boolean;
-}
-
-export interface VctiVisualPath {
-  d: string;
-  strokeWidth: number;
-  opacity: number;
-}
-
-export interface VctiVisualMark {
-  cx: number;
-  cy: number;
-  radius: number;
-  opacity: number;
-}
-
-export interface VctiIdentityVisual {
-  algorithmVersion: string;
-  version: string;
-  range: string;
-  available: boolean;
-  inputs: VctiVisualInput[];
-  contours: VctiVisualPath[];
-  rhythm: {
-    available: boolean;
-    phase?: number;
-    activeIntensity?: number;
-    sessionIntensity?: number;
-    density?: number;
-    paths: VctiVisualPath[];
-  };
-  collaboration: {
-    available: boolean;
-    branchIntensity?: number;
-    parallelIntensity?: number;
-    paths: VctiVisualPath[];
-  };
-  detail: {
-    available: boolean;
-    toolIntensity?: number;
-    skillIntensity?: number;
-    toolMarks: VctiVisualMark[];
-    skillMarks: VctiVisualMark[];
-  };
-  process: {
-    available: boolean;
-    errorIntensity?: number;
-    retryIntensity?: number;
-    rollbackIntensity?: number;
-    paths: VctiVisualPath[];
-  };
-}
-
 export interface VctiProfile {
   status: "collecting" | "preview" | "stable" | "high-confidence";
   algorithmVersion: string;
@@ -694,7 +639,6 @@ export interface VctiProfile {
   evidence: VctiEvidenceItem[];
   trend: VctiTrendPoint[];
   identityEvidence: VctiIdentityEvidence;
-  identityVisual: VctiIdentityVisual;
   behavior: BehaviorSummary;
   missingCapabilities: string[];
   structureAnalysisEnabled: boolean;

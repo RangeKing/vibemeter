@@ -1127,85 +1127,6 @@ pub struct VctiIdentityEvidence {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VctiVisualInput {
-    pub id: String,
-    pub available: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiVisualPath {
-    pub d: String,
-    pub stroke_width: f64,
-    pub opacity: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiRhythmVisual {
-    pub available: bool,
-    pub phase: Option<f64>,
-    pub active_intensity: Option<f64>,
-    pub session_intensity: Option<f64>,
-    pub density: Option<f64>,
-    pub paths: Vec<VctiVisualPath>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiCollaborationVisual {
-    pub available: bool,
-    pub branch_intensity: Option<f64>,
-    pub parallel_intensity: Option<f64>,
-    pub paths: Vec<VctiVisualPath>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiVisualMark {
-    pub cx: f64,
-    pub cy: f64,
-    pub radius: f64,
-    pub opacity: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiDetailVisual {
-    pub available: bool,
-    pub tool_intensity: Option<f64>,
-    pub skill_intensity: Option<f64>,
-    pub tool_marks: Vec<VctiVisualMark>,
-    pub skill_marks: Vec<VctiVisualMark>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiProcessVisual {
-    pub available: bool,
-    pub error_intensity: Option<f64>,
-    pub retry_intensity: Option<f64>,
-    pub rollback_intensity: Option<f64>,
-    pub paths: Vec<VctiVisualPath>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VctiIdentityVisual {
-    pub algorithm_version: String,
-    pub version: String,
-    pub range: String,
-    pub available: bool,
-    pub inputs: Vec<VctiVisualInput>,
-    pub contours: Vec<VctiVisualPath>,
-    pub rhythm: VctiRhythmVisual,
-    pub collaboration: VctiCollaborationVisual,
-    pub detail: VctiDetailVisual,
-    pub process: VctiProcessVisual,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct VctiProfile {
     pub status: String,
     pub algorithm_version: String,
@@ -1227,7 +1148,6 @@ pub struct VctiProfile {
     pub evidence: Vec<VctiEvidenceItem>,
     pub trend: Vec<VctiTrendPoint>,
     pub identity_evidence: VctiIdentityEvidence,
-    pub identity_visual: VctiIdentityVisual,
     pub behavior: BehaviorSummary,
     pub missing_capabilities: Vec<String>,
     pub structure_analysis_enabled: bool,
