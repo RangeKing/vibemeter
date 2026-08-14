@@ -2,7 +2,7 @@ use crate::adapters::{claude, codex, common, cursor, database_history, kimi, ope
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
-use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState};
+use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, SessionContentPreview};
 use crate::privacy::stable_hash;
 use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
@@ -655,6 +655,99 @@ fn source_roots() -> Vec<SourceRoot> {
     roots
 }
 
+pub(crate) fn session_content_preview(
+    database: &Database,
+    session_id: &str,
+) -> AppResult<SessionContentPreview> {
+    let Some((agent_name, source_file_hash)) = database.session_source_locator(session_id)? else {
+        return Ok(SessionContentPreview::default());
+    };
+    let Some(agent) = agent_kind_from_name(&agent_name) else {
+        return Ok(SessionContentPreview::default());
+    };
+    for root in source_roots()
+        .into_iter()
+        .filter(|root| root.agent == agent && root.path.is_dir())
+    {
+        let mut files = Vec::new();
+        collect_jsonl_files(&root.path, root.agent, root.adapter, &mut files);
+        if let Some(source) = files
+            .iter()
+            .find(|source| stable_hash(&source.path.to_string_lossy()) == source_file_hash)
+        {
+            return read_content_preview_from_source(source, database.source_record_receipt_key());
+        }
+    }
+    Ok(SessionContentPreview::default())
+}
+
+fn agent_kind_from_name(value: &str) -> Option<AgentKind> {
+    match value {
+        "claude-code" => Some(AgentKind::ClaudeCode),
+        "codex" => Some(AgentKind::Codex),
+        "kimi-code" => Some(AgentKind::KimiCode),
+        "cursor" => Some(AgentKind::Cursor),
+        "openclaw" => Some(AgentKind::OpenClaw),
+        "hermes" => Some(AgentKind::Hermes),
+        "zcode" => Some(AgentKind::ZCode),
+        _ => None,
+    }
+}
+
+fn read_content_preview_from_source(
+    source: &SourceFile,
+    receipt_key: [u8; 32],
+) -> AppResult<SessionContentPreview> {
+    let fallback_id = source
+        .path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("session")
+        .to_string();
+    let mut state = ParseState::new(source.agent, fallback_id);
+    state.source_record_receipt_key = receipt_key;
+    {
+        let mut parse_record = |record: &Value| match source.adapter {
+            SourceAdapter::Codex => codex::parse_record(&mut state, record),
+            SourceAdapter::Claude => claude::parse_record(&mut state, record),
+            SourceAdapter::Cursor => cursor::parse_record(&mut state, record),
+            SourceAdapter::Kimi => kimi::parse_record(&mut state, record),
+            SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, record),
+            SourceAdapter::ZCode => zcode::parse_record(&mut state, record),
+        };
+        if source.adapter == SourceAdapter::ZCode
+            && source.path.extension().and_then(|value| value.to_str()) == Some("json")
+        {
+            let mut content = Vec::new();
+            File::open(&source.path)?.read_to_end(&mut content)?;
+            if content.len() <= MAX_RECORD_BYTES
+                && let Ok(record) = serde_json::from_slice::<Value>(&content)
+            {
+                parse_record(&record);
+            }
+        } else {
+            let mut reader = BufReader::with_capacity(256 * 1024, File::open(&source.path)?);
+            let mut buffer = Vec::with_capacity(64 * 1024);
+            loop {
+                buffer.clear();
+                if reader.read_until(b'\n', &mut buffer)? == 0 {
+                    break;
+                }
+                if buffer.len() > MAX_RECORD_BYTES {
+                    continue;
+                }
+                if let Ok(record) = serde_json::from_slice::<Value>(&buffer) {
+                    parse_record(&record);
+                }
+            }
+        }
+    }
+    Ok(SessionContentPreview {
+        prompt: state.prompt_excerpt,
+        output: state.result_excerpt,
+    })
+}
+
 fn cursor_database_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
@@ -1039,6 +1132,39 @@ mod tests {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn session_content_preview_reads_source_without_persisting_a_copy() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("cursor-session.jsonl");
+        let mut file = File::create(&path).expect("preview source");
+        writeln!(
+            file,
+            "{}",
+            json!({"role":"user","message":{"content":"Add a system proxy toggle"}})
+        )
+        .expect("prompt");
+        writeln!(
+            file,
+            "{}",
+            json!({"role":"assistant","message":{"content":"The proxy toggle is ready"}})
+        )
+        .expect("output");
+        file.flush().expect("flush preview source");
+        let metadata = file.metadata().expect("preview metadata");
+        let source = SourceFile {
+            path,
+            agent: AgentKind::Cursor,
+            adapter: SourceAdapter::Cursor,
+            size: metadata.len(),
+            modified: 0,
+        };
+
+        let preview = read_content_preview_from_source(&source, [7; 32]).expect("preview");
+
+        assert_eq!(preview.prompt.as_deref(), Some("Add a system proxy toggle"));
+        assert_eq!(preview.output.as_deref(), Some("The proxy toggle is ready"));
+    }
 
     fn text_history_records(adapter: SourceAdapter, project_root: &str) -> Vec<Value> {
         let private_path = format!("{project_root}/src/lib.rs");

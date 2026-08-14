@@ -362,9 +362,13 @@ async fn get_sessions(
 #[tauri::command]
 async fn get_session_detail(state: State<'_, AppState>, id: String) -> AppResult<SessionDetail> {
     let database = state.database.clone();
-    tauri::async_runtime::spawn_blocking(move || database.session_detail(&id))
-        .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut detail = database.session_detail(&id)?;
+        detail.content_preview = ingestion::session_content_preview(&database, &id)?;
+        Ok(detail)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
 
 #[tauri::command]
@@ -625,11 +629,16 @@ async fn refresh_provider_data(
     state: State<'_, AppState>,
     credentials_allowed: bool,
     cursor_dashboard_usage_enabled: bool,
+    use_system_proxy: bool,
 ) -> AppResult<Vec<ProviderUsage>> {
     let providers = state.providers.clone();
     let providers_for_task = providers.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        providers_for_task.refresh(credentials_allowed, cursor_dashboard_usage_enabled)
+        providers_for_task.refresh(
+            credentials_allowed,
+            cursor_dashboard_usage_enabled,
+            use_system_proxy,
+        )
     })
     .await
     .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
@@ -647,6 +656,7 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("onboardingComplete", "false"),
             ("credentialsAllowed", "false"),
             ("cursorDashboardUsage", "false"),
+            ("useSystemProxy", "false"),
             ("gitReadAllowed", "false"),
             ("vctiPromptStructure", "true"),
             ("retentionDays", "365"),
@@ -703,6 +713,7 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
         "onboardingComplete"
         | "credentialsAllowed"
         | "cursorDashboardUsage"
+        | "useSystemProxy"
         | "gitReadAllowed"
         | "vctiPromptStructure"
         | "launchAtLogin"
@@ -933,7 +944,16 @@ pub fn run() {
                         .ok()
                         .flatten()
                         .is_some_and(|value| value == "true");
-                    provider_copy.refresh(credentials_allowed, cursor_dashboard_usage_enabled);
+                    let use_system_proxy = provider_database
+                        .setting("useSystemProxy")
+                        .ok()
+                        .flatten()
+                        .is_some_and(|value| value == "true");
+                    provider_copy.refresh(
+                        credentials_allowed,
+                        cursor_dashboard_usage_enabled,
+                        use_system_proxy,
+                    );
                     std::thread::sleep(std::time::Duration::from_secs(5 * 60));
                 }
             });
@@ -1062,7 +1082,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod startup_tests {
-    use super::startup_can_reveal_main_window;
+    use super::{startup_can_reveal_main_window, validate_setting};
 
     #[test]
     fn configured_main_window_starts_hidden_until_the_page_is_ready() {
@@ -1086,5 +1106,12 @@ mod startup_tests {
         assert!(!startup_can_reveal_main_window(false, true, false));
         assert!(!startup_can_reveal_main_window(true, true, true));
         assert!(startup_can_reveal_main_window(true, true, false));
+    }
+
+    #[test]
+    fn system_proxy_setting_accepts_only_boolean_values() {
+        assert!(validate_setting("useSystemProxy", "true").is_ok());
+        assert!(validate_setting("useSystemProxy", "false").is_ok());
+        assert!(validate_setting("useSystemProxy", "automatic").is_err());
     }
 }

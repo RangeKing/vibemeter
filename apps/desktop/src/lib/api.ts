@@ -84,8 +84,8 @@ export const api = {
   refreshIndex: (force = false) => invoke<boolean>("refresh_index", { force }),
   menuSnapshot: (range: string) => invoke<MenuBarSnapshot>("get_menu_bar_snapshot", { range }),
   providers: () => invoke<ProviderUsage[]>("get_provider_usage"),
-  refreshProviders: (credentialsAllowed: boolean, cursorDashboardUsageEnabled = false) =>
-    invoke<ProviderUsage[]>("refresh_provider_data", { credentialsAllowed, cursorDashboardUsageEnabled }),
+  refreshProviders: (credentialsAllowed: boolean, cursorDashboardUsageEnabled = false, useSystemProxy = false) =>
+    invoke<ProviderUsage[]>("refresh_provider_data", { credentialsAllowed, cursorDashboardUsageEnabled, useSystemProxy }),
   settings: () => invoke<AppSettings>("get_app_settings"),
   setSetting: (key: keyof AppSettings, value: string) => invoke<void>("set_app_setting", { key, value }),
   previewShare: (request: ShareRenderRequest) => invoke<SharePreview>("render_share_preview", { request }),

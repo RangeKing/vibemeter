@@ -466,6 +466,11 @@ export interface ProcessPhase {
   events: CanonicalEvent[];
 }
 
+export interface SessionContentPreview {
+  prompt?: string;
+  output?: string;
+}
+
 export interface FileChange {
   id: string;
   path: string;
@@ -497,6 +502,7 @@ export interface SessionDetail extends SessionSummary {
   warnings: CoverageNotice[];
   task?: TaskSummary;
   phases: ProcessPhase[];
+  contentPreview: SessionContentPreview;
   fileChanges: FileChange[];
   gitEvidence: GitEvidence;
   capabilities: string[];
@@ -769,6 +775,7 @@ export interface AppSettings {
   iaMigrationTipSeen: string;
   credentialsAllowed: string;
   cursorDashboardUsage: string;
+  useSystemProxy: string;
   launchAtLogin: string;
   gitReadAllowed: string;
   vctiPromptStructure: string;

@@ -205,8 +205,6 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
             const phaseTime = formatPhaseTime(phase.startedAt, locale);
             const expanded = expandedPhaseIds.has(phase.id);
             const visibleEvents = expanded ? phase.events : phase.events.slice(0, 5);
-            const representativeEvents = [...new Set(phase.events.map((event) => event.name))].slice(0, 3);
-            const remainingRepresentativeEvents = Math.max(0, new Set(phase.events.map((event) => event.name)).size - representativeEvents.length);
             const phaseClass = phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other";
             return <article
               key={phase.id}
@@ -217,24 +215,27 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
               <div className="phase-body">
                 <button className="phase-toggle" onClick={() => togglePhase(phase.id)} aria-expanded={expanded}>
                   <span className="phase-title"><strong>{phaseLabel(phase.phaseKey)}</strong><small>{t("sessions.eventCount", { count: phase.eventCount })}</small></span>
-                  <span className="phase-preview" aria-label={[...representativeEvents, ...(remainingRepresentativeEvents ? [`+${remainingRepresentativeEvents}`] : [])].join(", ")}>
-                    {representativeEvents.map((name) => <small key={name}>{name}</small>)}
-                    {remainingRepresentativeEvents ? <small>+{remainingRepresentativeEvents}</small> : null}
-                  </span>
                   <span className="phase-meta">{phaseTime ? <span>{phaseTime}</span> : null}{durationMs ? <span>{formatDuration(Math.max(1, Math.round(durationMs / 1_000)), locale)}</span> : null}{successes ? <span className="successful">{t("sessions.successful", { count: successes })}</span> : null}{failures ? <span className="failed">{t("sessions.failed", { count: failures })}</span> : null}<ChevronDown size={14} /></span>
                 </button>
                 <div className="phase-event-list">
                   {visibleEvents.map((event, eventIndex) => {
                     const status = eventStatus(event.success);
                     const eventTime = formatPhaseTime(event.occurredAt, locale);
+                    const contentPreview = event.eventType === "prompt.observed"
+                      ? { label: t("sessions.promptPreview"), text: detail.contentPreview.prompt }
+                      : event.eventType === "lifecycle.complete"
+                        ? { label: t("sessions.outputPreview"), text: detail.contentPreview.output }
+                        : undefined;
                     return (
                       <div className={`phase-event-row status-${status}`} key={`${event.sequence}-${event.name}-${eventIndex}`}>
                         <i aria-hidden="true" />
                         <span className="phase-event-copy"><strong>{event.name}</strong><small>{event.eventType}</small></span>
-                        <span className="phase-event-evidence">
-                          <small>{event.category}</small>
-                          <small>{event.provenance}</small>
-                        </span>
+                        {contentPreview?.text ? (
+                          <details className="phase-event-content">
+                            <summary><small>{contentPreview.label}</small><span>{contentPreview.text}</span></summary>
+                            <p>{contentPreview.text}</p>
+                          </details>
+                        ) : <span />}
                         <span className="phase-event-meta">
                           <small className="phase-event-status">{t(`sessions.status.${status}`)}</small>
                           {eventTime ? <time>{eventTime}</time> : null}

@@ -79,7 +79,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
   const setSetting = async (key: keyof AppSettings, value: string) => {
-    const refreshesProviders = key === "credentialsAllowed" || key === "cursorDashboardUsage";
+    const refreshesProviders = key === "credentialsAllowed" || key === "cursorDashboardUsage" || key === "useSystemProxy";
     if (refreshesProviders) setCursorRefreshPending(true);
     try {
       await api.setSetting(key, value);
@@ -93,7 +93,10 @@ export function SettingsPage({ locale }: { locale: Locale }) {
         const cursorDashboardUsageEnabled = key === "cursorDashboardUsage"
           ? value === "true"
           : credentialsAllowed && settings.data?.cursorDashboardUsage === "true";
-        await api.refreshProviders(credentialsAllowed, cursorDashboardUsageEnabled);
+        const useSystemProxy = key === "useSystemProxy"
+          ? value === "true"
+          : settings.data?.useSystemProxy === "true";
+        await api.refreshProviders(credentialsAllowed, cursorDashboardUsageEnabled, useSystemProxy);
       }
       if (key === "gitReadAllowed" || key === "vctiPromptStructure") await api.refreshIndex(true);
       await Promise.all([
@@ -211,6 +214,10 @@ export function SettingsPage({ locale }: { locale: Locale }) {
               {cursorRefreshPending ? <span className="setting-progress" role="status" aria-live="polite"><LoaderCircle className="spin" size={13} />{t("cursorUsage.loadingShort")}</span> : null}
               <Toggle checked={cursorDashboardDraft ?? data.cursorDashboardUsage === "true"} disabled={data.credentialsAllowed !== "true" || cursorRefreshPending} onCheckedChange={setCursorDashboard} label={t("settings.cursorDashboardUsage")} />
             </div>
+          </div>
+          <div className="setting-row multiline">
+            <div><strong>{t("settings.useSystemProxy")}</strong><p>{t("settings.useSystemProxyBody")}</p></div>
+            <Toggle checked={data.useSystemProxy === "true"} disabled={cursorRefreshPending} onCheckedChange={(value) => void setSetting("useSystemProxy", String(value))} label={t("settings.useSystemProxy")} />
           </div>
         </section>
 

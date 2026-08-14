@@ -201,7 +201,7 @@ export function Onboarding({ onComplete }: { onComplete: () => Promise<void> }) 
         api.setSetting("menuBarEnabled", "true"),
         api.setSetting("iaMigrationTipSeen", "true"),
       ]);
-      if (credentialsAllowed) await api.refreshProviders(true, false);
+      if (credentialsAllowed) await api.refreshProviders(true, false, false);
       setStep("scan");
       await api.refreshIndex(true);
       setIndexStatus(await api.indexStatus());

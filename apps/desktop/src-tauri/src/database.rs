@@ -6228,11 +6228,23 @@ impl Database {
             warnings,
             task,
             phases,
+            content_preview: Default::default(),
             file_changes,
             git_evidence,
             capabilities,
             attention,
         })
+    }
+
+    pub(crate) fn session_source_locator(&self, id: &str) -> AppResult<Option<(String, String)>> {
+        let connection = self.connect()?;
+        Ok(connection
+            .query_row(
+                "SELECT agent, source_file_hash FROM sessions WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
     }
 
     pub fn comparison(&self, range: &str) -> AppResult<Vec<ComparisonItem>> {

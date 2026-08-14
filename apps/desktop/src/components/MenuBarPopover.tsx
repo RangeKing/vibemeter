@@ -49,6 +49,7 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
     void api.refreshProviders(
       settings.data.credentialsAllowed === "true",
       settings.data.cursorDashboardUsage === "true",
+      settings.data.useSystemProxy === "true",
     ).finally(() => void client.invalidateQueries({ queryKey: ["menu-snapshot"] }));
   }, [client, settings.data]);
   const refresh = async () => {
@@ -59,6 +60,7 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
         api.refreshProviders(
           settings.data?.credentialsAllowed === "true",
           settings.data?.cursorDashboardUsage === "true",
+          settings.data?.useSystemProxy === "true",
         ),
       ]);
       await client.invalidateQueries({ queryKey: ["menu-snapshot"] });

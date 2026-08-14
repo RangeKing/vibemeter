@@ -888,14 +888,11 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .phase:last-child .phase-axis::after { display: none; }
 .phase-axis span { position: relative; z-index: 1; display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid color-mix(in srgb, var(--phase-color) 48%, var(--line)); border-radius: 50%; color: color-mix(in srgb, var(--phase-color) 72%, var(--ink)); background: var(--surface); font-size: 9px; font-weight: 760; font-variant-numeric: tabular-nums; }
 .phase-body { min-width: 0; padding: 8px 3px 10px 2px; }
-.phase-toggle { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.35fr) auto; align-items: center; gap: var(--space-3); width: 100%; min-height: 32px; padding: 0 6px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.phase-toggle { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); width: 100%; min-height: 32px; padding: 0 6px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .phase-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 5px; }
 .phase-title { display: flex; min-width: 0; align-items: baseline; gap: 7px; }
 .phase-title strong { color: var(--ink); font-size: 10.5px; }
 .phase-title small { color: var(--faint); font-size: var(--font-caption); white-space: nowrap; }
-.phase-preview, .phase-event-evidence { display: flex; min-width: 0; align-items: center; gap: 5px; overflow: hidden; }
-.phase-preview small, .phase-event-evidence small { min-width: 0; overflow: hidden; padding: 3px 6px; border-radius: 5px; color: var(--muted); background: color-mix(in srgb, var(--phase-color) 9%, var(--surface-soft)); font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 8px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
-.phase-preview small:last-child { flex: 0 0 auto; }
 .phase-meta { display: flex; min-width: 0; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; color: var(--faint); font-size: var(--font-caption); }
 .phase-meta span { padding-right: 5px; border-right: 1px solid var(--line); white-space: nowrap; }
 .phase-meta span:last-of-type { padding-right: 0; border-right: 0; }
@@ -913,7 +910,12 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .phase-event-copy strong, .phase-event-copy small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .phase-event-copy strong { color: var(--ink); font-size: 10.5px; font-weight: 650; }
 .phase-event-copy small { margin-top: 2px; color: var(--faint); font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 8.5px; }
-.phase-event-evidence small { background: var(--surface-soft); }
+.phase-event-content { min-width: 0; color: var(--muted); font-size: 9px; }
+.phase-event-content summary { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 7px; min-width: 0; cursor: pointer; list-style: none; }
+.phase-event-content summary::-webkit-details-marker { display: none; }
+.phase-event-content summary small { padding: 3px 6px; border-radius: 5px; color: color-mix(in srgb, var(--phase-color) 72%, var(--ink)); background: color-mix(in srgb, var(--phase-color) 11%, var(--surface-soft)); font-size: 8px; font-weight: 720; white-space: nowrap; }
+.phase-event-content summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.phase-event-content p { margin: 7px 0 2px; padding: 8px 10px; border-left: 2px solid color-mix(in srgb, var(--phase-color) 55%, var(--line)); color: var(--ink); background: var(--surface-soft); font-size: 9.5px; line-height: 1.55; overflow-wrap: anywhere; }
 .phase-event-meta { display: flex; align-items: center; justify-content: flex-end; gap: 8px; color: var(--faint); font-size: var(--font-caption); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .phase-event-meta time + time { padding-left: 8px; border-left: 1px solid var(--line); }
 .phase-event-status { color: var(--muted); font-size: 9px; font-weight: 720; }

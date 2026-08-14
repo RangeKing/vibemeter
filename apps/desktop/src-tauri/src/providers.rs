@@ -64,8 +64,13 @@ impl ProviderStore {
         items
     }
 
-    pub fn refresh(&self, credentials_allowed: bool, cursor_dashboard_usage_enabled: bool) {
-        let Some(client) = build_http_client(None, Duration::from_secs(10)) else {
+    pub fn refresh(
+        &self,
+        credentials_allowed: bool,
+        cursor_dashboard_usage_enabled: bool,
+        use_system_proxy: bool,
+    ) {
+        let Some(client) = build_provider_client(use_system_proxy) else {
             return;
         };
         if (!credentials_allowed || !cursor_dashboard_usage_enabled)
@@ -74,7 +79,7 @@ impl ProviderStore {
         {
             cursor.account_usage = None;
         }
-        let status_clients = build_status_clients();
+        let status_clients = build_status_clients(use_system_proxy);
         let claude_health = fetch_status(
             &status_clients,
             "https://status.claude.com/api/v2/status.json",
@@ -566,9 +571,8 @@ fn build_http_client(
         .timeout(timeout)
         .user_agent(concat!("vibemeter/", env!("CARGO_PKG_VERSION")));
     if let Some(proxy_url) = proxy_url {
-        // Explicitly discovered proxy clients are only used for public status
-        // endpoints. The primary quota client keeps reqwest's existing network
-        // behavior unchanged.
+        // Proxy use is opt-in for provider quota and status requests. The URL is
+        // discovered from the active macOS network service and is never persisted.
         builder.proxy(reqwest::Proxy::all(proxy_url).ok()?)
     } else {
         builder
@@ -577,14 +581,28 @@ fn build_http_client(
     .ok()
 }
 
-fn build_status_clients() -> Vec<reqwest::blocking::Client> {
+fn build_provider_client(use_system_proxy: bool) -> Option<reqwest::blocking::Client> {
+    #[cfg(target_os = "macos")]
+    if use_system_proxy {
+        for proxy_url in macos_proxy_candidates() {
+            if let Some(client) = build_http_client(Some(&proxy_url), Duration::from_secs(15)) {
+                return Some(client);
+            }
+        }
+    }
+    build_http_client(None, Duration::from_secs(10))
+}
+
+fn build_status_clients(use_system_proxy: bool) -> Vec<reqwest::blocking::Client> {
     let mut clients = Vec::new();
     if let Some(client) = build_http_client(None, Duration::from_secs(6)) {
         clients.push(client);
     }
-    for proxy_url in status_proxy_candidates() {
-        if let Some(client) = build_http_client(Some(&proxy_url), Duration::from_secs(12)) {
-            clients.push(client);
+    if use_system_proxy {
+        for proxy_url in status_proxy_candidates() {
+            if let Some(client) = build_http_client(Some(&proxy_url), Duration::from_secs(12)) {
+                clients.push(client);
+            }
         }
     }
     clients

@@ -949,6 +949,13 @@ pub struct ProcessPhase {
     pub events: Vec<CanonicalEvent>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContentPreview {
+    pub prompt: Option<String>,
+    pub output: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileChange {
@@ -991,6 +998,7 @@ pub struct SessionDetail {
     pub warnings: Vec<CoverageNotice>,
     pub task: Option<TaskSummary>,
     pub phases: Vec<ProcessPhase>,
+    pub content_preview: SessionContentPreview,
     pub file_changes: Vec<FileChange>,
     pub git_evidence: GitEvidence,
     pub capabilities: Vec<String>,
