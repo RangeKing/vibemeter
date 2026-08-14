@@ -2866,6 +2866,16 @@ fn snapshot_from_at(
         Ok(attention) => (attention, true),
         Err(_) => (Vec::new(), false),
     };
+    attention.retain(|event| {
+        event.kind != "completion-review"
+            || !items.iter().any(|session| {
+                session.agent == event.agent
+                    && session.source_session_id == event.source_session_id
+                    && session.status != "completed"
+                    && compare_live_timestamps(&session.updated_at, &event.latest_evidence_at)
+                        == std::cmp::Ordering::Greater
+            })
+    });
     hydrate_attention_titles(database, &mut attention);
     overlay_attention_pulses(&mut items, &attention);
     for completed in &mut completed_sessions {
@@ -3861,6 +3871,47 @@ mod tests {
 
         assert!(!snapshot.attention_available);
         assert!(snapshot.attention_queue.is_empty());
+    }
+
+    #[test]
+    fn snapshot_hides_completion_review_for_a_session_that_is_running_again() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("continued-session.sqlite"))
+            .expect("database should open");
+        let now = DateTime::parse_from_rfc3339("2026-08-14T04:00:00Z")
+            .expect("fixed clock")
+            .with_timezone(&Utc);
+        database
+            .record_observed_live_event(&ObservedLiveEvent {
+                occurred_at: "2026-08-14T03:59:00Z".into(),
+                observed_at: "2026-08-14T03:59:00Z".into(),
+                agent: "codex".into(),
+                source_session_id: "continued-source-session".into(),
+                source_event_id: Some("completed-turn".into()),
+                source_sequence: Some(1),
+                source_event_fingerprint: None,
+                event_name: "Stop".into(),
+                project_label: "vibemeter".into(),
+                payload_json: "{}".into(),
+                status: "completed".into(),
+                phase: Some("completed".into()),
+            })
+            .expect("completion review should persist");
+
+        let mut running = jump_test_session("codex", "desktop", None);
+        running.id = "continued-live-session".into();
+        running.source_session_id = "continued-source-session".into();
+        running.status = "running".into();
+        running.phase = "thinking".into();
+        running.updated_at = "2026-08-14T03:59:30Z".into();
+        let sessions = Arc::new(RwLock::new(HashMap::from([(running.id.clone(), running)])));
+
+        let snapshot = snapshot_from_at(&sessions, true, Vec::new(), &database, now);
+
+        assert!(
+            snapshot.attention_queue.is_empty(),
+            "a continued live session must not keep its old completion review visible"
+        );
     }
 
     #[test]

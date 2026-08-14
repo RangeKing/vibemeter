@@ -2247,16 +2247,22 @@ fn sync_attention_event(
     let now = &canonical.observed_at;
     expire_attention_events(transaction, now)?;
 
-    if canonical.event_type == "lifecycle.resume" {
+    if matches!(canonical.lifecycle_status.as_str(), "idle" | "running") {
+        let resolution_reason = if canonical.event_type == "lifecycle.resume" {
+            "user-continued"
+        } else {
+            "progress"
+        };
         transaction.execute(
             "UPDATE attention_events
-             SET state='resolved', resolved_at=?1, resolution_reason='user-continued', updated_at=?2
-             WHERE agent=?3 AND source_session_id=?4
+             SET state='resolved', resolved_at=?1, resolution_reason=?2, updated_at=?3
+             WHERE agent=?4 AND source_session_id=?5
                AND kind='completion-review'
                AND latest_evidence_at<=?1
                AND state IN('open','acknowledged','snoozed')",
             params![
                 canonical.occurred_at,
+                resolution_reason,
                 now,
                 canonical.agent,
                 canonical.source_session_id
@@ -11692,6 +11698,48 @@ mod concurrency_tests {
                 .unwrap()
                 .is_empty(),
             "an upgrade must hide stale completion review when later resume evidence exists"
+        );
+    }
+
+    #[test]
+    fn completion_review_resolves_on_later_exact_progress() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("completion-progress.sqlite"))
+            .expect("database should open");
+        let base = Utc::now();
+        let event = |id: &str, name: &str, status: &str, seconds: i64| ObservedLiveEvent {
+            occurred_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            observed_at: (base + Duration::seconds(seconds)).to_rfc3339(),
+            agent: "codex".into(),
+            source_session_id: "continued-progress-session".into(),
+            source_event_id: Some(id.into()),
+            source_sequence: Some(seconds),
+            source_event_fingerprint: None,
+            event_name: name.into(),
+            project_label: "project".into(),
+            payload_json: "{}".into(),
+            status: status.into(),
+            phase: Some(status.into()),
+        };
+        database
+            .record_observed_live_event(&event("complete", "Stop", "completed", 0))
+            .expect("completion should persist");
+        database
+            .record_observed_live_event(&event("progress", "PreToolUse", "running", 1))
+            .expect("later exact progress should persist");
+
+        let completion = database
+            .attention_events()
+            .expect("attention history should load")
+            .into_iter()
+            .find(|attention| attention.kind == "completion-review")
+            .expect("completion history should remain");
+        assert_eq!(completion.state, "resolved");
+        assert!(
+            database
+                .attention_queue_at(base + Duration::seconds(2))
+                .expect("attention queue should load")
+                .is_empty()
         );
     }
 
