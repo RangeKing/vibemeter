@@ -13,8 +13,8 @@ GitHub Release 以 `apps/desktop/src-tauri/tauri.conf.json` 中的版本号为�
 3. 创建并推送与应用版本一致的标签，例如：
 
    ```sh
-   git tag -a v0.3.1 -m "VibeMeter v0.3.1"
-   git push origin v0.3.1
+   git tag -a v0.3.2 -m "VibeMeter v0.3.2"
+   git push origin v0.3.2
    ```
 
 4. 在 GitHub Actions 的 `Release` 任务完成后，检查生成的 Release、自动发布说明和下载资产。
