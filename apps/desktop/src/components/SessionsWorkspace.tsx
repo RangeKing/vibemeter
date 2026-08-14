@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CheckCircle2, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "./RangePicker";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "./ui";
@@ -8,20 +8,99 @@ import { api } from "../lib/api";
 import { formatCompact, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
 import type { Locale, SessionDetail, SessionSummary } from "../types";
+import { buildTrajectory, type TrajectoryLane } from "./sessionTrajectory";
 
 const PAGE_SIZE = 50;
 const phaseKeys = new Set(["understand", "inspect", "edit", "verify", "fix", "plan", "execute"]);
 
 function formatPhaseTime(value: string | undefined, locale: Locale): string | undefined {
   if (!value) return undefined;
-  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; locale: Locale; onClose: () => void }) {
+function formatTrajectoryOffset(milliseconds: number, totalMilliseconds: number): string {
+  if (totalMilliseconds < 10_000) {
+    const seconds = milliseconds / 1_000;
+    return `${seconds.toFixed(Number.isInteger(seconds) ? 0 : 1)}s`;
+  }
+  const totalSeconds = Math.round(milliseconds / 1_000);
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+export function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; locale: Locale; onClose: () => void }) {
   const { t } = useTranslation();
   const client = useQueryClient();
   const [showAllPhases, setShowAllPhases] = useState(false);
+  const [expandedPhaseIds, setExpandedPhaseIds] = useState<Set<string>>(() => new Set());
+  const [activePhaseId, setActivePhaseId] = useState<string>();
+  const phaseRefs = useRef(new Map<string, HTMLElement>());
+  const highlightTimer = useRef<number | undefined>(undefined);
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
+  const trajectory = useMemo(() => buildTrajectory(detail.phases, {
+    startedAt: detail.startedAt,
+    endedAt: detail.endedAt,
+  }), [detail.endedAt, detail.phases, detail.startedAt]);
+  const laneSpans = useMemo(() => ({
+    input: trajectory.spans.filter((span) => span.lane === "input"),
+    agent: trajectory.spans.filter((span) => span.lane === "agent"),
+    tools: trajectory.spans.filter((span) => span.lane === "tools"),
+  }), [trajectory.spans]);
+  const totalEvents = detail.phases.reduce((sum, phase) => sum + phase.events.length, 0);
+  const sequenceTickCount = Math.min(5, Math.max(2, totalEvents));
+  const phaseRailGap = detail.phases.length > 120 ? 0 : detail.phases.length > 60 ? 1 : 2;
+  const axisTicks = trajectory.scale === "time"
+    ? [0, 0.25, 0.5, 0.75, 1]
+    : Array.from({ length: sequenceTickCount }, (_, index) => index / (sequenceTickCount - 1));
+
+  useEffect(() => {
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    setShowAllPhases(false);
+    setExpandedPhaseIds(new Set());
+    setActivePhaseId(undefined);
+  }, [detail.id]);
+
+  useEffect(() => () => {
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+  }, []);
+
+  function togglePhase(phaseId: string) {
+    setExpandedPhaseIds((current) => {
+      const next = new Set(current);
+      if (next.has(phaseId)) next.delete(phaseId);
+      else next.add(phaseId);
+      return next;
+    });
+  }
+
+  function focusPhase(phaseId: string, revealEvents = false) {
+    if (revealEvents) setExpandedPhaseIds((current) => new Set(current).add(phaseId));
+    if (!detail.phases.slice(0, 24).some((phase) => phase.id === phaseId)) setShowAllPhases(true);
+    setActivePhaseId(phaseId);
+    if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
+    window.requestAnimationFrame(() => {
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+      phaseRefs.current.get(phaseId)?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+      highlightTimer.current = window.setTimeout(() => setActivePhaseId(undefined), 900);
+    });
+  }
+
+  function phaseLabel(phaseKey: string) {
+    return t(`sessions.phase.${phaseKeys.has(phaseKey) ? phaseKey : "other"}`);
+  }
+
+  function eventStatus(success: boolean | undefined) {
+    if (success === true) return "success";
+    if (success === false) return "failed";
+    return "unknown";
+  }
+
   const split = useMutation({
     mutationFn: () => api.splitSession(detail.id),
     onSuccess: async () => {
@@ -41,38 +120,126 @@ function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; loc
       </div>
       {detail.task ? <div className="task-assignment"><span>{detail.task.title}</span><button onClick={() => split.mutate()} disabled={split.isPending}><Split size={13} />{t("sessions.splitTask")}</button></div> : null}
 
-      {detail.attention.length ? (
-        <section className="replay-section session-attention-section">
-          <header>
-            <div><h3>{t("sessions.attention")}</h3><p>{t("sessions.attentionBody")}</p></div>
-            <span>{detail.attention.length}</span>
-          </header>
-          <div className="session-attention-list">
-            {detail.attention.map((attention) => (
-              <article key={attention.id} className={`state-${attention.state}`}>
-                <strong>{t(`live.attention.kind.${attention.kind}`)}</strong>
-                <span>{t(`live.attention.state.${attention.state}`)}</span>
-                <small>{t("sessions.attentionEvidence", { evidence: attention.evidenceCount, interventions: attention.interventionCount })}</small>
-              </article>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
       <section className="replay-section process-section">
-        <header><div><h3>{t("sessions.process")}</h3><p>{t("sessions.processBody")}</p></div><span>{detail.phases.reduce((sum, phase) => sum + phase.eventCount, 0)} events</span></header>
+        <header><div><h3>{t("sessions.process")}</h3><p>{t("sessions.processBody")}</p></div><span>{t("sessions.eventCount", { count: totalEvents })}</span></header>
+        {detail.phases.length ? (
+          <div className="trajectory-overview" aria-label={t("sessions.trajectoryOverview")}>
+            <div className="trajectory-overview-head">
+              <span>{t("sessions.phaseOverview")}</span>
+              <strong>{t(`sessions.scale.${trajectory.scale}`)}</strong>
+            </div>
+            <div className="trajectory-phase-rail" style={{ gap: `${phaseRailGap}px` }}>
+              {detail.phases.map((phase) => {
+                const failures = phase.events.filter((event) => event.success === false);
+                const successes = phase.events.filter((event) => event.success === true).length;
+                const title = [
+                  phaseLabel(phase.phaseKey),
+                  t("sessions.eventCount", { count: phase.eventCount }),
+                  successes ? t("sessions.successful", { count: successes }) : undefined,
+                  failures.length ? t("sessions.failed", { count: failures.length }) : undefined,
+                ].filter(Boolean).join(" · ");
+                return (
+                  <button
+                    key={phase.id}
+                    className={`trajectory-phase-segment phase-${phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other"}`}
+                    style={{ flexGrow: Math.max(1, phase.eventCount), flexShrink: 1, flexBasis: 0, minWidth: 0 }}
+                    onClick={() => focusPhase(phase.id)}
+                    title={title}
+                    aria-label={title}
+                  >
+                    {failures.map((event, index) => <i key={`failure-${event.sequence}-${index}`} className="trajectory-failure-tick" style={{ left: `${phase.events.length > 1 ? (phase.events.indexOf(event) / (phase.events.length - 1)) * 100 : 50}%` }} />)}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="trajectory-lanes">
+              {(["input", "agent", "tools"] as TrajectoryLane[]).map((lane) => (
+                <div className={`trajectory-lane lane-${lane}`} key={lane}>
+                  <span>{t(`sessions.lane.${lane}`)}</span>
+                  <div className="trajectory-lane-track">
+                    {laneSpans[lane].map((span, index) => {
+                      const time = formatPhaseTime(span.event.occurredAt, locale);
+                      const status = eventStatus(span.event.success);
+                      const duration = span.durationMs && span.durationMs > 0
+                        ? formatTrajectoryOffset(span.durationMs, trajectory.durationMs ?? span.durationMs)
+                        : undefined;
+                      const title = [span.event.name, time, duration].filter(Boolean).join(" · ");
+                      return (
+                        <button
+                          key={`${lane}-${span.phaseId}-${span.event.sequence}-${index}`}
+                          className={`trajectory-span ${span.instant ? "is-instant" : ""} status-${status}`}
+                          style={{ left: `${span.position}%`, width: `${span.width}%` }}
+                          onClick={() => focusPhase(span.phaseId, true)}
+                          title={title}
+                          aria-label={`${t(`sessions.lane.${lane}`)} · ${title}`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="trajectory-time-axis" aria-label={t("sessions.timelineAxis")}>
+              <span aria-hidden="true" />
+              <div>
+                {axisTicks.map((tick, index) => (
+                  <time
+                    key={`${trajectory.scale}-${tick}`}
+                    className={index === 0 ? "is-first" : index === axisTicks.length - 1 ? "is-last" : ""}
+                    style={{ left: `${tick * 100}%` }}
+                  >
+                    {trajectory.scale === "time" && trajectory.durationMs !== null
+                      ? formatTrajectoryOffset(trajectory.durationMs * tick, trajectory.durationMs)
+                      : String(Math.max(1, Math.round(1 + tick * (totalEvents - 1))))}
+                  </time>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
         <div className="phase-timeline">
           {visiblePhases.map((phase, index) => {
             const failures = phase.events.filter((event) => event.success === false).length;
             const successes = phase.events.filter((event) => event.success === true).length;
             const durationMs = phase.events.reduce((sum, event) => sum + (event.durationMs ?? 0), 0);
             const phaseTime = formatPhaseTime(phase.startedAt, locale);
-            return <article key={phase.id} className={`phase phase-${phase.phaseKey}`}>
+            const expanded = expandedPhaseIds.has(phase.id);
+            const visibleEvents = expanded ? phase.events : phase.events.slice(0, 5);
+            const phaseClass = phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other";
+            return <article
+              key={phase.id}
+              ref={(node) => { if (node) phaseRefs.current.set(phase.id, node); else phaseRefs.current.delete(phase.id); }}
+              className={`phase phase-${phaseClass} ${activePhaseId === phase.id ? "is-active" : ""}`}
+            >
               <div className="phase-axis"><span>{String(index + 1).padStart(2, "0")}</span></div>
               <div className="phase-body">
-                <header><strong>{t(`sessions.phase.${phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other"}`)}</strong><span>{t("sessions.eventCount", { count: phase.eventCount })}</span></header>
-                <div className="phase-meta">{phaseTime ? <span>{phaseTime}</span> : null}{durationMs ? <span>{formatDuration(Math.max(1, Math.round(durationMs / 1_000)), locale)}</span> : null}{successes ? <span className="successful">{t("sessions.successful", { count: successes })}</span> : null}{failures ? <span className="failed">{t("sessions.failed", { count: failures })}</span> : null}</div>
-                <div className="event-chips">{phase.events.slice(0, 5).map((event) => <span key={`${event.sequence}-${event.name}`} className={event.success === false ? "failed" : ""}>{event.name}</span>)}{phase.events.length > 5 ? <span className="event-more">+{phase.events.length - 5}</span> : null}</div>
+                <button className="phase-toggle" onClick={() => togglePhase(phase.id)} aria-expanded={expanded}>
+                  <span className="phase-title"><strong>{phaseLabel(phase.phaseKey)}</strong><small>{t("sessions.eventCount", { count: phase.eventCount })}</small></span>
+                  <span className="phase-meta">{phaseTime ? <span>{phaseTime}</span> : null}{durationMs ? <span>{formatDuration(Math.max(1, Math.round(durationMs / 1_000)), locale)}</span> : null}{successes ? <span className="successful">{t("sessions.successful", { count: successes })}</span> : null}{failures ? <span className="failed">{t("sessions.failed", { count: failures })}</span> : null}<ChevronDown size={14} /></span>
+                </button>
+                <div className="phase-event-list">
+                  {visibleEvents.map((event, eventIndex) => {
+                    const status = eventStatus(event.success);
+                    const eventTime = formatPhaseTime(event.occurredAt, locale);
+                    return (
+                      <div className={`phase-event-row status-${status}`} key={`${event.sequence}-${event.name}-${eventIndex}`}>
+                        <i aria-hidden="true" />
+                        <span className="phase-event-copy"><strong>{event.name}</strong><small>{event.eventType}</small></span>
+                        <span className="phase-event-meta">
+                          <small className="phase-event-status">{t(`sessions.status.${status}`)}</small>
+                          {eventTime ? <time>{eventTime}</time> : null}
+                          {event.durationMs ? <time>{formatDuration(Math.max(1, Math.round(event.durationMs / 1_000)), locale)}</time> : null}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                {phase.events.length > 5 ? (
+                  <button className="phase-events-toggle" onClick={() => togglePhase(phase.id)} aria-expanded={expanded}>
+                    {expanded ? t("sessions.collapsePhaseEvents") : t("sessions.expandPhaseEvents", { count: phase.events.length - 5 })}
+                    <ChevronDown size={13} />
+                  </button>
+                ) : null}
               </div>
             </article>;
           })}
