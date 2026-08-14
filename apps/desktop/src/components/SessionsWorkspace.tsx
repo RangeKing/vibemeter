@@ -205,6 +205,8 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
             const phaseTime = formatPhaseTime(phase.startedAt, locale);
             const expanded = expandedPhaseIds.has(phase.id);
             const visibleEvents = expanded ? phase.events : phase.events.slice(0, 5);
+            const representativeEvents = [...new Set(phase.events.map((event) => event.name))].slice(0, 3);
+            const remainingRepresentativeEvents = Math.max(0, new Set(phase.events.map((event) => event.name)).size - representativeEvents.length);
             const phaseClass = phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other";
             return <article
               key={phase.id}
@@ -215,6 +217,10 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
               <div className="phase-body">
                 <button className="phase-toggle" onClick={() => togglePhase(phase.id)} aria-expanded={expanded}>
                   <span className="phase-title"><strong>{phaseLabel(phase.phaseKey)}</strong><small>{t("sessions.eventCount", { count: phase.eventCount })}</small></span>
+                  <span className="phase-preview" aria-label={[...representativeEvents, ...(remainingRepresentativeEvents ? [`+${remainingRepresentativeEvents}`] : [])].join(", ")}>
+                    {representativeEvents.map((name) => <small key={name}>{name}</small>)}
+                    {remainingRepresentativeEvents ? <small>+{remainingRepresentativeEvents}</small> : null}
+                  </span>
                   <span className="phase-meta">{phaseTime ? <span>{phaseTime}</span> : null}{durationMs ? <span>{formatDuration(Math.max(1, Math.round(durationMs / 1_000)), locale)}</span> : null}{successes ? <span className="successful">{t("sessions.successful", { count: successes })}</span> : null}{failures ? <span className="failed">{t("sessions.failed", { count: failures })}</span> : null}<ChevronDown size={14} /></span>
                 </button>
                 <div className="phase-event-list">
@@ -225,6 +231,10 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
                       <div className={`phase-event-row status-${status}`} key={`${event.sequence}-${event.name}-${eventIndex}`}>
                         <i aria-hidden="true" />
                         <span className="phase-event-copy"><strong>{event.name}</strong><small>{event.eventType}</small></span>
+                        <span className="phase-event-evidence">
+                          <small>{event.category}</small>
+                          <small>{event.provenance}</small>
+                        </span>
                         <span className="phase-event-meta">
                           <small className="phase-event-status">{t(`sessions.status.${status}`)}</small>
                           {eventTime ? <time>{eventTime}</time> : null}
@@ -271,12 +281,8 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
 
 export function SessionsWorkspace({
   locale,
-  embedded = false,
-  onBack,
 }: {
   locale: Locale;
-  embedded?: boolean;
-  onBack?: () => void;
 }) {
   const { t } = useTranslation();
   const range = useUiStore((state) => state.range);
@@ -338,21 +344,9 @@ export function SessionsWorkspace({
   const loadingMore = query.isFetching && page > 0;
 
   return (
-    <div className={`page sessions-page ${selectedId ? "showing-replay" : ""} ${embedded ? "embedded" : ""}`}>
+    <div className={`page sessions-page ${selectedId ? "showing-replay" : ""}`}>
       {!selectedId ? <>
-        {embedded ? (
-          <header className="sessions-embedded-header">
-            <button className="button subtle" onClick={onBack}><ArrowLeft size={14} />{t("data.backToOverview")}</button>
-            <div>
-              <span className="eyebrow">{t("sessions.title")}</span>
-              <h1>{t("sessions.ledgerTitle")}</h1>
-              <p>{t("sessions.description")}</p>
-            </div>
-            <RangePicker />
-          </header>
-        ) : (
-          <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
-        )}
+        <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
         <div className="session-toolbar">
           <label className="search-field"><Search size={16} /><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder={t("sessions.search")} />{searchInput ? <button onClick={() => setSearchInput("")} aria-label={t("actions.clear")}><X size={14} /></button> : null}</label>
         <select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t("sessions.allAgents")}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="kimi-code">Kimi Code</option><option value="cursor">Cursor</option><option value="openclaw">OpenClaw</option><option value="hermes">Hermes</option><option value="zcode">ZCode</option></select>

@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { EChartsCoreOption } from "echarts";
-import { ArrowRight, BarChart3, Blocks, CalendarDays, Merge, Scale, Sparkles, Workflow } from "lucide-react";
+import { BarChart3, Blocks, CalendarDays, Scale, Sparkles, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
@@ -8,9 +8,7 @@ import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { EChart } from "../components/EChart";
 import { focusHeatmapIndex, HeatmapCell } from "../components/HeatmapCell";
 import { RangePicker } from "../components/RangePicker";
-import { SessionsWorkspace } from "../components/SessionsWorkspace";
 import { SourceCapabilityLegend } from "../components/SourceCapabilityLegend";
-import { WorkEventCard } from "../components/WorkEventCard";
 import { AgentBadge, EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { buildHourlyActivity, findPeakActivity } from "../lib/activity";
@@ -19,7 +17,7 @@ import { agentName, cacheTokenTotal, formatCompact, formatCurrency, formatDate, 
 import { summarizeProviderAccountUsage } from "../lib/providerUsage";
 import { dataFilterAgents, defaultDataAgents } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
-import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey, TaskSummary } from "../types";
+import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey } from "../types";
 
 const COMPARISON_COLORS = [
   "var(--chart-1)",
@@ -155,25 +153,13 @@ function toolOption(tools: Array<{ label: string; value: number }>, colors: Retu
   };
 }
 
-function openTask(task: TaskSummary) {
-  const store = useUiStore.getState();
-  store.openSessions(task.primarySessionId);
-}
-
 export function DataPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const colors = useChartColors();
-  const client = useQueryClient();
   const range = useUiStore((state) => state.range);
-  const dataView = useUiStore((state) => state.dataView);
-  const openSessions = useUiStore((state) => state.openSessions);
-  const closeSessions = useUiStore((state) => state.closeSessions);
-  const [selectedTasks, setSelectedTasks] = useState<string[]>([]);
-  const [showAllEvents, setShowAllEvents] = useState(false);
   const [agentFilter, setAgentFilter] = useState<string[] | null>(null);
   const overview = useQuery({ queryKey: ["overview", range], queryFn: () => api.overview(range), refetchInterval: 30_000 });
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
-  const tasks = useQuery({ queryKey: ["tasks", range], queryFn: () => api.tasks(range), refetchInterval: 30_000 });
   const comparison = useQuery({ queryKey: ["comparison", range], queryFn: () => api.comparison(range) });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const cursorDashboardEnabled = settings.data?.credentialsAllowed === "true" && settings.data.cursorDashboardUsage === "true";
@@ -182,13 +168,6 @@ export function DataPage({ locale }: { locale: Locale }) {
     queryFn: api.providers,
     enabled: cursorDashboardEnabled,
     refetchInterval: cursorDashboardEnabled ? 30_000 : false,
-  });
-  const merge = useMutation({
-    mutationFn: (taskIds: string[]) => api.mergeTasks(taskIds),
-    onSuccess: async () => {
-      setSelectedTasks([]);
-      await Promise.all([client.invalidateQueries({ queryKey: ["tasks"] }), client.invalidateQueries({ queryKey: ["overview"] }), client.invalidateQueries({ queryKey: ["sessions"] })]);
-    },
   });
   const filterAgents = useMemo(
     () => dataFilterAgents(sources.data ?? []),
@@ -246,19 +225,13 @@ export function DataPage({ locale }: { locale: Locale }) {
     requestAnimationFrame(() => focusHeatmapIndex(heatmapRef.current, index));
   };
 
-  if (dataView === "sessions") {
-    return <SessionsWorkspace locale={locale} embedded onBack={closeSessions} />;
-  }
-
-  if (overview.isLoading || sources.isLoading || tasks.isLoading) return <LoadingState />;
-  if (overview.isError || !overview.data || sources.isError || !sources.data || tasks.isError || !tasks.data) {
-    return <ErrorState retry={() => void Promise.all([overview.refetch(), sources.refetch(), tasks.refetch()])} />;
+  if (overview.isLoading || sources.isLoading) return <LoadingState />;
+  if (overview.isError || !overview.data || sources.isError || !sources.data) {
+    return <ErrorState retry={() => void Promise.all([overview.refetch(), sources.refetch()])} />;
   }
   const data = overview.data;
   const filteredAgents = data.agents.filter((item) => activeAgents.includes(item.label));
   const displayedAgents = activeAgents.map((agent) => filteredAgents.find((item) => item.label === agent) ?? { id: agent, label: agent, value: 0 });
-  const filteredTasks = tasks.data.filter((task) => activeAgents.includes(task.agent));
-  const visibleTasks = showAllEvents ? filteredTasks : filteredTasks.slice(0, 12);
   const filteredComparison = (comparison.data ?? []).filter((item) => item.groupKind !== "agent" || activeAgents.includes(item.agent));
   const ledgerSessions = filteredDaily.reduce((sum, point) => sum + point.sessionCount, 0);
   const ledgerUsage = sumTokenUsage(filteredDaily.map((point) => point.usage));
@@ -267,7 +240,6 @@ export function DataPage({ locale }: { locale: Locale }) {
   const ledgerSeconds = filteredDaily.reduce((sum, point) => sum + point.activeSeconds, 0);
   const ledgerDays = new Set(filteredDaily.filter((point) => tokenTotal(point.usage) > 0 || point.sessionCount > 0).map((point) => point.date)).size;
   const activeDuration = durationParts(ledgerSeconds || data.totals.activeSeconds);
-  const toggleTask = (id: string, selected: boolean) => setSelectedTasks((current) => selected ? [...new Set([...current, id])] : current.filter((item) => item !== id));
   const toggleAgent = (agent: string) => {
     setAgentFilter((current) => {
       const base = current ?? defaultAgents;
@@ -474,15 +446,6 @@ export function DataPage({ locale }: { locale: Locale }) {
         })()}
       </section>
 
-      <section className="events-section">
-        <header className="section-heading events-heading"><div><h2>{t("data.events")}</h2></div><div className="event-summary"><span><strong>{filteredTasks.length}</strong>{t("metrics.tasks")}</span></div></header>
-        {selectedTasks.length ? <div className="task-merge-bar"><span>{t("task.selected", { count: selectedTasks.length })}</span><button className="button secondary" onClick={() => merge.mutate(selectedTasks)} disabled={selectedTasks.length < 2 || merge.isPending}><Merge size={13} />{t("task.merge")}</button></div> : null}
-        {visibleTasks.length ? <div className="event-grid">{visibleTasks.map((task) => <WorkEventCard key={task.id} task={task} locale={locale} selected={selectedTasks.includes(task.id)} onSelect={(value) => toggleTask(task.id, value)} onOpen={() => openTask(task)} onAcceptSuggestion={task.suggestedTaskId ? () => merge.mutate([task.suggestedTaskId!, task.id]) : undefined} />)}</div> : <EmptyState title={t("data.noEvents")} body={t("data.noEventsBody")} />}
-        <footer className="events-footer">
-          {filteredTasks.length > 12 ? <button className="button subtle" onClick={() => setShowAllEvents((value) => !value)}>{showAllEvents ? t("data.showLess") : t("data.showAll", { count: filteredTasks.length })}</button> : <span />}
-          <button className="inline-link" onClick={() => openSessions()}>{t("data.openSessions")}<ArrowRight size={14} /></button>
-        </footer>
-      </section>
     </div>
   );
 }

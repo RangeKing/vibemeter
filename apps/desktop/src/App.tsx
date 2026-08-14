@@ -7,6 +7,7 @@ import { MenuBarPopover } from "./components/MenuBarPopover";
 import { NotchSurface } from "./components/NotchSurface";
 import { Onboarding } from "./components/Onboarding";
 import { LoadingState } from "./components/ui";
+import { SessionsWorkspace } from "./components/SessionsWorkspace";
 import { api } from "./lib/api";
 import { DataPage } from "./pages/DataPage";
 import { LivePage } from "./pages/LivePage";
@@ -21,14 +22,13 @@ function systemLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en-US";
 }
 
-const pages: PageKey[] = ["data", "live", "vcti", "share", "sources", "settings"];
+const pages: PageKey[] = ["data", "sessions", "live", "vcti", "share", "sources", "settings"];
 
 export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const { i18n } = useTranslation();
   const client = useQueryClient();
   const page = useUiStore((state) => state.page);
   const setPage = useUiStore((state) => state.setPage);
-  const openSessions = useUiStore((state) => state.openSessions);
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const index = useQuery({ queryKey: ["index-status"], queryFn: api.indexStatus, refetchInterval: 1_500 });
   const locale: Locale = settings.data?.locale === "zh-CN" || settings.data?.locale === "en-US" ? settings.data.locale : systemLocale();
@@ -65,7 +65,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<string>("navigate", (event) => {
-      const legacyMap: Record<string, PageKey | "sessions"> = {
+      const legacyMap: Record<string, PageKey> = {
         overview: "data",
         today: "data",
         compare: "vcti",
@@ -75,19 +75,14 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
         sessions: "sessions",
       };
       const mapped = legacyMap[event.payload] ?? event.payload;
-      if (mapped === "sessions") {
-        openSessions();
-        return;
-      }
       if (pages.includes(mapped as PageKey)) setPage(mapped as PageKey);
     }).then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; });
     return () => { disposed = true; unlisten?.(); };
-  }, [openSessions, setPage, surface]);
+  }, [setPage, surface]);
 
   useEffect(() => {
     if (page === "insights") setPage("vcti");
-    if (page === "sessions") openSessions();
-  }, [openSessions, page, setPage]);
+  }, [page, setPage]);
 
   if (settings.isLoading) return <LoadingState />;
   if (surface === "menubar") return <MenuBarPopover locale={locale} />;
@@ -106,7 +101,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
     switch (page) {
       case "live": return <LivePage locale={locale} />;
       case "data": return <DataPage locale={locale} />;
-      case "sessions": return <DataPage locale={locale} />;
+      case "sessions": return <SessionsWorkspace locale={locale} />;
       case "insights": return <VctiPage locale={locale} />;
       case "vcti": return <VctiPage locale={locale} />;
       case "share": return <ShareStudioPage locale={locale} />;

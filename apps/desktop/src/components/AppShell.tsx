@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  History,
   ScanFace,
   Settings,
   Share2,
@@ -15,6 +16,7 @@ import { IaMigrationTip } from "./IaMigrationTip";
 
 const primary: Array<{ id: PageKey; icon: typeof Sparkles }> = [
   { id: "data", icon: BarChart3 },
+  { id: "sessions", icon: History },
   { id: "live", icon: RadioTower },
   { id: "vcti", icon: ScanFace },
 ];
@@ -37,21 +39,13 @@ export function AppShell({
 }) {
   const { t } = useTranslation();
   const page = useUiStore((state) => state.page);
-  const dataView = useUiStore((state) => state.dataView);
   const setPage = useUiStore((state) => state.setPage);
   const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
     mainRef.current?.scrollTo({ top: 0, left: 0 });
-  }, [page, dataView]);
+  }, [page]);
   const navigate = (id: PageKey) => {
-    if (id === "data" && page === "data" && dataView === "sessions") {
-      useUiStore.getState().closeSessions();
-      return;
-    }
     setPage(id);
-    if (id !== "data") {
-      useUiStore.getState().closeSessions();
-    }
   };
 
   const links = (items: typeof primary) => items.map(({ id, icon: Icon }) => (

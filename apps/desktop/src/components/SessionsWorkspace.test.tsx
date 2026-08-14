@@ -97,6 +97,9 @@ describe("SessionReplay trajectory", () => {
     expect(screen.getByLabelText("会话时间轴")).toBeTruthy();
     expect(screen.getByText("0:00")).toBeTruthy();
     expect(screen.getByText("1:00")).toBeTruthy();
+    expect(screen.getByLabelText("user, started, exec, +3")).toBeTruthy();
+    expect(screen.getAllByText("execute").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("test").length).toBeGreaterThan(0);
     expect(screen.queryByText("completed")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "展开其余 1 个事件" }));

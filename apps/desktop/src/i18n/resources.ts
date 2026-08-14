@@ -6,7 +6,7 @@ export const enUS = {
   },
   migration: {
     title: "Navigation got simpler",
-    body: "VCTI is now the home. Catchphrases and insight cards live there too. Sessions open inside Data. Live stays up front; Share and Settings sit below. Sources open from Settings.",
+    body: "VCTI is now the home. Catchphrases and insight cards live there too. Sessions now have their own page beside Data. Live stays up front; Share and Settings sit below. Sources open from Settings.",
     dismiss: "Got it",
   },
   navigation: {
@@ -252,6 +252,7 @@ export const enUS = {
       },
       action: {
         handled: "Handled",
+        confirmAll: "Confirm all {{count}}",
         "not-relevant": "Not relevant",
         "not-stuck": "Not stuck",
         snoozed: "Snooze",
@@ -911,7 +912,7 @@ export const zhCN = {
   },
   migration: {
     title: "导航更简单了",
-    body: "现在默认从 VCTI 开始，口头禅与洞察卡片也并入这里。会话回放在 Data 内打开。实时仍在主栏，分享与设置在下方。数据源从设置进入。",
+    body: "现在默认从 VCTI 开始，口头禅与洞察卡片也并入这里。会话已成为与数据并列的独立页面。实时仍在主栏，分享与设置在下方。数据源从设置进入。",
     dismiss: "知道了",
   },
   navigation: {
@@ -1157,6 +1158,7 @@ export const zhCN = {
       },
       action: {
         handled: "已处理",
+        confirmAll: "全部确认完成（{{count}}）",
         "not-relevant": "与我无关",
         "not-stuck": "不是卡住",
         snoozed: "稍后提醒",

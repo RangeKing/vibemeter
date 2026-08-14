@@ -9,24 +9,21 @@ import { useUiStore } from "../store";
 import type { OverviewResponse, SourceStatus } from "../types";
 import { DataPage } from "./DataPage";
 
-const { comparison, overview, providers, settings, sources, tasks } = vi.hoisted(() => ({
+const { comparison, overview, providers, settings, sources } = vi.hoisted(() => ({
   comparison: vi.fn(),
   overview: vi.fn(),
   providers: vi.fn(),
   settings: vi.fn(),
   sources: vi.fn(),
-  tasks: vi.fn(),
 }));
 
 vi.mock("../lib/api", () => ({
   api: {
     comparison,
-    mergeTasks: vi.fn(),
     overview,
     providers,
     settings,
     sources,
-    tasks,
   },
 }));
 
@@ -112,10 +109,9 @@ describe("DataPage query transition", () => {
     providers.mockReset();
     settings.mockReset();
     sources.mockReset();
-    tasks.mockReset();
     comparison.mockResolvedValue([]);
     settings.mockResolvedValue({ credentialsAllowed: "false", cursorDashboardUsage: "false" });
-    useUiStore.setState({ dataView: "overview", range: "90d" });
+    useUiStore.setState({ page: "data", selectedSessionId: undefined, range: "90d" });
   });
 
   afterEach(cleanup);
@@ -123,20 +119,18 @@ describe("DataPage query transition", () => {
   it("keeps the React hook order stable when required queries finish loading", async () => {
     const overviewResult = deferred<OverviewResponse>();
     const sourceResult = deferred<[]>();
-    const taskResult = deferred<[]>();
     overview.mockReturnValue(overviewResult.promise);
     sources.mockReturnValue(sourceResult.promise);
-    tasks.mockReturnValue(taskResult.promise);
 
     renderDataPage();
 
     await act(async () => {
       overviewResult.resolve(emptyOverview);
       sourceResult.resolve([]);
-      taskResult.resolve([]);
     });
 
     await waitFor(() => expect(screen.getByRole("heading", { name: /你与 Agent/ })).toBeTruthy());
+    expect(screen.queryByRole("heading", { name: "工作事件" })).toBeNull();
   });
 
   it("renders the ZCode filter before historical sessions are available", async () => {
@@ -154,7 +148,6 @@ describe("DataPage query transition", () => {
     };
     overview.mockResolvedValue(emptyOverview);
     sources.mockResolvedValue([zcode]);
-    tasks.mockResolvedValue([]);
 
     renderDataPage();
 

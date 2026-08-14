@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
@@ -179,6 +179,46 @@ describe("Notch session selection", () => {
 
     expect(screen.getByText(/^会话 [0-9A-F]{6}$/)).toBeTruthy();
     expect(screen.queryByText("private-source-session")).toBeNull();
+  });
+
+  it("batch-confirms only the visible completion reviews", () => {
+    const item = (id: string, kind: AttentionEvent["kind"]): AttentionEvent => ({
+      id,
+      kind,
+      state: "open",
+      reasonKey: kind === "completion-review" ? "completion-needs-review" : "permission-required",
+      agent: "codex",
+      sourceSessionId: `source-${id}`,
+      projectLabel: "vibemeter",
+      openedAt: "2026-08-13T08:00:00Z",
+      latestEvidenceAt: "2026-08-13T08:00:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 1,
+      interventionCount: 0,
+    });
+    const onConfirmAll = vi.fn();
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[
+            item("completion-one", "completion-review"),
+            item("waiting", "waiting"),
+            item("completion-two", "completion-review"),
+          ]}
+          onFeedback={vi.fn()}
+          onConfirmAll={onConfirmAll}
+          onJump={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "全部确认完成（2）" }));
+
+    expect(onConfirmAll).toHaveBeenCalledWith(["completion-one", "completion-two"]);
   });
 
   it("formats a live conversation duration instead of a wall-clock timestamp", () => {
