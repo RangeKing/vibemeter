@@ -8,7 +8,7 @@ import { CatchphraseClouds } from "../components/CatchphraseClouds";
 import { InsightCard } from "../components/InsightCard";
 import { RangePicker } from "../components/RangePicker";
 import { VctiAvatar } from "../components/VctiAvatar";
-import { VctiArtField, VctiArtPortrait } from "../components/VctiArtPortrait";
+import { VctiArtPortrait } from "../components/VctiArtPortrait";
 import { EmptyState, ErrorState, LoadingState } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDate, formatDuration, formatPercent } from "../lib/format";
@@ -169,10 +169,9 @@ export function VctiPage({ locale }: { locale: Locale }) {
       ) : null}
 
       <section className={`vcti-reveal ${stable ? "stable" : profile.status}`}>
-        <VctiArtField visual={profile.identityVisual} type={profile.primaryType} guild={profile.guild} />
         <div className="vcti-reveal-copy">
           <span className="vcti-guild-label">{guildName}</span>
-          <h2>{profile.primaryType ? <b>{profile.primaryType}</b> : null}<span>{primaryName}</span></h2>
+          <h2>{profile.primaryType ? <b>{profile.primaryType}</b> : null}{primaryName}</h2>
           <p>{primaryTagline}</p>
           <div className="vcti-meta-row">
             <span><DatabaseZap size={14} />{t("vcti.observed", { sessions: profile.sessionCount, days: profile.activeDays })}</span>
@@ -195,6 +194,7 @@ export function VctiPage({ locale }: { locale: Locale }) {
           ) : (
             <div className="vcti-collecting-track"><span style={{ width: `${Math.min(92, profile.confidence)}%` }} /></div>
           )}
+          {profile.primaryType ? <IdentityEvidenceSummary profile={profile} /> : null}
           <div className="vcti-actions">
             <button className="button primary" disabled={!profile.primaryType} onClick={() => openShare("vcti-card")}><Sparkles size={14} />{t("vcti.makeShareCard")}</button>
             <button className="button subtle" onClick={() => setShowAtlas((value) => !value)}>{showAtlas ? <EyeOff size={14} /> : <Eye size={14} />}{showAtlas ? t("vcti.hideAtlas") : t("vcti.showAtlas")}</button>
@@ -202,7 +202,6 @@ export function VctiPage({ locale }: { locale: Locale }) {
         </div>
         <VctiArtPortrait visual={profile.identityVisual} type={profile.primaryType} guild={profile.guild} label={primaryName} />
       </section>
-      {profile.primaryType ? <IdentityEvidenceSummary profile={profile} /> : null}
 
       <section className="vcti-panel vcti-scores">
         <header><span className="section-index">01</span><div><h2>{t("vcti.scoresTitle")}</h2><p>{t("vcti.scoresBody")}</p></div></header>

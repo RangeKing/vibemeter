@@ -711,16 +711,6 @@ fn render_vcti_card(
         Some("end"),
     );
     panel(svg, margin, panel_y, panel_width, panel_height, palette);
-    render_vcti_art_field(
-        svg,
-        margin,
-        panel_y,
-        panel_width,
-        panel_height,
-        accent,
-        palette,
-        &profile.identity_visual,
-    );
 
     let avatar_size = if landscape {
         (panel_height * 0.48).min(panel_width * 0.27).max(260.0)
@@ -729,8 +719,16 @@ fn render_vcti_card(
             .min(panel_height * 0.30)
             .clamp(300.0, 760.0)
     };
-    let avatar_x = margin + panel_width - avatar_size - 48.0;
+    let avatar_x = margin + 48.0;
     let avatar_y = panel_y + 62.0;
+    render_vcti_art_field(
+        svg,
+        avatar_x - avatar_size * 0.14,
+        avatar_y - avatar_size * 0.14,
+        avatar_size * 1.28,
+        accent,
+        &profile.identity_visual,
+    );
     render_vcti_avatar(
         svg,
         avatar_x,
@@ -742,8 +740,8 @@ fn render_vcti_card(
         palette,
     );
 
-    let identity_x = margin + 48.0;
-    let identity_width = avatar_x - identity_x - 62.0;
+    let identity_x = avatar_x + avatar_size + 62.0;
+    let identity_width = width as f64 - margin - identity_x - 38.0;
     text(
         svg,
         identity_x,
@@ -1206,59 +1204,42 @@ fn render_vcti_card(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_vcti_art_field(
     svg: &mut String,
     x: f64,
     y: f64,
-    width: f64,
-    height: f64,
+    size: f64,
     accent: &str,
-    palette: Palette,
     visual: &crate::models::VctiIdentityVisual,
 ) {
     if !visual.available {
         return;
     }
-    let terrain_soft = if palette.dark {
-        palette.muted
-    } else {
-        palette.hairline
-    };
+    let scale = size / 100.0;
     write!(
         svg,
-        "<svg x=\"{x:.2}\" y=\"{y:.2}\" width=\"{width:.2}\" height=\"{height:.2}\" viewBox=\"0 0 160 100\" preserveAspectRatio=\"xMidYMid slice\" overflow=\"hidden\" data-vcti-visual-version=\"{}\" data-vcti-range=\"{}\">",
+        "<g data-vcti-visual-version=\"{}\" data-vcti-range=\"{}\" transform=\"translate({x:.2} {y:.2}) scale({scale:.4})\">",
         xml(&visual.version), xml(&visual.range)
     ).ok();
-    svg.push_str("<defs><linearGradient id=\"vcti-terrain-fade-export\" x1=\"0\" x2=\"1\"><stop offset=\"0\" stop-color=\"white\" stop-opacity=\"0.04\"/><stop offset=\"0.34\" stop-color=\"white\" stop-opacity=\"0.10\"/><stop offset=\"0.52\" stop-color=\"white\" stop-opacity=\"0.48\"/><stop offset=\"0.68\" stop-color=\"white\" stop-opacity=\"0.92\"/><stop offset=\"1\" stop-color=\"white\"/></linearGradient><mask id=\"vcti-terrain-mask-export\"><rect width=\"160\" height=\"100\" fill=\"url(#vcti-terrain-fade-export)\"/></mask></defs><g mask=\"url(#vcti-terrain-mask-export)\">");
-    write!(svg, "<g data-visual-channel=\"topology\" transform=\"translate(69 0)\" stroke-linejoin=\"round\">").ok();
     for path in &visual.contours {
-        write!(svg, "<path class=\"vcti-art-contour\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.3}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, 0.12 + path.stroke_width * 0.11, (path.opacity * 0.9).max(0.38)).ok();
+        write!(svg, "<path class=\"vcti-art-contour\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
     }
-    svg.push_str("</g>");
-    write!(svg, "<g data-visual-channel=\"rhythm\" transform=\"translate(25 0) scale(1.25 1)\" stroke=\"{terrain_soft}\" stroke-linecap=\"round\" stroke-linejoin=\"round\">").ok();
     for path in &visual.rhythm.paths {
-        write!(svg, "<path class=\"vcti-art-rhythm\" d=\"{}\" fill=\"none\" stroke-width=\"0.095\" opacity=\"{:.2}\"/>", xml(&path.d), (path.opacity * 0.28).max(0.10)).ok();
+        write!(svg, "<path class=\"vcti-art-rhythm\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
     }
-    svg.push_str("</g>");
-    write!(svg, "<g data-visual-channel=\"collaboration\" transform=\"translate(25 0) scale(1.25 1)\" stroke=\"{accent}\" stroke-linecap=\"round\" stroke-linejoin=\"round\">").ok();
     for path in &visual.collaboration.paths {
-        write!(svg, "<path class=\"vcti-art-branch\" d=\"{}\" fill=\"none\" stroke-width=\"0.145\" opacity=\"{:.2}\"/>", xml(&path.d), (path.opacity * 0.38).max(0.20)).ok();
+        write!(svg, "<path class=\"vcti-art-branch\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
     }
-    svg.push_str("</g>");
-    write!(svg, "<g data-visual-channel=\"detail\" transform=\"translate(25 0) scale(1.25 1)\" fill=\"{accent}\" stroke=\"{accent}\">").ok();
     for mark in &visual.detail.tool_marks {
-        write!(svg, "<path class=\"vcti-art-tool\" d=\"M{:.2},{:.2} L{:.2},{:.2}\" fill=\"none\" stroke-width=\"0.110\" opacity=\"{:.2}\"/>", mark.cx - 0.45, mark.cy - 0.65, mark.cx + 0.45, mark.cy + 0.65, (mark.opacity * 0.45).max(0.24)).ok();
+        write!(svg, "<circle class=\"vcti-art-tool\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"{}\" opacity=\"{:.2}\"/>", mark.cx, mark.cy, mark.radius, accent, mark.opacity).ok();
     }
     for mark in &visual.detail.skill_marks {
-        write!(svg, "<path class=\"vcti-art-skill\" d=\"M{:.2},{:.2} L{:.2},{:.2} M{:.2},{:.2} L{:.2},{:.2}\" fill=\"none\" stroke-width=\"0.100\" opacity=\"{:.2}\"/>", mark.cx - 0.6, mark.cy - 0.72, mark.cx + 0.6, mark.cy + 0.72, mark.cx - 0.6, mark.cy + 0.72, mark.cx + 0.6, mark.cy - 0.72, (mark.opacity * 0.42).max(0.28)).ok();
+        write!(svg, "<circle class=\"vcti-art-skill\" cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"none\" stroke=\"{}\" stroke-width=\"0.65\" opacity=\"{:.2}\"/>", mark.cx, mark.cy, mark.radius, accent, mark.opacity).ok();
+    }
+    for path in &visual.process.paths {
+        write!(svg, "<path class=\"vcti-art-process\" d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{:.2}\" opacity=\"{:.2}\"/>", xml(&path.d), accent, path.stroke_width, path.opacity).ok();
     }
     svg.push_str("</g>");
-    write!(svg, "<g data-visual-channel=\"process\" transform=\"translate(25 0) scale(1.25 1)\" stroke=\"{terrain_soft}\" stroke-linecap=\"round\">").ok();
-    for path in &visual.process.paths {
-        write!(svg, "<path class=\"vcti-art-process\" d=\"{}\" fill=\"none\" stroke-width=\"0.120\" opacity=\"{:.2}\"/>", xml(&path.d), (path.opacity * 0.30).max(0.14)).ok();
-    }
-    svg.push_str("</g></g></svg>");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4178,7 +4159,7 @@ mod tests {
         let mut svg = String::new();
         let visual = crate::models::VctiIdentityVisual {
             algorithm_version: "1.6.0".into(),
-            version: "2.1.0".into(),
+            version: "2.0.0".into(),
             range: "90d".into(),
             available: false,
             inputs: Vec::new(),
@@ -4212,58 +4193,9 @@ mod tests {
                 paths: Vec::new(),
             },
         };
-        render_vcti_art_field(
-            &mut svg,
-            0.0,
-            0.0,
-            100.0,
-            100.0,
-            "#fff",
-            Palette::for_theme("dark"),
-            &visual,
-        );
+        render_vcti_art_field(&mut svg, 0.0, 0.0, 100.0, "#fff", &visual);
         for field in private_fields {
             assert!(!svg.contains(field));
-        }
-    }
-
-    #[test]
-    fn vcti_art_field_unifies_channels_into_one_guild_terrain() {
-        let visual: crate::models::VctiIdentityVisual = serde_json::from_value(serde_json::json!({
-            "algorithmVersion": "1.6.0",
-            "version": "2.1.0",
-            "range": "90d",
-            "available": true,
-            "inputs": [],
-            "contours": [{ "d": "M 10 50 L 90 50", "strokeWidth": 1.0, "opacity": 0.4 }],
-            "rhythm": { "available": true, "paths": [{ "d": "M 0 20 L 100 20", "strokeWidth": 1.0, "opacity": 0.4 }] },
-            "collaboration": { "available": true, "paths": [{ "d": "M 50 50 L 90 20", "strokeWidth": 1.0, "opacity": 0.4 }] },
-            "detail": { "available": true, "toolMarks": [{ "cx": 20.0, "cy": 20.0, "radius": 1.0, "opacity": 0.4 }], "skillMarks": [] },
-            "process": { "available": true, "paths": [{ "d": "M 20 80 L 80 80", "strokeWidth": 1.0, "opacity": 0.4 }] }
-        })).expect("visual fixture");
-        let mut svg = String::new();
-
-        render_vcti_art_field(
-            &mut svg,
-            0.0,
-            0.0,
-            175.0,
-            120.0,
-            "#fff",
-            Palette::for_theme("dark"),
-            &visual,
-        );
-
-        assert!(svg.contains("width=\"175.00\" height=\"120.00\" viewBox=\"0 0 160 100\""));
-        assert!(svg.contains("data-visual-channel=\"rhythm\""));
-        assert!(svg.contains("data-visual-channel=\"collaboration\""));
-        assert!(svg.contains("data-visual-channel=\"detail\""));
-        assert!(svg.contains("data-visual-channel=\"process\""));
-        assert!(svg.contains("stroke=\"#A1A1A8\""));
-        assert!(svg.contains("stroke=\"#fff\""));
-        assert!(svg.contains("fill=\"#fff\""));
-        for rejected_chart_color in ["#F08A54", "#78A9FF", "#F2C66D", "#FF8580"] {
-            assert!(!svg.contains(rejected_chart_color));
         }
     }
 

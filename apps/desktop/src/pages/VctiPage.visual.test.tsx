@@ -9,7 +9,7 @@ import i18n from "../i18n";
 import { useUiStore } from "../store";
 import type { VctiProfile } from "../types";
 import { VctiPage } from "./VctiPage";
-import { VctiArtField } from "../components/VctiArtPortrait";
+import { VctiArtPortrait } from "../components/VctiArtPortrait";
 
 const { insights, phraseCloud, vctiProfile } = vi.hoisted(() => ({
   insights: vi.fn(),
@@ -82,7 +82,7 @@ const profile = {
   },
   identityVisual: {
     algorithmVersion: "1.6.0",
-    version: "2.1.0",
+    version: "2.0.0",
     range: "90d",
     available: true,
     contours: [{ d: "M 10 50 Q 50 10 90 50 Q 50 90 10 50 Z", strokeWidth: 0.8, opacity: 0.5 }],
@@ -124,16 +124,16 @@ describe("VctiPage identity art", () => {
     const character = await screen.findByRole("img", { name: "开工判官" });
     expect(character.classList.contains("vcti-avatar")).toBe(true);
     expect(character.querySelector(".vcti-avatar-art")).toBeTruthy();
-    expect(container.querySelector('[data-vcti-visual-version="2.1.0"]')).toBeTruthy();
+    expect(container.querySelector('[data-vcti-visual-version="2.0.0"]')).toBeTruthy();
     expect(container.querySelectorAll(".vcti-art-contours path")).toHaveLength(1);
     expect(container.querySelectorAll(".vcti-art-rhythm path")).toHaveLength(1);
     expect(container.querySelectorAll(".vcti-art-branches path")).toHaveLength(1);
-    expect(container.querySelectorAll('.vcti-art-tools [data-mark="tool"]')).toHaveLength(1);
-    expect(container.querySelectorAll('.vcti-art-skills [data-mark="skill"]')).toHaveLength(1);
+    expect(container.querySelectorAll(".vcti-art-tools circle")).toHaveLength(1);
+    expect(container.querySelectorAll(".vcti-art-skills circle")).toHaveLength(1);
     expect(container.querySelectorAll(".vcti-art-process path")).toHaveLength(1);
   });
 
-  it("makes one behavior terrain the primary composition and keeps text as a compact legend", async () => {
+  it("makes the four-channel art the primary composition and keeps text as a compact legend", async () => {
     useUiStore.setState({ range: "90d" });
     vctiProfile.mockResolvedValue(profile);
     insights.mockResolvedValue({ items: [] });
@@ -142,7 +142,7 @@ describe("VctiPage identity art", () => {
     const { container } = renderPage();
 
     expect(await screen.findByRole("figure", { name: /开工判官/ })).toBeTruthy();
-    expect(container.querySelectorAll(".vcti-terrain > g")).toHaveLength(5);
+    expect(container.querySelectorAll(".vcti-art-field > g")).toHaveLength(5);
     expect(screen.getByRole("list", { name: "人格依据" })).toBeTruthy();
     expect(screen.getByText("工作节奏")).toBeTruthy();
     expect(screen.getByText("协作方式")).toBeTruthy();
@@ -150,26 +150,6 @@ describe("VctiPage identity art", () => {
     expect(screen.getByText("过程记录")).toBeTruthy();
     expect(screen.queryByText(/错误 0/)).toBeNull();
     expect(screen.queryByRole("dialog", { name: "为什么是这个人格" })).toBeNull();
-  });
-
-  it("places a channel-distinct art field across the whole identity card instead of behind the portrait", async () => {
-    useUiStore.setState({ range: "90d" });
-    vctiProfile.mockResolvedValue(profile);
-    insights.mockResolvedValue({ items: [] });
-    phraseCloud.mockRejectedValue(new Error("not needed"));
-
-    const { container } = renderPage();
-    await screen.findByRole("figure", { name: /开工判官/ });
-    const reveal = container.querySelector(".vcti-reveal");
-    const field = reveal?.querySelector(":scope > .vcti-art-field");
-    const portrait = reveal?.querySelector(":scope > .vcti-art-portrait");
-    expect(field).toBeTruthy();
-    expect(portrait).toBeTruthy();
-    expect(portrait?.querySelector(".vcti-art-field")).toBeNull();
-    expect(field?.getAttribute("viewBox")).toBe("0 0 160 100");
-    for (const channel of ["rhythm", "branches", "detail", "process"]) {
-      expect(field?.querySelector(`[data-visual-channel="${channel}"]`)).toBeTruthy();
-    }
   });
 
   it("treats an available metric without a value as not recorded", async () => {
@@ -213,15 +193,15 @@ describe("VctiPage identity art", () => {
   it("finishes the short generation motion and reduced motion starts at the same final state", async () => {
     vi.useFakeTimers();
     Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({ matches: false })) });
-    const { container, unmount } = render(<VctiArtField visual={profile.identityVisual} type="SPEC" guild="start" />);
-    expect(container.querySelector(".vcti-art-field")?.getAttribute("data-generating")).toBe("true");
+    const { container, unmount } = render(<VctiArtPortrait visual={profile.identityVisual} type="SPEC" guild="start" label="开工判官" />);
+    expect(container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("true");
     act(() => vi.advanceTimersByTime(900));
-    expect(container.querySelector(".vcti-art-field")?.getAttribute("data-generating")).toBe("false");
+    expect(container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("false");
     unmount();
 
     Object.defineProperty(window, "matchMedia", { configurable: true, value: vi.fn(() => ({ matches: true })) });
-    const reduced = render(<VctiArtField visual={profile.identityVisual} type="SPEC" guild="start" />);
-    expect(reduced.container.querySelector(".vcti-art-field")?.getAttribute("data-generating")).toBe("false");
+    const reduced = render(<VctiArtPortrait visual={profile.identityVisual} type="SPEC" guild="start" label="开工判官" />);
+    expect(reduced.container.querySelector(".vcti-art-portrait")?.getAttribute("data-generating")).toBe("false");
     vi.useRealTimers();
   });
 });
