@@ -1139,8 +1139,10 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
 
 fn history_evidence_coverage(agent: &str) -> Option<&'static str> {
     match agent {
-        "claude-code" | "codex" | "deepseek-harness" => Some("full-history"),
-        "kimi-code" | "cursor" | "openclaw" | "hermes" | "zcode" => Some("partial-history"),
+        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode" => {
+            Some("full-history")
+        }
+        "cursor" | "openclaw" | "hermes" => Some("partial-history"),
         _ => None,
     }
 }
@@ -7918,7 +7920,7 @@ fn query_task_for_session(
 
 fn capabilities_for_agent(agent: &str) -> Vec<String> {
     let capabilities = match agent {
-        "claude-code" | "codex" | "deepseek-harness" => &[
+        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode" => &[
             "session_timestamps",
             "model_name",
             "token_usage",
@@ -7935,15 +7937,6 @@ fn capabilities_for_agent(agent: &str) -> Vec<String> {
             "retries",
             "user_interventions",
             "subagent_lifecycle",
-        ][..],
-        "kimi-code" => &["session_timestamps", "model_name", "token_usage"][..],
-        "zcode" => &[
-            "session_timestamps",
-            "model_name",
-            "token_usage",
-            "tool_calls",
-            "errors",
-            "user_interventions",
         ][..],
         _ => &[][..],
     };
@@ -8717,7 +8710,7 @@ fn add_rate_count(current: Option<f64>, value: u64) -> Option<f64> {
 #[cfg(test)]
 mod concurrency_tests {
     use super::*;
-    use crate::adapters::{claude, codex, common, deepseek_harness};
+    use crate::adapters::{claude, codex, common, deepseek_harness, kimi, zcode};
     use crate::models::{DailyAggregate, ObservedLiveEvent, PhraseAggregate};
     use serde_json::{Value, json};
     use std::collections::HashMap;
@@ -9105,6 +9098,40 @@ mod concurrency_tests {
                     deepseek_harness::parse_record(&mut state, &record);
                 }
             }
+            AgentKind::KimiCode => {
+                for record in [
+                    json!({"id":"kimi-prompt","type":"turn.prompt","timestamp":"2026-08-10T01:00:00Z","prompt":"private prompt must stay out"}),
+                    json!({"id":"kimi-edit-record","type":"context.append_loop_event","timestamp":"2026-08-10T01:00:01Z","event":{"id":"kimi-edit","type":"tool.call","name":"Edit","args":{"file_path":"/tmp/vibemeter-history/src/lib.rs","old_string":"private source body","new_string":"private replacement body"}}}),
+                    json!({"id":"kimi-edit-result-record","type":"context.append_loop_event","timestamp":"2026-08-10T01:00:01Z","event":{"id":"kimi-edit-result","type":"tool.result","result":{"isError":false}}}),
+                    json!({"id":"kimi-test-record","type":"context.append_loop_event","timestamp":"2026-08-10T01:00:02Z","event":{"id":"kimi-test","type":"tool.call","name":"Bash","args":{"command":"cargo test --token sk-abcdefghijklmnop"}}}),
+                    json!({"id":"kimi-test-result-record","type":"context.append_loop_event","timestamp":"2026-08-10T01:00:02Z","event":{"id":"kimi-test-result","type":"tool.result","result":{"isError":false}}}),
+                    json!({"id":"kimi-end","type":"context.append_loop_event","timestamp":"2026-08-10T01:00:03Z","event":{"type":"step.end","finishReason":"end_turn"}}),
+                ] {
+                    kimi::parse_record(&mut state, &record);
+                }
+            }
+            AgentKind::ZCode => {
+                zcode::parse_record(
+                    &mut state,
+                    &json!({
+                        "meta": {
+                            "taskId": "zcode-history-session",
+                            "title": "private prompt must stay out",
+                            "workspacePath": "/tmp/vibemeter-history",
+                            "createdAt": 1786323600000_i64,
+                            "updatedAt": 1786323603000_i64,
+                            "status": "completed"
+                        },
+                        "messages": [
+                            {"role":"user","content":"private prompt must stay out","timestamp":1786323600000_i64},
+                            {"role":"assistant","content":"private result","timestamp":1786323601000_i64,"tools":[
+                                {"id":"zcode-edit","toolName":"Edit","status":"completed","input":{"file_path":"/tmp/vibemeter-history/src/lib.rs","old_string":"private source body","new_string":"private replacement body"}},
+                                {"id":"zcode-test","toolName":"Bash","status":"completed","input":{"command":"cargo test --token sk-abcdefghijklmnop"}}
+                            ]}
+                        ]
+                    }),
+                );
+            }
             _ => unreachable!("fixture is limited to exact history sources"),
         }
         common::finalize_run(&mut state);
@@ -9259,8 +9286,8 @@ mod concurrency_tests {
                 ("claude-code", "full", "exact", PARSER_VERSION),
                 ("codex", "full", "exact", PARSER_VERSION),
                 ("deepseek-harness", "full", "exact", PARSER_VERSION),
-                ("kimi-code", "partial", "experimental", PARSER_VERSION),
-                ("zcode", "partial", "experimental", PARSER_VERSION),
+                ("kimi-code", "full", "exact", PARSER_VERSION),
+                ("zcode", "full", "exact", PARSER_VERSION),
                 ("cursor", "partial", "none", PARSER_VERSION),
                 ("openclaw", "partial", "none", PARSER_VERSION),
                 ("hermes", "partial", "none", PARSER_VERSION),
@@ -9371,6 +9398,8 @@ mod concurrency_tests {
             AgentKind::ClaudeCode,
             AgentKind::Codex,
             AgentKind::DeepSeekHarness,
+            AgentKind::KimiCode,
+            AgentKind::ZCode,
         ] {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let database = Database::open(
@@ -10156,13 +10185,7 @@ mod concurrency_tests {
 
     #[test]
     fn partial_text_history_uses_shared_evidence_without_claiming_full_replay() {
-        for agent in [
-            AgentKind::KimiCode,
-            AgentKind::Cursor,
-            AgentKind::OpenClaw,
-            AgentKind::Hermes,
-            AgentKind::ZCode,
-        ] {
+        for agent in [AgentKind::Cursor, AgentKind::OpenClaw, AgentKind::Hermes] {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let database = Database::open(
                 temporary
@@ -10348,7 +10371,8 @@ mod concurrency_tests {
 
     #[test]
     fn partial_text_history_without_events_remains_session_only() {
-        for agent in [AgentKind::KimiCode, AgentKind::OpenClaw, AgentKind::ZCode] {
+        {
+            let agent = AgentKind::OpenClaw;
             let temporary = tempfile::tempdir().expect("temporary directory");
             let database = Database::open(
                 temporary
@@ -10400,13 +10424,7 @@ mod concurrency_tests {
 
     #[test]
     fn v16_text_history_backfill_is_idempotent_and_surface_compatible() {
-        for agent in [
-            AgentKind::KimiCode,
-            AgentKind::Cursor,
-            AgentKind::OpenClaw,
-            AgentKind::Hermes,
-            AgentKind::ZCode,
-        ] {
+        for agent in [AgentKind::Cursor, AgentKind::OpenClaw, AgentKind::Hermes] {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let path = temporary
                 .path()
@@ -10711,7 +10729,7 @@ mod concurrency_tests {
     }
 
     #[test]
-    fn attention_episode_expires_after_one_day_and_ignores_experimental_lifecycle_claims() {
+    fn attention_episode_expires_after_one_day() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let database = Database::open(temporary.path().join("attention-expiry.sqlite"))
             .expect("database should open");
@@ -10739,10 +10757,6 @@ mod concurrency_tests {
         database
             .record_observed_live_event(&event("codex", "exact-error", "error", 0))
             .expect("exact error should persist");
-        database
-            .record_observed_live_event(&event("kimi-code", "experimental-error", "error", 0))
-            .expect("experimental activity should not become exact attention");
-
         let attention = database
             .attention_events_at(base + Duration::hours(25))
             .expect("active attention should load");
@@ -11876,9 +11890,9 @@ mod concurrency_tests {
     }
 
     #[test]
-    fn experimental_live_observers_publish_only_recent_canonical_activity() {
+    fn kimi_live_observer_publishes_exact_canonical_lifecycle() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let database = Database::open(temporary.path().join("experimental-live.sqlite"))
+        let database = Database::open(temporary.path().join("kimi-exact-live.sqlite"))
             .expect("database should open");
         let now = Utc::now().to_rfc3339_opts(SecondsFormat::AutoSi, true);
         database
@@ -11886,25 +11900,22 @@ mod concurrency_tests {
                 occurred_at: now.clone(),
                 observed_at: now,
                 agent: "kimi-code".into(),
-                source_session_id: "experimental-session".into(),
+                source_session_id: "kimi-session".into(),
                 source_event_id: Some("private-provider-event".into()),
                 source_sequence: Some(1),
-                source_event_fingerprint: Some(crate::privacy::stable_hash(
-                    "experimental-observation",
-                )),
+                source_event_fingerprint: Some(crate::privacy::stable_hash("kimi-observation")),
                 event_name: "PermissionRequest".into(),
                 project_label: "project".into(),
                 payload_json: r#"{"prompt":"private","command":"private"}"#.into(),
                 status: "waiting".into(),
                 phase: Some("needs-you".into()),
             })
-            .expect("experimental observation should persist");
+            .expect("exact Kimi observation should persist");
 
         let activity = database.live_activity().expect("live activity should load");
         assert_eq!(activity.timeline.len(), 1);
-        assert_eq!(activity.timeline[0].event_name, "Activity");
-        assert_eq!(activity.timeline[0].status, "running");
-        assert!(activity.history.is_empty());
+        assert_eq!(activity.timeline[0].event_name, "PermissionRequest");
+        assert_eq!(activity.timeline[0].status, "waiting");
         let connection = database.connect().expect("database should connect");
         let contract: (i64, i64, String, String, String) = connection
             .query_row(
@@ -11931,9 +11942,9 @@ mod concurrency_tests {
             (
                 0,
                 0,
-                "live-observer".into(),
-                "recent-activity".into(),
-                "activity.observed".into(),
+                "live-hook".into(),
+                "exact-lifecycle".into(),
+                "lifecycle.wait".into(),
             )
         );
     }

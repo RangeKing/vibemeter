@@ -13,7 +13,7 @@ describe("Data source capability legend", () => {
 
   afterEach(cleanup);
 
-  it("shows the three source capability groups from the shared registry", () => {
+  it("shows only populated source capability groups from the shared registry", () => {
     render(
       <I18nextProvider i18n={i18n}>
         <SourceCapabilityLegend locale="zh-CN" />
@@ -21,11 +21,10 @@ describe("Data source capability legend", () => {
     );
 
     expect(screen.getByRole("complementary", { name: "来源能力" })).toBeTruthy();
-    expect(screen.getByText("Claude Code、Codex、DeepSeek Harness")).toBeTruthy();
-    expect(screen.getByText("Kimi Code、ZCode")).toBeTruthy();
+    expect(screen.getByText("Claude Code、Codex、DeepSeek Harness、Kimi Code、ZCode")).toBeTruthy();
     expect(screen.getByText("Cursor、OpenClaw、Hermes")).toBeTruthy();
     expect(screen.getByText("精确实时")).toBeTruthy();
-    expect(screen.getByText("实验性近期活动")).toBeTruthy();
+    expect(screen.queryByText("实验性近期活动")).toBeNull();
     expect(screen.getByText("仅历史证据")).toBeTruthy();
   });
 });

@@ -139,7 +139,7 @@ describe("DataPage query transition", () => {
       available: false,
       selected: true,
       capabilityLevel: "partial",
-      liveCapability: "experimental",
+      liveCapability: "exact",
       parserVersion: "test-parser",
       sessionCount: 0,
       status: "not-found",

@@ -279,7 +279,7 @@ describe("Notch session selection", () => {
     expect(activeProviderCounts([paused]).active).toHaveLength(0);
   });
 
-  it("keeps experimental recent activity from posing as an exact error", () => {
+  it("keeps unavailable lifecycle evidence from posing as an exact error", () => {
     const experimental = session("experimental-error", "error", "kimi-code");
     experimental.pulse.lifecycle = {
       availability: "unknown",

@@ -470,7 +470,12 @@ impl LiveMonitor {
                     known_ids.insert(id.clone());
                     let transition = merge_session(&external_sessions, session.clone());
                     if let Some(status) = transition {
-                        if status == "completed" && session.agent == "deepseek-harness" {
+                        if status == "completed"
+                            && matches!(
+                                session.agent.as_str(),
+                                "deepseek-harness" | "kimi-code" | "zcode"
+                            )
+                        {
                             let _ = external_database.complete_notch_session(&session);
                         }
                         transitions.push((id.clone(), status));
@@ -3909,7 +3914,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn snapshot_exposes_independent_work_pulse_dimensions_without_overclaiming_experimental_live() {
+    fn snapshot_exposes_independent_work_pulse_dimensions_for_exact_sources() {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("work-pulse.sqlite"))
             .expect("database should open");
@@ -3923,15 +3928,15 @@ mod tests {
         exact.phase = "needs-you".into();
         exact.updated_at = "2026-08-10T08:00:20Z".into();
 
-        let mut experimental = jump_test_session("kimi-code", "desktop", None);
-        experimental.id = "experimental".into();
-        experimental.status = "error".into();
-        experimental.phase = "error".into();
-        experimental.updated_at = "2026-08-10T07:57:30Z".into();
+        let mut kimi = jump_test_session("kimi-code", "desktop", None);
+        kimi.id = "kimi".into();
+        kimi.status = "error".into();
+        kimi.phase = "error".into();
+        kimi.updated_at = "2026-08-10T07:57:30Z".into();
 
         let sessions = Arc::new(RwLock::new(HashMap::from([
             (exact.id.clone(), exact),
-            (experimental.id.clone(), experimental),
+            (kimi.id.clone(), kimi),
         ])));
         let snapshot = snapshot_from_at(&sessions, true, Vec::new(), &database, now);
         let exact = snapshot
@@ -3947,23 +3952,20 @@ mod tests {
         );
         assert_eq!(exact.pulse.freshness.value.as_deref(), Some("fresh"));
 
-        let experimental = snapshot
+        let kimi = snapshot
             .sessions
             .iter()
-            .find(|session| session.id == "experimental")
-            .expect("experimental pulse");
-        assert_eq!(experimental.pulse.lifecycle.availability, "unknown");
-        assert_eq!(experimental.pulse.lifecycle.value, None);
+            .find(|session| session.id == "kimi")
+            .expect("Kimi pulse");
+        assert_eq!(kimi.pulse.lifecycle.availability, "available");
+        assert_eq!(kimi.pulse.lifecycle.value.as_deref(), Some("error"));
+        assert_eq!(kimi.pulse.work_phase.value.as_deref(), Some("error"));
+        assert_eq!(kimi.pulse.attention_signal.availability, "available");
         assert_eq!(
-            experimental.pulse.work_phase.value.as_deref(),
-            Some("recent-activity")
+            kimi.pulse.attention_signal.value.as_deref(),
+            Some("blocking-error")
         );
-        assert_eq!(experimental.pulse.attention_signal.availability, "unknown");
-        assert_eq!(experimental.pulse.attention_signal.value, None);
-        assert_eq!(
-            experimental.pulse.freshness.value.as_deref(),
-            Some("lost-update")
-        );
+        assert_eq!(kimi.pulse.freshness.value.as_deref(), Some("lost-update"));
     }
 
     #[test]
@@ -5451,7 +5453,7 @@ mod tests {
         assert!(notification_allowed_for_origin(&cli, "completed"));
         assert!(notification_allowed_for_origin(&desktop, "waiting"));
         let mut experimental = desktop.clone();
-        experimental.agent = "kimi-code".into();
+        experimental.agent = "cursor".into();
         experimental.pulse.lifecycle.availability = "unknown".into();
         experimental.pulse.lifecycle.value = None;
         assert!(!notification_allowed_for_origin(&experimental, "error"));

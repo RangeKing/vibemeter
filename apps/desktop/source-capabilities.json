@@ -25,15 +25,15 @@
     {
       "agent": "kimi-code",
       "displayName": "Kimi Code",
-      "historyCapability": "partial",
-      "liveCapability": "experimental",
+      "historyCapability": "full",
+      "liveCapability": "exact",
       "jumpSupported": true
     },
     {
       "agent": "zcode",
       "displayName": "ZCode",
-      "historyCapability": "partial",
-      "liveCapability": "experimental",
+      "historyCapability": "full",
+      "liveCapability": "exact",
       "jumpSupported": true
     },
     {

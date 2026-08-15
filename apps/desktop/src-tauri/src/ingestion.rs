@@ -11,7 +11,7 @@ use chrono::{DateTime, SecondsFormat};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -225,7 +225,8 @@ fn run_index(
         let file_history_available = agent_roots.iter().any(|root| Path::new(root).is_dir());
         let available = file_history_available
             || (agent == AgentKind::Cursor && cursor_database_path().is_file())
-            || (agent == AgentKind::Hermes && hermes_database_path().is_file());
+            || (agent == AgentKind::Hermes && hermes_database_path().is_file())
+            || (agent == AgentKind::ZCode && Path::new("/Applications/ZCode.app").is_dir());
         let path_hash = stable_hash(&agent_roots.join("|"));
         database.upsert_source(
             agent,
@@ -273,7 +274,7 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
     }
 
     let fallback_id = if source.adapter == SourceAdapter::Kimi {
-        file_hash.clone()
+        kimi_source_identity(&source.path).unwrap_or_else(|| file_hash.clone())
     } else {
         source
             .path
@@ -301,6 +302,9 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         ParseState::new(source.agent, fallback_id)
     };
     state.source_record_receipt_key = database.source_record_receipt_key();
+    if source.adapter == SourceAdapter::Kimi && state.project_root.is_none() {
+        restore_kimi_session_context(&source.path, &mut state);
+    }
     if !can_resume {
         state.replace_source_record_ids = true;
     }
@@ -545,6 +549,59 @@ fn restore_transient_project_context(
         }
     }
     Ok(())
+}
+
+fn kimi_session_root(path: &Path) -> Option<&Path> {
+    let agent_dir = path.parent()?;
+    let agents_dir = agent_dir.parent()?;
+    if agents_dir.file_name().and_then(|value| value.to_str()) != Some("agents") {
+        return None;
+    }
+    agents_dir.parent()
+}
+
+fn kimi_source_identity(path: &Path) -> Option<String> {
+    let session_root = kimi_session_root(path)?;
+    let session = session_root
+        .file_name()?
+        .to_str()?
+        .strip_prefix("session_")?;
+    if session.is_empty()
+        || !session
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return None;
+    }
+    let agent = path.parent()?.file_name()?.to_str()?;
+    Some(if agent == "main" {
+        session.to_string()
+    } else {
+        format!("{session}:{agent}")
+    })
+}
+
+fn restore_kimi_session_context(path: &Path, state: &mut ParseState) {
+    let Some(session_root) = kimi_session_root(path) else {
+        return;
+    };
+    let Ok(content) = fs::read(session_root.join("state.json")) else {
+        return;
+    };
+    if content.len() > MAX_RECORD_BYTES {
+        return;
+    }
+    let Ok(metadata) = serde_json::from_slice::<Value>(&content) else {
+        return;
+    };
+    common::set_project(
+        state,
+        metadata
+            .get("workDir")
+            .or_else(|| metadata.get("workspacePath"))
+            .or_else(|| metadata.get("cwd"))
+            .and_then(Value::as_str),
+    );
 }
 
 fn collect_jsonl_files(
@@ -1194,6 +1251,28 @@ mod tests {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn kimi_wire_uses_native_session_identity_and_state_project() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let session = temporary.path().join("session_native-id");
+        let wire = session.join("agents/agent-0/wire.jsonl");
+        fs::create_dir_all(wire.parent().expect("agent directory")).expect("agent directory");
+        fs::write(&wire, "").expect("wire");
+        fs::write(
+            session.join("state.json"),
+            serde_json::json!({"workDir":"/tmp/kimi-project"}).to_string(),
+        )
+        .expect("state");
+
+        assert_eq!(
+            kimi_source_identity(&wire).as_deref(),
+            Some("native-id:agent-0")
+        );
+        let mut state = ParseState::new(AgentKind::KimiCode, "fallback".into());
+        restore_kimi_session_context(&wire, &mut state);
+        assert_eq!(state.project_label.as_deref(), Some("kimi-project"));
+    }
 
     #[test]
     fn session_content_preview_reads_source_without_persisting_a_copy() {

@@ -162,7 +162,7 @@ describe("Live work pulse", () => {
     expect(screen.getAllByText("需要你").length).toBeGreaterThan(0);
   });
 
-  it("shows only recent activity and freshness for experimental sources", () => {
+  it("shows only recent activity and freshness when lifecycle evidence is unavailable", () => {
     render(
       <I18nextProvider i18n={i18n}>
         <LiveSessionCard session={liveSession("kimi-code", "error")} locale="zh-CN" />

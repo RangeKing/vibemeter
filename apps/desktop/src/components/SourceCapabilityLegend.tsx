@@ -14,7 +14,7 @@ export function SourceCapabilityLegend({ locale }: { locale: Locale }) {
   return (
     <aside className="data-source-capabilities" aria-label={t("data.sourceCapabilities.title")}>
       <strong>{t("data.sourceCapabilities.title")}</strong>
-      {groups.map(([capability, sourceNames]) => (
+      {groups.filter(([, sourceNames]) => sourceNames.length > 0).map(([capability, sourceNames]) => (
         <span key={capability} className={`capability-${capability}`}>
           <b>{t(`data.sourceCapabilities.${capability}`)}</b>
           <em>{sourceNames}</em>

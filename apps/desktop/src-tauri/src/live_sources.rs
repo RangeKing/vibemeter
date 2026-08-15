@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration as StdDuration, SystemTime};
 
-const KIMI_LIVE_WINDOW: StdDuration = StdDuration::from_secs(90);
+const KIMI_LIVE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const KIMI_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
 const DEEPSEEK_LIVE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
 const DEEPSEEK_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
-const ZCODE_LIVE_WINDOW: StdDuration = StdDuration::from_secs(90);
-const ZCODE_MODEL_IO_WINDOW: StdDuration = StdDuration::from_secs(20);
+const ZCODE_LIVE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const ZCODE_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
+const ZCODE_MODEL_IO_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
 const MAX_DISCOVERY_FILES: usize = 64;
 const MAX_SNAPSHOT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_JSONL_TAIL_BYTES: u64 = 768 * 1024;
@@ -258,6 +260,11 @@ fn discover_kimi(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
             let Some(signal) = parse_kimi_wire(&wire, now) else {
                 continue;
             };
+            if signal.status == "completed"
+                && !is_recent_timestamp(&signal.occurred_at, now, KIMI_COMPLETED_WINDOW)
+            {
+                continue;
+            }
             let state = read_json_object(&session_root.join("state.json"));
             let work_dir = state
                 .as_ref()
@@ -306,7 +313,14 @@ fn parse_kimi_wire(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
             }
             "turn.cancel" => {
                 open = false;
-                latest = None;
+                latest = Some(runtime_signal(
+                    "paused",
+                    "paused",
+                    "paused",
+                    "Stopped",
+                    occurred_at,
+                    started_at.clone(),
+                ));
             }
             "permission.request" | "permission.required" | "permission.prompt" => {
                 open = true;
@@ -382,8 +396,20 @@ fn parse_kimi_wire(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
                         ));
                     }
                     "step.end" => {
-                        open = false;
-                        latest = None;
+                        let finish_reason = event
+                            .and_then(|event| event.get("finishReason"))
+                            .and_then(Value::as_str);
+                        if finish_reason == Some("end_turn") {
+                            open = false;
+                            latest = Some(runtime_signal(
+                                "completed",
+                                "completed",
+                                "session",
+                                "Completed",
+                                occurred_at,
+                                started_at.clone(),
+                            ));
+                        }
                     }
                     "tool.call" => {
                         open = true;
@@ -401,7 +427,36 @@ fn parse_kimi_wire(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
                             started_at.clone(),
                         ));
                     }
-                    "tool.result" | "content.part" => {
+                    "tool.result" => {
+                        open = true;
+                        let failed = event
+                            .and_then(|event| event.get("result"))
+                            .and_then(|result| {
+                                result.get("isError").or_else(|| result.get("is_error"))
+                            })
+                            .and_then(Value::as_bool)
+                            == Some(true);
+                        latest = Some(if failed {
+                            runtime_signal(
+                                "error",
+                                "error",
+                                "error",
+                                "Tool error",
+                                occurred_at,
+                                started_at.clone(),
+                            )
+                        } else {
+                            runtime_signal(
+                                "running",
+                                "running-tool",
+                                "tool",
+                                "Running tool",
+                                occurred_at,
+                                started_at.clone(),
+                            )
+                        });
+                    }
+                    "content.part" => {
                         open = true;
                         latest = Some(runtime_signal(
                             "running",
@@ -419,7 +474,7 @@ fn parse_kimi_wire(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
         }
     }
     let signal = latest?;
-    open.then_some(signal)
+    (open || matches!(signal.status, "completed" | "error" | "paused")).then_some(signal)
 }
 
 fn discover_zcode(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
@@ -467,7 +522,12 @@ fn zcode_snapshot_session(
     let status = runtime_status(meta.get("status").and_then(Value::as_str)?)?;
     let updated_at = timestamp_from_value(meta.get("updatedAt"))
         .or_else(|| modified_at(path).map(system_time_timestamp))?;
-    if !is_recent_timestamp(&updated_at, now, ZCODE_LIVE_WINDOW) {
+    let window = if status == "completed" {
+        ZCODE_COMPLETED_WINDOW
+    } else {
+        ZCODE_LIVE_WINDOW
+    };
+    if !is_recent_timestamp(&updated_at, now, window) {
         return None;
     }
     let work_dir = meta
@@ -503,6 +563,12 @@ fn zcode_snapshot_action(
     }
     if status == "error" {
         return ("error", "error", "Error".into());
+    }
+    if status == "paused" {
+        return ("paused", "paused", "Stopped".into());
+    }
+    if status == "completed" {
+        return ("completed", "session", "Completed".into());
     }
     let event = snapshot
         .get("events")
@@ -574,7 +640,12 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
         let Some(updated_at) = timestamp_from_number(updated_at) else {
             continue;
         };
-        if !is_recent_timestamp(&updated_at, now, ZCODE_LIVE_WINDOW) {
+        let window = if status == "completed" {
+            ZCODE_COMPLETED_WINDOW
+        } else {
+            ZCODE_LIVE_WINDOW
+        };
+        if !is_recent_timestamp(&updated_at, now, window) {
             continue;
         }
         let started_at = timestamp_from_number(created_at).unwrap_or_else(|| updated_at.clone());
@@ -584,20 +655,26 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
             project_label_from_cwd(&workspace_path),
             runtime_signal(
                 status,
-                if status == "waiting" {
-                    "needs-you"
-                } else {
-                    "thinking"
+                match status {
+                    "waiting" => "needs-you",
+                    "completed" => "completed",
+                    "error" => "error",
+                    "paused" => "paused",
+                    _ => "thinking",
                 },
-                if status == "waiting" {
-                    "waiting"
-                } else {
-                    "think"
+                match status {
+                    "waiting" => "waiting",
+                    "completed" => "session",
+                    "error" => "error",
+                    "paused" => "paused",
+                    _ => "think",
                 },
-                if status == "waiting" {
-                    "Permission"
-                } else {
-                    "Thinking"
+                match status {
+                    "waiting" => "Permission",
+                    "completed" => "Completed",
+                    "error" => "Error",
+                    "paused" => "Stopped",
+                    _ => "Thinking",
                 },
                 updated_at,
                 Some(started_at),
@@ -630,13 +707,21 @@ fn zcode_model_io_session(path: &Path, now: DateTime<Utc>) -> Option<LiveSession
     let status = if record.get("error").is_some() {
         "error"
     } else if record.get("response").is_some() {
-        return None;
+        "completed"
     } else {
         "running"
     };
     let updated_at = record_timestamp(&record)
         .or_else(|| modified_at(path).map(system_time_timestamp))
         .unwrap_or_else(|| now.to_rfc3339());
+    let window = if status == "completed" {
+        ZCODE_COMPLETED_WINDOW
+    } else {
+        ZCODE_MODEL_IO_WINDOW
+    };
+    if !is_recent_timestamp(&updated_at, now, window) {
+        return None;
+    }
     let work_dir = record
         .get("workspacePath")
         .or_else(|| record.get("cwd"))
@@ -648,16 +733,20 @@ fn zcode_model_io_session(path: &Path, now: DateTime<Utc>) -> Option<LiveSession
         project_label_from_cwd(work_dir),
         runtime_signal(
             status,
-            if status == "error" {
-                "error"
-            } else {
-                "thinking"
+            match status {
+                "error" => "error",
+                "completed" => "completed",
+                _ => "thinking",
             },
-            if status == "error" { "error" } else { "think" },
-            if status == "error" {
-                "Error"
-            } else {
-                "Thinking"
+            match status {
+                "error" => "error",
+                "completed" => "session",
+                _ => "think",
+            },
+            match status {
+                "error" => "Error",
+                "completed" => "Completed",
+                _ => "Thinking",
             },
             updated_at.clone(),
             Some(updated_at),
@@ -736,6 +825,8 @@ fn runtime_status(value: &str) -> Option<&'static str> {
         | "permission"
         | "permission_required" => Some("waiting"),
         "error" | "failed" | "failure" => Some("error"),
+        "cancelled" | "canceled" | "stopped" | "aborted" => Some("paused"),
+        "complete" | "completed" | "done" | "success" => Some("completed"),
         _ => None,
     }
 }
@@ -955,7 +1046,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn kimi_wire_requires_an_open_turn_and_does_not_leak_prompt_text() {
+    fn kimi_wire_tracks_continuation_and_exact_completion_without_leaking_prompt_text() {
         let directory = tempdir().expect("tempdir");
         let wire = directory.path().join("wire.jsonl");
         fs::write(
@@ -979,12 +1070,55 @@ mod tests {
             .write_all(
                 format!(
                     "{}\n",
-                    serde_json::json!({"type":"context.append_loop_event","timestamp":Utc::now().to_rfc3339(),"event":{"type":"step.end"}})
+                    serde_json::json!({"type":"context.append_loop_event","timestamp":Utc::now().to_rfc3339(),"event":{"type":"step.end","finishReason":"tool_use"}})
                 )
                 .as_bytes(),
             )
             .expect("append");
-        assert!(parse_kimi_wire(&wire, Utc::now()).is_none());
+        assert_eq!(
+            parse_kimi_wire(&wire, Utc::now())
+                .expect("tool use keeps the turn active")
+                .status,
+            "running"
+        );
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&wire)
+            .expect("open wire")
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::json!({"type":"context.append_loop_event","timestamp":Utc::now().to_rfc3339(),"event":{"type":"step.end","finishReason":"end_turn"}})
+                )
+                .as_bytes(),
+            )
+            .expect("append completion");
+        assert_eq!(
+            parse_kimi_wire(&wire, Utc::now())
+                .expect("completion remains briefly visible")
+                .status,
+            "completed"
+        );
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&wire)
+            .expect("open wire")
+            .write_all(
+                format!(
+                    "{}\n",
+                    serde_json::json!({"type":"turn.cancel","timestamp":Utc::now().to_rfc3339()})
+                )
+                .as_bytes(),
+            )
+            .expect("append cancellation");
+        assert_eq!(
+            parse_kimi_wire(&wire, Utc::now())
+                .expect("cancellation remains briefly visible")
+                .status,
+            "paused"
+        );
     }
 
     #[test]
@@ -1008,6 +1142,27 @@ mod tests {
         assert_eq!(session.status, "running");
         assert_eq!(session.actions[0].label, "apply_patch");
         assert!(!format!("{session:?}").contains("private"));
+    }
+
+    #[test]
+    fn zcode_snapshot_preserves_exact_completed_status_briefly() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("task.json");
+        let now = Utc::now();
+        let snapshot = serde_json::json!({
+            "meta": {
+                "taskId": "zcode-completed-task",
+                "workspacePath": "/tmp/zcode-project",
+                "createdAt": (now - chrono::Duration::seconds(10)).to_rfc3339(),
+                "updatedAt": now.to_rfc3339(),
+                "status": "completed"
+            }
+        });
+        fs::write(&path, snapshot.to_string()).expect("snapshot");
+        let session = zcode_snapshot_session(&snapshot, &path, now).expect("completed snapshot");
+        assert_eq!(session.status, "completed");
+        assert_eq!(session.phase, "completed");
+        assert_eq!(session.actions[0].label, "Completed");
     }
 
     #[test]

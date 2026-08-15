@@ -96,10 +96,6 @@ export function defaultDataAgents(
 
 export function dataFilterAgents(sources: SourceStatus[]): string[] {
   return sources
-    .filter(
-      (source) =>
-        source.available ||
-        source.liveCapability === "experimental",
-    )
+    .filter((source) => source.available || source.liveCapability !== "none")
     .map((source) => source.agent);
 }

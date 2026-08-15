@@ -81,6 +81,11 @@ pub fn parse_record(state: &mut ParseState, record: &Value) {
                         != Some(true);
                     common::record_tool_result(state, success, None, timestamp.as_deref());
                 }
+                "step.end"
+                    if event.get("finishReason").and_then(Value::as_str) == Some("end_turn") =>
+                {
+                    common::record_task_complete(state, None, timestamp.as_deref());
+                }
                 _ => {}
             }
         }
@@ -96,6 +101,9 @@ pub fn parse_record(state: &mut ParseState, record: &Value) {
         | "tools.set_active_tools"
         | "tools.update_store"
         | "llm.tools_snapshot"
+        | "permission.request"
+        | "permission.required"
+        | "permission.prompt"
         | "permission.set_mode"
         | "permission.record_approval_result" => {}
         _ => common::mark_unknown(state),
@@ -204,5 +212,22 @@ mod tests {
                 .as_deref()
                 .is_some_and(|value| value.starts_with("2026-"))
         );
+    }
+
+    #[test]
+    fn treats_end_turn_as_completion_but_tool_use_as_continuation() {
+        let mut state = ParseState::new(AgentKind::KimiCode, "kimi-session".into());
+        for finish_reason in ["tool_use", "end_turn"] {
+            parse_record(
+                &mut state,
+                &serde_json::json!({
+                    "type": "context.append_loop_event",
+                    "timestamp": "2026-08-15T01:00:00Z",
+                    "event": {"type": "step.end", "finishReason": finish_reason}
+                }),
+            );
+        }
+
+        assert_eq!(state.behavior.task_completions, 1);
     }
 }

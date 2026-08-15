@@ -19,8 +19,8 @@ describe("source status language", () => {
   });
 
   it("groups sources by the shared live capability contract", () => {
-    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex", "DeepSeek Harness"]);
-    expect(sourceNamesForLiveCapability("experimental")).toEqual(["Kimi Code", "ZCode"]);
+    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex", "DeepSeek Harness", "Kimi Code", "ZCode"]);
+    expect(sourceNamesForLiveCapability("experimental")).toEqual([]);
     expect(sourceNamesForLiveCapability("none")).toEqual(["Cursor", "OpenClaw", "Hermes"]);
     expect(sourceLiveTranslationKey("exact", true)).toBe("sources.liveCapabilities.exactReady");
     expect(sourceLiveTranslationKey("experimental", true)).toBe("sources.liveCapabilities.experimentalReady");
@@ -31,8 +31,8 @@ describe("source status language", () => {
 
   it("builds the product-copy source groups from the same registry", () => {
     expect(sourceCapabilityNameGroups()).toEqual({
-      exact: "Claude Code、Codex、DeepSeek Harness",
-      experimental: "Kimi Code、ZCode",
+      exact: "Claude Code、Codex、DeepSeek Harness、Kimi Code、ZCode",
+      experimental: "",
       historyOnly: "Cursor、OpenClaw、Hermes",
     });
   });
@@ -87,7 +87,7 @@ describe("source status language", () => {
     ).toEqual(["codex"]);
   });
 
-  it("keeps experimental live sources available as Data filters before history is observed", () => {
+  it("keeps exact live sources available as Data filters before history is observed", () => {
     const source = (overrides: Partial<SourceStatus>): SourceStatus => ({
       agent: "codex",
       available: true,
@@ -107,14 +107,14 @@ describe("source status language", () => {
       source({
         agent: "zcode",
         available: false,
-        liveCapability: "experimental",
+        liveCapability: "exact",
         sessionCount: 0,
         status: "not-found",
       }),
       source({
         agent: "kimi-code",
         available: false,
-        liveCapability: "experimental",
+        liveCapability: "exact",
         sessionCount: 0,
         status: "not-found",
       }),
