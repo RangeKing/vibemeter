@@ -584,7 +584,7 @@ fn build_http_client(
 fn build_provider_client(use_system_proxy: bool) -> Option<reqwest::blocking::Client> {
     #[cfg(target_os = "macos")]
     if use_system_proxy {
-        for proxy_url in macos_proxy_candidates() {
+        for proxy_url in macos_proxy_candidates(false) {
             if let Some(client) = build_http_client(Some(&proxy_url), Duration::from_secs(15)) {
                 return Some(client);
             }
@@ -624,7 +624,7 @@ fn status_proxy_candidates() -> Vec<String> {
         }
     }
     #[cfg(target_os = "macos")]
-    for candidate in macos_proxy_candidates() {
+    for candidate in macos_proxy_candidates(true) {
         push_proxy_candidate(&mut candidates, &mut seen, &candidate);
     }
     candidates
@@ -656,7 +656,7 @@ fn push_proxy_candidate(candidates: &mut Vec<String>, seen: &mut HashSet<String>
 }
 
 #[cfg(target_os = "macos")]
-fn macos_proxy_candidates() -> Vec<String> {
+fn macos_proxy_candidates(allow_disabled_loopback: bool) -> Vec<String> {
     let Some(services) = Command::new("/usr/sbin/networksetup")
         .arg("-listallnetworkservices")
         .output()
@@ -686,9 +686,11 @@ fn macos_proxy_candidates() -> Vec<String> {
             else {
                 continue;
             };
-            if let Some(candidate) =
-                parse_networksetup_proxy(&String::from_utf8_lossy(&output.stdout), scheme)
-            {
+            if let Some(candidate) = parse_networksetup_proxy(
+                &String::from_utf8_lossy(&output.stdout),
+                scheme,
+                allow_disabled_loopback,
+            ) {
                 candidates.push(candidate);
             }
         }
@@ -697,7 +699,11 @@ fn macos_proxy_candidates() -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn parse_networksetup_proxy(output: &str, scheme: &str) -> Option<String> {
+fn parse_networksetup_proxy(
+    output: &str,
+    scheme: &str,
+    allow_disabled_loopback: bool,
+) -> Option<String> {
     let mut enabled = false;
     let mut server = None;
     let mut port = None;
@@ -718,7 +724,7 @@ fn parse_networksetup_proxy(output: &str, scheme: &str) -> Option<String> {
     // been attempted, so this disabled loopback entry is a safe fallback for
     // the public, credential-free status request.
     let loopback = matches!(server, "127.0.0.1" | "localhost" | "::1");
-    if !enabled && !loopback {
+    if !enabled && !(allow_disabled_loopback && loopback) {
         return None;
     }
     let host = if server.contains(':') && !server.starts_with('[') {
@@ -1516,10 +1522,11 @@ mod tests {
         let fixture =
             "Enabled: No\nServer: 127.0.0.1\nPort: 7892\nAuthenticated Proxy Enabled: 0\n";
         assert_eq!(
-            parse_networksetup_proxy(fixture, "http"),
+            parse_networksetup_proxy(fixture, "http", true),
             Some("http://127.0.0.1:7892".into())
         );
+        assert_eq!(parse_networksetup_proxy(fixture, "http", false), None);
         let remote = "Enabled: No\nServer: proxy.example.com\nPort: 8080\n";
-        assert_eq!(parse_networksetup_proxy(remote, "http"), None);
+        assert_eq!(parse_networksetup_proxy(remote, "http", true), None);
     }
 }

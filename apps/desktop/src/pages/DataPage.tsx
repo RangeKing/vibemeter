@@ -147,7 +147,9 @@ function distributionOption(agents: Array<{ label: string; value: number }>, mod
 function toolOption(tools: Array<{ label: string; value: number }>, colors: ReturnType<typeof useChartColors>, locale: Locale): EChartsCoreOption {
   const visible = tools.slice(0, 7).reverse();
   return {
-    grid: { left: 8, right: 16, top: 5, bottom: 4, containLabel: true },
+    // containLabel accounts for axis labels, but not for bar-end series labels.
+    // Keep a dedicated gutter so compact values remain inside narrow tool cards.
+    grid: { left: 8, right: 54, top: 5, bottom: 4, containLabel: true },
     tooltip: { ...chartTooltip(colors), trigger: "axis", axisPointer: { type: "shadow" }, valueFormatter: (value: unknown) => formatCompact(Number(value), locale) },
     xAxis: { type: "value", show: false },
     yAxis: { type: "category", data: visible.map((item) => item.label), axisLine: { show: false }, axisTick: { show: false }, axisLabel: { color: colors.textSecondary, fontSize: 10, width: 100, overflow: "truncate" } },

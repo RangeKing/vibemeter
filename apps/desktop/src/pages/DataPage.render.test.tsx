@@ -9,7 +9,8 @@ import { useUiStore } from "../store";
 import type { OverviewResponse, SourceStatus } from "../types";
 import { DataPage } from "./DataPage";
 
-const { comparison, overview, providers, settings, sources } = vi.hoisted(() => ({
+const { chartProps, comparison, overview, providers, settings, sources } = vi.hoisted(() => ({
+  chartProps: [] as Array<{ ariaLabel?: string; option?: { grid?: { right?: number } } }>,
   comparison: vi.fn(),
   overview: vi.fn(),
   providers: vi.fn(),
@@ -27,7 +28,12 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-vi.mock("../components/EChart", () => ({ EChart: () => null }));
+vi.mock("../components/EChart", () => ({
+  EChart: (props: { ariaLabel?: string; option?: { grid?: { right?: number } } }) => {
+    chartProps.push(props);
+    return null;
+  },
+}));
 vi.mock("../components/CursorAccountUsagePanel", () => ({ CursorAccountUsagePanel: () => null }));
 
 function deferred<T>() {
@@ -104,6 +110,7 @@ describe("DataPage query transition", () => {
   });
 
   beforeEach(() => {
+    chartProps.length = 0;
     comparison.mockReset();
     overview.mockReset();
     providers.mockReset();
@@ -153,5 +160,20 @@ describe("DataPage query transition", () => {
 
     const button = await screen.findByRole("button", { name: "ZCode" });
     expect(button.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("reserves enough right-side space for workflow values", async () => {
+    overview.mockResolvedValue({
+      ...emptyOverview,
+      tools: [{ id: "shell", label: "shell", value: 57_000 }],
+    });
+    sources.mockResolvedValue([]);
+
+    renderDataPage();
+
+    await waitFor(() => {
+      const chart = chartProps.find((props) => props.ariaLabel === "工作流足迹");
+      expect(chart?.option?.grid?.right).toBeGreaterThanOrEqual(48);
+    });
   });
 });
