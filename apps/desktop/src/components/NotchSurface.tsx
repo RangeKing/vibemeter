@@ -25,14 +25,13 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as Reac
 import type { TFunction } from "i18next";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import claudeCodeIconUrl from "../assets/providers/claudecode.svg";
-import codexIconUrl from "../assets/providers/codex.svg";
 import appIconUrl from "../../src-tauri/icons/vibemeter-icon-source.png";
 import { api } from "../lib/api";
 import { agentName } from "../lib/format";
 import { privateSessionReference } from "../lib/sessionReference";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import type { AttentionEvent, LiveSession, Locale, NotchUiState } from "../types";
+import { AgentIcon } from "./AgentIcon";
 
 const COMPLETION_CUE_MS = 5_000;
 const ACTIVE_STATUSES = new Set<LiveSession["status"]>(["waiting", "error", "running"]);
@@ -128,22 +127,7 @@ function ProviderMark({
   agent: LiveSession["agent"];
   size?: number;
 }) {
-  const iconUrl = agent === "claude-code"
-    ? claudeCodeIconUrl
-    : agent === "codex"
-      ? codexIconUrl
-      : undefined;
-  return (
-    <span
-      className={`notch-provider-mark provider-mark-${agent}${iconUrl ? "" : " is-letter"}`}
-      style={iconUrl ? {
-        width: size,
-        height: size,
-        "--notch-provider-icon": `url("${iconUrl}")`,
-      } as CSSProperties : { width: size, height: size }}
-      aria-hidden="true"
-    >{iconUrl ? null : <span>{agent === "kimi-code" ? "K" : "Z"}</span>}</span>
-  );
+  return <AgentIcon agent={agent} size={size} className="notch-provider-mark" />;
 }
 
 function ProviderCount({
@@ -378,6 +362,7 @@ export function activeProviderCounts(sessions: LiveSession[]) {
     active,
     codex: active.filter((session) => session.agent === "codex").length,
     claudeCode: active.filter((session) => session.agent === "claude-code").length,
+    deepSeekHarness: active.filter((session) => session.agent === "deepseek-harness").length,
     kimiCode: active.filter((session) => session.agent === "kimi-code").length,
     zcode: active.filter((session) => session.agent === "zcode").length,
   };
@@ -519,6 +504,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const visibleSessions = activeSessions;
   const codexCount = providerCounts.codex;
   const claudeCount = providerCounts.claudeCode;
+  const deepSeekCount = providerCounts.deepSeekHarness;
   const kimiCodeCount = providerCounts.kimiCode;
   const zcodeCount = providerCounts.zcode;
   const desiredLeftWingWidth = leftWingWidthForSession(
@@ -787,6 +773,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
             <span className="notch-provider-cluster">
               <ProviderCount agent="codex" count={codexCount} />
               <ProviderCount agent="claude-code" count={claudeCount} />
+              <ProviderCount agent="deepseek-harness" count={deepSeekCount} />
               <ProviderCount agent="kimi-code" count={kimiCodeCount} />
               <ProviderCount agent="zcode" count={zcodeCount} />
             </span>
@@ -813,6 +800,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         <span className="notch-expanded-left">
           <ProviderCount agent="codex" count={codexCount} />
           <ProviderCount agent="claude-code" count={claudeCount} />
+          <ProviderCount agent="deepseek-harness" count={deepSeekCount} />
           <ProviderCount agent="kimi-code" count={kimiCodeCount} />
           <ProviderCount agent="zcode" count={zcodeCount} />
         </span>

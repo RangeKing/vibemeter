@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { agentName, formatCompact, formatDuration, tokenTotal } from "../lib/format";
 import type { Locale, OverviewTotals, SessionSummary } from "../types";
+import { AgentIcon, agentIconKind } from "./AgentIcon";
 
 export function PageHeader({ title, description, actions }: { title: string; description: string; actions?: ReactNode }) {
   return (
@@ -56,11 +57,10 @@ export function Toggle({ checked, onCheckedChange, label, disabled = false }: { 
 }
 
 export function AgentBadge({ agent, model, compact = false }: { agent: string; model?: string; compact?: boolean }) {
-  const glyph = agent === "claude-code" ? "C" : agent === "codex" ? "O" : agent === "deepseek-harness" ? "D" : agent === "kimi-code" ? "K" : agent === "cursor" ? "↗" : agent === "openclaw" ? "◌" : agent === "hermes" ? "H" : agent === "zcode" ? "Z" : "A";
-  const kind = agent === "claude-code" ? "claude" : agent === "codex" ? "codex" : agent === "deepseek-harness" ? "deepseek" : agent === "kimi-code" ? "kimi" : agent === "cursor" ? "cursor" : agent === "openclaw" ? "openclaw" : agent === "hermes" ? "hermes" : agent === "zcode" ? "zcode" : "vibemeter";
+  const kind = agentIconKind(agent);
   return (
     <span className={compact ? "agent-badge compact" : "agent-badge"}>
-      <span className={`agent-glyph ${kind}`}>{glyph}</span>
+      <span className={`agent-glyph ${kind}`}><AgentIcon agent={agent} size={compact ? 13 : 15} /></span>
       <span>
         <strong>{agentName(agent)}</strong>
         {!compact && model ? <small title={model}>{model}</small> : null}

@@ -1,0 +1,5 @@
+<!-- Derived from the official ZCode 3.6.5 application icon installed on macOS. -->
+<svg fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <title>ZCode</title>
+  <path d="M4.75 6.55h7.56l-1.42 1.96a1.25 1.25 0 0 1-1.01.52H4.75V6.55Zm9.12 0h5.38L10.13 19H4.42L13.87 6.55Zm-.93 9.97h6.31V19h-8.12l1.81-2.48Z"/>
+</svg>

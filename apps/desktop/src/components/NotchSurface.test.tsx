@@ -311,10 +311,12 @@ describe("Notch session selection", () => {
       session("claude-waiting", "waiting", "claude-code"),
       session("claude-completed", "completed", "claude-code"),
       session("claude-error", "error", "claude-code"),
+      session("deepseek-running", "running", "deepseek-harness"),
     ]);
-    expect(counts.active).toHaveLength(3);
+    expect(counts.active).toHaveLength(4);
     expect(counts.codex).toBe(1);
     expect(counts.claudeCode).toBe(2);
+    expect(counts.deepSeekHarness).toBe(1);
   });
 
   it("uses project-aware width only for a single visible provider", () => {
