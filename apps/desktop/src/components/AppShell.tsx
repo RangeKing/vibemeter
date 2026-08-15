@@ -60,7 +60,7 @@ export function AppShell({
     <div className="app-shell">
       <div className="titlebar-drag" data-tauri-drag-region />
       <aside className="sidebar">
-        <button className="brand" onClick={() => navigate("vcti")} aria-label={t("app.name")}>
+        <button className="brand" onClick={() => navigate("data")} aria-label={t("app.name")}>
           <span className="brand-mark"><img src={appIconUrl} alt="" aria-hidden="true" /></span>
           <span><strong>{t("app.name")}</strong><small>{t("app.tagline")}</small></span>
         </button>

@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, Check, CheckCircle2, CircleHelp, CircleMinus, Database, LockKeyhole, RadioTower, RefreshCw, Settings2, ShieldCheck, Slash } from "lucide-react";
+import { ArrowLeft, BookOpenCheck, Check, CheckCircle2, CircleHelp, CircleMinus, Database, LockKeyhole, RadioTower, RefreshCw, Settings2, ShieldCheck, Slash } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AgentBadge, ErrorState, LoadingState, PageHeader } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDateTime } from "../lib/format";
 import { capabilityTranslationKey, sourceLiveTranslationKey } from "../lib/sourceStatus";
+import { useUiStore } from "../store";
 import type { Locale, SourceStatus } from "../types";
 
 export function SourcesPage({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
   const client = useQueryClient();
+  const setPage = useUiStore((state) => state.setPage);
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 5_000 });
   const index = useQuery({ queryKey: ["index-status"], queryFn: api.indexStatus, refetchInterval: 1_500 });
@@ -44,7 +46,14 @@ export function SourcesPage({ locale }: { locale: Locale }) {
   const refresh = async () => { await api.refreshIndex(true); await Promise.all([client.invalidateQueries({ queryKey: ["index-status"] }), client.invalidateQueries({ queryKey: ["sources"] })]); };
   return (
     <div className="page sources-page">
-      <PageHeader title={t("sources.title")} description={t("sources.description")} actions={<button className="button secondary" onClick={() => void refresh()} disabled={index.data?.running}><RefreshCw size={14} className={index.data?.running ? "spin" : ""} />{index.data?.running ? t("actions.refreshing") : t("actions.refresh")}</button>} />
+      <PageHeader
+        title={t("sources.title")}
+        description={t("sources.description")}
+        actions={<>
+          <button className="button subtle" onClick={() => setPage("settings")}><ArrowLeft size={14} />{t("actions.back")}</button>
+          <button className="button secondary" onClick={() => void refresh()} disabled={index.data?.running}><RefreshCw size={14} className={index.data?.running ? "spin" : ""} />{index.data?.running ? t("actions.refreshing") : t("actions.refresh")}</button>
+        </>}
+      />
       {index.data ? <section className="index-banner"><span className={index.data.running ? "pulse-dot" : "ready-dot"} /><div><strong>{t(index.data.messageKey)}</strong><span>{index.data.running ? t("sources.indexProgress", { processed: index.data.processedFiles, total: index.data.discoveredFiles }) : t("settings.projectSessions", { count: index.data.indexedSessions })}</span></div>{index.data.discoveredFiles > 0 ? <div className="index-progress"><span style={{ width: `${(index.data.processedFiles / index.data.discoveredFiles) * 100}%` }} /></div> : null}</section> : null}
       {sources.isLoading ? <LoadingState /> : sources.isError || !sources.data ? <ErrorState retry={() => void sources.refetch()} /> : <div className="source-grid">{sources.data.map((source, index) => {
         const liveProvider = live.data?.hookStatus.providers.find((provider) => provider.provider === source.agent);

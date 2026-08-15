@@ -93,7 +93,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
       await client.invalidateQueries({ queryKey: ["sources"] });
       await client.invalidateQueries({ queryKey: ["vcti"] });
       await client.invalidateQueries({ queryKey: ["index-status"] });
-      setPage("vcti");
+      setPage("data");
     }} />;
   }
 

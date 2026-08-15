@@ -3,11 +3,11 @@ import { useUiStore } from "./store";
 
 describe("UI store", () => {
   beforeEach(() => {
-    useUiStore.setState({ page: "vcti", range: "90d", selectedSessionId: undefined });
+    useUiStore.setState({ page: "data", range: "90d", selectedSessionId: undefined });
   });
 
-  it("opens the VCTI page by default", () => {
-    expect(useUiStore.getState().page).toBe("vcti");
+  it("opens the Data page by default", () => {
+    expect(useUiStore.getState().page).toBe("data");
   });
 
   it("defaults the global range to 90 days", () => {

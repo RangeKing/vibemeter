@@ -22,6 +22,19 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AppShell primary navigation", () => {
+  it("uses Data as the home destination", () => {
+    useUiStore.setState({ page: "vcti" });
+    render(
+      <I18nextProvider i18n={i18n}>
+        <AppShell><div>content</div></AppShell>
+      </I18nextProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "VibeMeter" }));
+
+    expect(useUiStore.getState().page).toBe("data");
+  });
+
   it("shows Sessions beside Data and navigates to its own page", () => {
     render(
       <I18nextProvider i18n={i18n}>
