@@ -3997,7 +3997,7 @@ mod tests {
             .record_observed_live_event(&ObservedLiveEvent {
                 occurred_at: "2026-08-14T03:59:00Z".into(),
                 observed_at: "2026-08-14T03:59:00Z".into(),
-                agent: "codex".into(),
+                agent: "zcode".into(),
                 source_session_id: "continued-source-session".into(),
                 source_event_id: Some("completed-turn".into()),
                 source_sequence: Some(1),
@@ -4010,7 +4010,7 @@ mod tests {
             })
             .expect("completion review should persist");
 
-        let mut running = jump_test_session("codex", "desktop", None);
+        let mut running = jump_test_session("zcode", "desktop", None);
         running.id = "continued-live-session".into();
         running.source_session_id = "continued-source-session".into();
         running.status = "running".into();

@@ -478,34 +478,57 @@ fn parse_kimi_wire(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
 }
 
 fn discover_zcode(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
-    let mut result = Vec::new();
-    let snapshots_root = root.join("v2/sessions");
-    for path in recent_files(&snapshots_root, 5, |path| {
-        path.extension().and_then(|value| value.to_str()) == Some("json")
-    }) {
-        let Some(snapshot) = read_json(&path, MAX_SNAPSHOT_BYTES) else {
-            continue;
+    let mut sessions = HashMap::new();
+    {
+        let mut merge_fallback = |session: LiveSession| {
+            sessions
+                .entry(session.id.clone())
+                .and_modify(|existing: &mut LiveSession| {
+                    if existing.updated_at < session.updated_at
+                        || existing.project_label == "Unknown project"
+                    {
+                        *existing = session.clone();
+                    }
+                })
+                .or_insert(session);
         };
-        let Some(session) = zcode_snapshot_session(&snapshot, &path, now) else {
-            continue;
-        };
-        result.push(session);
-    }
-    let index = root.join("v2/tasks-index.sqlite");
-    result.extend(discover_zcode_tasks(&index, now));
-    for directory in [root.join("cli/debug"), root.join("cli/rollout")] {
-        for path in recent_files(&directory, 3, |path| {
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.starts_with("model-io-") && name.ends_with(".jsonl"))
+        let snapshots_root = root.join("v2/sessions");
+        for path in recent_files(&snapshots_root, 5, |path| {
+            path.extension().and_then(|value| value.to_str()) == Some("json")
         }) {
-            let Some(session) = zcode_model_io_session(&path, now) else {
+            let Some(snapshot) = read_json(&path, MAX_SNAPSHOT_BYTES) else {
                 continue;
             };
-            result.push(session);
+            let Some(session) = zcode_snapshot_session(&snapshot, &path, now) else {
+                continue;
+            };
+            merge_fallback(session);
+        }
+        let index = root.join("v2/tasks-index.sqlite");
+        for session in discover_zcode_tasks(&index, now) {
+            merge_fallback(session);
+        }
+        for directory in [root.join("cli/debug"), root.join("cli/rollout")] {
+            for path in recent_files(&directory, 3, |path| {
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.starts_with("model-io-") && name.ends_with(".jsonl"))
+            }) {
+                let Some(session) = zcode_model_io_session(&path, now) else {
+                    continue;
+                };
+                merge_fallback(session);
+            }
         }
     }
-    result
+
+    // ZCode 3.6+ records the authoritative current turn lifecycle in the CLI
+    // database. The task index and model-I/O logs can still say "completed"
+    // while the same session has already started another turn.
+    for session in discover_zcode_cli_sessions(&root.join("cli/db/db.sqlite"), now) {
+        sessions.insert(session.id.clone(), session);
+    }
+    sessions.into_values().collect()
 }
 
 fn zcode_snapshot_session(
@@ -678,6 +701,130 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
                 },
                 updated_at,
                 Some(started_at),
+            ),
+            process_for("zcode").map(|(pid, _)| (pid, "desktop")),
+        ));
+    }
+    result
+}
+
+fn discover_zcode_cli_sessions(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let Ok(connection) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let mut statement = match connection.prepare(
+        "SELECT session.id, session.directory, session.time_created, session.time_updated,
+                turn_usage.status, turn_usage.started_at, turn_usage.completed_at
+         FROM session
+         JOIN turn_usage ON turn_usage.session_id=session.id
+         WHERE turn_usage.started_at=(
+             SELECT MAX(latest.started_at) FROM turn_usage latest
+             WHERE latest.session_id=session.id
+         )",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return Vec::new(),
+    };
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+        ))
+    });
+    let Ok(rows) = rows else {
+        return Vec::new();
+    };
+    let database_updated_at = path
+        .file_name()
+        .map(|name| path.with_file_name(format!("{}-wal", name.to_string_lossy())))
+        .and_then(|wal| modified_at(&wal))
+        .or_else(|| modified_at(path));
+    let mut result = Vec::new();
+    for row in rows.flatten() {
+        let (
+            source_id,
+            work_dir,
+            created_at,
+            session_updated_at,
+            raw_status,
+            turn_started_at,
+            turn_completed_at,
+        ) = row;
+        if !valid_identifier(&source_id) {
+            continue;
+        }
+        let Some(status) = runtime_status(&raw_status) else {
+            continue;
+        };
+        let latest_millis = match status {
+            "completed" | "error" | "paused" => turn_completed_at
+                .unwrap_or(session_updated_at)
+                .max(session_updated_at),
+            _ => turn_started_at.max(session_updated_at),
+        };
+        let mut updated_at = timestamp_from_number(latest_millis)
+            .unwrap_or_else(|| now.to_rfc3339_opts(SecondsFormat::AutoSi, true));
+        if status == "running"
+            && let Some(database_updated_at) = database_updated_at
+        {
+            let database_updated_at = system_time_timestamp(database_updated_at);
+            if timestamp_is_after(&database_updated_at, &updated_at)
+                && is_recent_timestamp(&database_updated_at, now, ZCODE_LIVE_WINDOW)
+            {
+                updated_at = database_updated_at;
+            }
+        }
+        let window = if status == "completed" {
+            ZCODE_COMPLETED_WINDOW
+        } else {
+            ZCODE_LIVE_WINDOW
+        };
+        if !is_recent_timestamp(&updated_at, now, window) {
+            continue;
+        }
+        let started_at = timestamp_from_number(turn_started_at)
+            .or_else(|| timestamp_from_number(created_at))
+            .or_else(|| Some(updated_at.clone()));
+        result.push(runtime_session(
+            "zcode",
+            source_id,
+            project_label_from_cwd(&work_dir),
+            runtime_signal(
+                status,
+                match status {
+                    "waiting" => "needs-you",
+                    "completed" => "completed",
+                    "error" => "error",
+                    "paused" => "paused",
+                    _ => "thinking",
+                },
+                match status {
+                    "waiting" => "waiting",
+                    "completed" => "session",
+                    "error" => "error",
+                    "paused" => "paused",
+                    _ => "think",
+                },
+                match status {
+                    "waiting" => "Permission",
+                    "completed" => "Completed",
+                    "error" => "Error",
+                    "paused" => "Stopped",
+                    _ => "Thinking",
+                },
+                updated_at,
+                started_at,
             ),
             process_for("zcode").map(|(pid, _)| (pid, "desktop")),
         ));
@@ -966,6 +1113,13 @@ fn is_recent_timestamp(value: &str, now: DateTime<Utc>, window: StdDuration) -> 
         .unwrap_or(false)
 }
 
+fn timestamp_is_after(candidate: &str, current: &str) -> bool {
+    DateTime::parse_from_rfc3339(candidate)
+        .ok()
+        .zip(DateTime::parse_from_rfc3339(current).ok())
+        .is_some_and(|(candidate, current)| candidate > current)
+}
+
 fn record_timestamp(record: &Value) -> Option<String> {
     [
         "timestamp",
@@ -1163,6 +1317,92 @@ mod tests {
         assert_eq!(session.status, "completed");
         assert_eq!(session.phase, "completed");
         assert_eq!(session.actions[0].label, "Completed");
+    }
+
+    #[test]
+    fn zcode_cli_database_running_turn_overrides_stale_completed_task() {
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path();
+        let now = DateTime::parse_from_rfc3339("2026-08-15T12:00:30Z")
+            .expect("fixed clock")
+            .with_timezone(&Utc);
+        let session_id = "sess_zcode-running";
+        let started_at = (now - chrono::Duration::seconds(20)).timestamp_millis();
+        let stale_completion = (now - chrono::Duration::seconds(10)).timestamp_millis();
+
+        fs::create_dir_all(root.join("v2")).expect("v2 directory");
+        let tasks = Connection::open(root.join("v2/tasks-index.sqlite")).expect("tasks database");
+        tasks
+            .execute_batch(
+                "CREATE TABLE tasks(
+                    workspace_path TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    task_status TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    archived INTEGER NOT NULL DEFAULT 0
+                 );",
+            )
+            .expect("tasks schema");
+        tasks
+            .execute(
+                "INSERT INTO tasks(workspace_path, task_id, task_status, created_at, updated_at)
+                 VALUES(?1, ?2, 'completed', ?3, ?4)",
+                rusqlite::params![
+                    "/tmp/zcode-project",
+                    session_id,
+                    started_at,
+                    stale_completion
+                ],
+            )
+            .expect("stale completed task");
+
+        fs::create_dir_all(root.join("cli/db")).expect("cli database directory");
+        let cli = Connection::open(root.join("cli/db/db.sqlite")).expect("cli database");
+        cli.execute_batch(
+            "CREATE TABLE session(
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL
+             );
+             CREATE TABLE turn_usage(
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                tool_call_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(session_id, turn_id)
+             );",
+        )
+        .expect("cli schema");
+        cli.execute(
+            "INSERT INTO session(id, directory, time_created, time_updated)
+             VALUES(?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                session_id,
+                "/tmp/zcode-project",
+                started_at,
+                now.timestamp_millis()
+            ],
+        )
+        .expect("cli session");
+        cli.execute(
+            "INSERT INTO turn_usage(session_id, turn_id, status, started_at, completed_at)
+             VALUES(?1, 'turn-active', 'running', ?2, NULL)",
+            rusqlite::params![session_id, started_at],
+        )
+        .expect("running turn");
+
+        let sessions = discover_zcode(root, now);
+        let session = sessions
+            .iter()
+            .find(|session| session.source_session_id == session_id)
+            .expect("ZCode session");
+        assert_eq!(session.status, "running");
+        assert_eq!(session.project_label, "zcode-project");
     }
 
     #[test]
