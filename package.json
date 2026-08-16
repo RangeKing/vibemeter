@@ -23,9 +23,9 @@
     "build": "npm run tauri --workspace @vibemeter/desktop -- build",
     "check": "npm run check --workspace @vibemeter/desktop",
     "test": "npm run test --workspace @vibemeter/desktop",
-    "dmg:setup": "python3 -m pip install --disable-pip-version-check -r scripts/requirements-dmg.txt",
-    "dmg:finalize": "bash scripts/finalize-dmg.sh",
-    "dmg:check": "bash scripts/check-dmg-layout.sh",
+    "dmg:setup": "python3 -m venv .dmg-venv && .dmg-venv/bin/python -m pip install --disable-pip-version-check -r scripts/requirements-dmg.txt",
+    "dmg:finalize": "PATH=\"$PWD/.dmg-venv/bin:$PATH\" bash scripts/finalize-dmg.sh",
+    "dmg:check": "PATH=\"$PWD/.dmg-venv/bin:$PATH\" bash scripts/check-dmg-layout.sh",
     "rust:check": "cd apps/desktop/src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test",
     "ci": "npm run check && npm test && npm run rust:check"
   }

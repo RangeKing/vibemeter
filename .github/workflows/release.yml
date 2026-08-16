@@ -131,7 +131,9 @@ jobs:
 
       - name: Hide DMG support files
         run: |
-          python3 -m pip install --disable-pip-version-check -r scripts/requirements-dmg.txt
+          python3 -m venv "$RUNNER_TEMP/vibemeter-dmg-venv"
+          source "$RUNNER_TEMP/vibemeter-dmg-venv/bin/activate"
+          python -m pip install --disable-pip-version-check -r scripts/requirements-dmg.txt
           APP_VERSION="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
           DMG_ASSET_NAME="VibeMeter_${APP_VERSION}_macOS_${{ matrix.dmg_arch }}.dmg"
           DMG_PATH="$(find "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" -type f -name '*.dmg' ! -name 'rw.*' -print -quit)"

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 target/
+.dmg-venv/
 .DS_Store
 *.log
 *.tsbuildinfo
