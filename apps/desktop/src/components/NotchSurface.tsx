@@ -4,7 +4,6 @@ import {
   BookOpenText,
   BrainCircuit,
   Check,
-  CheckCheck,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -151,7 +150,6 @@ export function NotchAttentionQueue({
   available = true,
   jumpErrorId,
   onFeedback,
-  onConfirmAll,
   onJump,
 }: {
   items: AttentionEvent[];
@@ -161,23 +159,10 @@ export function NotchAttentionQueue({
     id: string,
     feedback: "handled" | "not-relevant" | "not-stuck" | "snoozed",
   ) => void;
-  onConfirmAll?: (ids: string[]) => Promise<void> | void;
   onJump: (id: string) => void;
 }) {
   const { t } = useTranslation();
-  const [confirmingAll, setConfirmingAll] = useState(false);
-  const completionReviewIds = items
-    .filter((attention) => attention.kind === "completion-review")
-    .map((attention) => attention.id);
-  const confirmAll = async () => {
-    if (!onConfirmAll || confirmingAll || completionReviewIds.length < 2) return;
-    setConfirmingAll(true);
-    try {
-      await onConfirmAll(completionReviewIds);
-    } finally {
-      setConfirmingAll(false);
-    }
-  };
+  const visibleItems = items.filter((attention) => attention.kind !== "completion-review");
   if (!available) {
     return (
       <section className="notch-attention-queue is-unavailable">
@@ -187,18 +172,10 @@ export function NotchAttentionQueue({
       </section>
     );
   }
-  if (!items.length) return null;
+  if (!visibleItems.length) return null;
   return (
     <section className="notch-attention-queue">
-      {completionReviewIds.length > 1 && onConfirmAll ? (
-        <div className="notch-attention-batch">
-          <button disabled={confirmingAll} onClick={() => void confirmAll()}>
-            <CheckCheck size={12} />
-            {t("live.attention.action.confirmAll", { count: completionReviewIds.length })}
-          </button>
-        </div>
-      ) : null}
-      {items.map((attention) => (
+      {visibleItems.map((attention) => (
         <article key={attention.id} className={`kind-${attention.kind}`}>
           <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
           <span>
@@ -472,7 +449,9 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const sessionListRef = useRef<HTMLDivElement>(null);
   const pendingActions = useRef(new Set<string>());
   const sessions = snapshot.data?.sessions ?? [];
-  const attentionQueue = snapshot.data?.attentionQueue ?? [];
+  const attentionQueue = (snapshot.data?.attentionQueue ?? []).filter(
+    (attention) => attention.kind !== "completion-review",
+  );
   const topAttention = attentionQueue[0];
   const providerCounts = useMemo(() => activeProviderCounts(sessions), [sessions]);
   const activeSessions = providerCounts.active;
@@ -691,10 +670,6 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     await api.setAttentionFeedback(id, feedback);
     await snapshot.refetch();
   };
-  const confirmCompletedAttention = async (ids: string[]) => {
-    await Promise.allSettled(ids.map((id) => api.setAttentionFeedback(id, "handled")));
-    await snapshot.refetch();
-  };
   const jumpToAttention = async (id: string) => {
     try {
       await api.jumpToAttention(id);
@@ -837,7 +812,6 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           available={snapshot.data?.attentionAvailable !== false}
           jumpErrorId={attentionJumpError}
           onFeedback={(id, feedback) => void updateAttention(id, feedback)}
-          onConfirmAll={confirmCompletedAttention}
           onJump={(id) => void jumpToAttention(id)}
         />
         {visibleSessions.map((session, index) => {

@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import desktopPackage from "../../package.json";
 import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
+import { refreshHistoryIndex } from "../lib/indexRefresh";
 import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { AppSettings, DiagnosticRetentionStatus, Locale, Theme } from "../types";
@@ -74,6 +75,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const diagnostics = useQuery({ queryKey: ["diagnostic-retention"], queryFn: api.diagnosticRetention, refetchInterval: 60_000 });
   const [loginEnabled, setLoginEnabled] = useState(false);
   const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
+  const [historyRefreshPending, setHistoryRefreshPending] = useState(false);
   const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
   const [diagnosticClearCount, setDiagnosticClearCount] = useState<number | null>(null);
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
@@ -81,6 +83,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const setSetting = async (key: keyof AppSettings, value: string) => {
     const refreshesProviders = key === "credentialsAllowed" || key === "cursorDashboardUsage" || key === "useSystemProxy";
     if (refreshesProviders) setCursorRefreshPending(true);
+    if (key === "gitReadAllowed") setHistoryRefreshPending(true);
     try {
       await api.setSetting(key, value);
       if (key === "credentialsAllowed" && value === "false") {
@@ -98,7 +101,21 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           : settings.data?.useSystemProxy === "true";
         await api.refreshProviders(credentialsAllowed, cursorDashboardUsageEnabled, useSystemProxy);
       }
-      if (key === "gitReadAllowed" || key === "vctiPromptStructure") await api.refreshIndex(true);
+      if (key === "gitReadAllowed") {
+        await refreshHistoryIndex({
+          start: api.refreshIndex,
+          status: api.indexStatus,
+          completed: async () => {
+            await Promise.all([
+              client.invalidateQueries({ queryKey: ["index-status"] }),
+              client.invalidateQueries({ queryKey: ["sessions"] }),
+              client.invalidateQueries({ queryKey: ["session"] }),
+            ]);
+          },
+        });
+      } else if (key === "vctiPromptStructure") {
+        await api.refreshIndex(true);
+      }
       await Promise.all([
         client.invalidateQueries({ queryKey: ["settings"] }),
         client.invalidateQueries({ queryKey: ["providers"] }),
@@ -109,6 +126,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
       ]);
     } finally {
       if (refreshesProviders) setCursorRefreshPending(false);
+      if (key === "gitReadAllowed") setHistoryRefreshPending(false);
     }
   };
   const setCursorDashboard = (value: boolean) => {
@@ -206,7 +224,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
         <section className="settings-section">
           <header><LockKeyhole size={17} /><div><h2>{t("settings.access")}</h2></div></header>
           <div className="setting-row multiline"><div><strong>{t("settings.vctiStructure")}</strong><p><ScanSearch size={12} />{t("settings.vctiStructureBody")}</p></div><Toggle checked={data.vctiPromptStructure === "true"} onCheckedChange={(value) => void setSetting("vctiPromptStructure", String(value))} label={t("settings.vctiStructure")} /></div>
-          <div className="setting-row multiline"><div><strong>{t("settings.gitRead")}</strong><p>{t("settings.gitReadBody")}</p></div><Toggle checked={data.gitReadAllowed === "true"} onCheckedChange={(value) => void setSetting("gitReadAllowed", String(value))} label={t("settings.gitRead")} /></div>
+          <div className="setting-row multiline"><div><strong>{t("settings.gitRead")}</strong><p>{t("settings.gitReadBody")}</p></div><div className="setting-toggle-with-status">{historyRefreshPending ? <span className="setting-progress" role="status" aria-live="polite"><LoaderCircle className="spin" size={13} />{t("actions.refreshing")}</span> : null}<Toggle checked={data.gitReadAllowed === "true"} disabled={historyRefreshPending} onCheckedChange={(value) => void setSetting("gitReadAllowed", String(value))} label={t("settings.gitRead")} /></div></div>
           <div className="setting-row multiline"><div><strong>{t("settings.credentials")}</strong><p>{t("settings.credentialsBody")}</p></div><Toggle checked={data.credentialsAllowed === "true"} disabled={cursorRefreshPending} onCheckedChange={(value) => void setSetting("credentialsAllowed", String(value))} label={t("settings.credentials")} /></div>
           <div className={`setting-row multiline nested-setting ${data.credentialsAllowed !== "true" ? "disabled-setting" : ""}`}>
             <div><strong>{t("settings.cursorDashboardUsage")}</strong><p>{t(data.credentialsAllowed === "true" ? "settings.cursorDashboardUsageBody" : "settings.cursorDashboardUsageRequiresCredentials")}</p></div>

@@ -262,12 +262,20 @@ fn run_index(
 fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> AppResult<bool> {
     let file_hash = stable_hash(&source.path.to_string_lossy());
     let cursor = database.load_cursor(&file_hash)?;
+    let git_allowed = database
+        .setting("gitReadAllowed")?
+        .is_some_and(|value| value == "true");
     if !force
         && cursor.as_ref().is_some_and(|cursor| {
             cursor.source_size == source.size
                 && cursor.source_mtime == source.modified
                 && cursor.state.agent == source.agent
                 && cursor.state.parser_version == PARSER_VERSION
+                && cursor
+                    .state
+                    .git_evidence
+                    .as_ref()
+                    .is_some_and(|evidence| git_allowed != (evidence.state == "not-authorized"))
         })
     {
         return Ok(false);
@@ -360,9 +368,6 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
             }
         }
         common::finalize_run(&mut state);
-        let git_allowed = database
-            .setting("gitReadAllowed")?
-            .is_some_and(|value| value == "true");
         state.git_evidence = Some(if git_allowed {
             state.project_root.as_deref().map_or_else(
                 || crate::models::GitEvidence {
@@ -453,9 +458,6 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         }
     }
     common::finalize_run(&mut state);
-    let git_allowed = database
-        .setting("gitReadAllowed")?
-        .is_some_and(|value| value == "true");
     state.git_evidence = Some(if git_allowed {
         state.project_root.as_deref().map_or_else(
             || crate::models::GitEvidence {
@@ -1305,6 +1307,76 @@ mod tests {
 
         assert_eq!(preview.prompt.as_deref(), Some("Add a system proxy toggle"));
         assert_eq!(preview.output.as_deref(), Some("The proxy toggle is ready"));
+    }
+
+    #[test]
+    fn unchanged_source_reindexes_when_git_permission_changes() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("git-permission.sqlite"))
+            .expect("database should open");
+        let project_root = temporary.path().join("project");
+        fs::create_dir_all(&project_root).expect("project directory");
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&project_root)
+                .status()
+                .expect("git init")
+                .success()
+        );
+
+        let source_path = temporary.path().join("model-io-git-session.jsonl");
+        fs::write(
+            &source_path,
+            format!(
+                "{}\n",
+                json!({
+                    "type":"model_io",
+                    "sessionId":"git-session",
+                    "querySource":"main_turn",
+                    "startedAt":"2026-08-16T08:00:00Z",
+                    "workspacePath":project_root,
+                    "request":{"messages":[{"role":"user","content":"Inspect Git"}]}
+                })
+            ),
+        )
+        .expect("source fixture");
+        let metadata = fs::metadata(&source_path).expect("source metadata");
+        let source = SourceFile {
+            path: source_path,
+            agent: AgentKind::ZCode,
+            adapter: SourceAdapter::ZCode,
+            size: metadata.len(),
+            modified: 1,
+        };
+
+        assert!(parse_source_file(&database, &source, false).expect("initial parse"));
+        let session_id = database
+            .sessions("all", SessionListFilters::default(), 0, 10)
+            .expect("sessions")
+            .items[0]
+            .id
+            .clone();
+        assert_eq!(
+            database
+                .session_detail(&session_id)
+                .expect("initial detail")
+                .git_evidence
+                .state,
+            "not-authorized"
+        );
+
+        database
+            .set_setting("gitReadAllowed", "true")
+            .expect("enable Git trajectory");
+        assert!(
+            parse_source_file(&database, &source, false).expect("permission refresh should parse")
+        );
+        let refreshed = database
+            .session_detail(&session_id)
+            .expect("refreshed detail");
+        assert!(refreshed.git_evidence.available);
+        assert_eq!(refreshed.git_evidence.state, "available");
     }
 
     fn text_history_records(adapter: SourceAdapter, project_root: &str) -> Vec<Value> {

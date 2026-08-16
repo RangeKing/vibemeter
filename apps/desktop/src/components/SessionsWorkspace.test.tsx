@@ -160,4 +160,16 @@ describe("SessionReplay trajectory", () => {
 
     expect(screen.getByRole("tooltip").textContent).toContain("user");
   });
+
+  it("uses trajectory terminology and explains an authorized session with no commits", () => {
+    renderReplay({
+      ...detail,
+      gitEvidence: { available: true, state: "available", branch: "main", commits: [] },
+    });
+
+    expect(screen.getByRole("heading", { name: "会话轨迹" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "文件轨迹" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Git 轨迹" })).toBeTruthy();
+    expect(screen.getByText("本次会话期间没有记录到提交。")).toBeTruthy();
+  });
 });

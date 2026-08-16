@@ -306,9 +306,9 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
         </section>
         <section className="replay-section git-section">
           <header><div><h3>{t("sessions.git")}</h3></div>{detail.gitEvidence.branch ? <span><GitBranch size={12} />{detail.gitEvidence.branch}</span> : null}</header>
-          {!detail.gitEvidence.available ? <div className="permission-empty"><GitBranch size={20} /><p>{t(detail.gitEvidence.state === "not-authorized" ? "sessions.gitNotAuthorized" : "sessions.gitUnavailable")}</p></div> : (
+          {!detail.gitEvidence.available ? <div className="permission-empty"><GitBranch size={20} /><p>{t(detail.gitEvidence.state === "not-authorized" ? "sessions.gitNotAuthorized" : "sessions.gitUnavailable")}</p></div> : detail.gitEvidence.commits.length ? (
             <div className="commit-list">{detail.gitEvidence.commits.map((commit) => <div key={commit.hash}><GitCommitHorizontal size={14} /><span><strong>{commit.subject}</strong><small>{commit.hash.slice(0, 8)} · {formatDateTime(commit.committedAt, locale)}</small></span></div>)}</div>
-          )}
+          ) : <div className="quiet-empty">{t("sessions.gitNoCommits")}</div>}
         </section>
       </div>
 

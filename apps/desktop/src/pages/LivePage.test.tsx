@@ -5,22 +5,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
 import type {
-  AttentionEvent,
-  AttentionQualityReport,
   LiveHistoryItem,
   LiveSession,
   LiveTimelinePoint,
 } from "../types";
 import {
-  AttentionActions,
-  AttentionHistory,
-  AttentionQualityGate,
-  AttentionQueue,
   HistoryList,
   LiveSessionCard,
-  sortAttentionEvents,
   TimelineList,
-  attentionHistoryNextOffset,
 } from "./LivePage";
 
 const historyItem: LiveHistoryItem = {
@@ -173,171 +165,5 @@ describe("Live work pulse", () => {
     expect(screen.getAllByText("未知")).toHaveLength(2);
     expect(screen.queryByText("错误")).toBeNull();
     expect(screen.getByLabelText("最近动作").children).toHaveLength(0);
-  });
-});
-
-describe("Attention actions", () => {
-  beforeAll(async () => {
-    await i18n.changeLanguage("zh-CN");
-  });
-
-  afterEach(cleanup);
-
-  it("offers only fixed feedback choices and no free-text control", () => {
-    const onFeedback = vi.fn();
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionActions kind="stuck" onFeedback={onFeedback} />
-      </I18nextProvider>,
-    );
-
-    expect(screen.getAllByRole("button")).toHaveLength(4);
-    expect(screen.queryByRole("textbox")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "不是卡住" }));
-    expect(onFeedback).toHaveBeenCalledWith("not-stuck");
-  });
-
-  function attention(kind: AttentionEvent["kind"], id: string, openedAt: string): AttentionEvent {
-    return {
-      id,
-      kind,
-      state: "open",
-      reasonKey: kind,
-      agent: "codex",
-      sourceSessionId: `${id}-source`,
-      projectLabel: id,
-      openedAt,
-      latestEvidenceAt: openedAt,
-      expiresAt: "2026-08-11T08:00:00Z",
-      evidenceLevel: kind === "stuck" ? "derived" : "observed",
-      sourceCoverage: "exact-lifecycle",
-      ruleVersion: "test",
-      evidenceCount: 3,
-      interventionCount: 0,
-    };
-  }
-
-  it("sorts the multi-session queue by fixed priority with stable ties", () => {
-    const openedAt = "2026-08-10T08:00:00Z";
-    const sorted = sortAttentionEvents([
-      attention("completion-review", "completion", openedAt),
-      attention("stuck", "stuck-b", openedAt),
-      attention("error", "error", openedAt),
-      attention("waiting", "waiting", openedAt),
-      attention("stuck", "stuck-a", openedAt),
-    ]);
-    expect(sorted.map((event) => event.id)).toEqual([
-      "waiting",
-      "error",
-      "stuck-a",
-      "stuck-b",
-      "completion",
-    ]);
-  });
-
-  it("renders an honest empty queue", () => {
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionQueue items={[]} onFeedback={vi.fn()} onJump={vi.fn()} />
-      </I18nextProvider>,
-    );
-    expect(screen.getByText("暂无需要关注的事件")).toBeTruthy();
-  });
-
-  it("keeps the attention event visible and shows a jump failure", () => {
-    const event = attention("waiting", "jump-failed", "2026-08-10T08:00:00Z");
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionQueue
-          items={[event]}
-          jumpErrors={new Set([event.id])}
-          onFeedback={vi.fn()}
-          onJump={vi.fn()}
-        />
-      </I18nextProvider>,
-    );
-
-    expect(screen.getByRole("alert").textContent).toBe("无法返回源会话，关注事件已保留，可稍后重试。");
-    expect(screen.getByText("需要你")).toBeTruthy();
-  });
-
-  it("shows the sanitized conversation title in the attention queue", () => {
-    const event = attention("completion-review", "review", "2026-08-10T08:00:00Z");
-    event.projectLabel = "vibemeter";
-    event.conversationTitle = "VibeMeter 可视化功能";
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionQueue items={[event]} onFeedback={vi.fn()} onJump={vi.fn()} />
-      </I18nextProvider>,
-    );
-
-    expect(screen.getByText(/VibeMeter 可视化功能/)).toBeTruthy();
-  });
-
-  it("shows a private session reference when no trusted title exists", () => {
-    const event = attention("completion-review", "private-reference", "2026-08-10T08:00:00Z");
-    event.projectLabel = "vibemeter";
-    event.sourceSessionId = "raw-private-session-id";
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionQueue items={[event]} onFeedback={vi.fn()} onJump={vi.fn()} />
-      </I18nextProvider>,
-    );
-
-    expect(screen.getByText(/会话 [0-9A-F]{6}/)).toBeTruthy();
-    expect(screen.queryByText(/raw-private-session-id/)).toBeNull();
-  });
-
-  it("loads attention history in bounded pages", () => {
-    const onLoadMore = vi.fn();
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionHistory
-          items={[attention("error", "resolved-error", "2026-08-10T08:00:00Z")]}
-          hasMore
-          onLoadMore={onLoadMore}
-        />
-      </I18nextProvider>,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "加载更多注意力历史" }));
-    expect(onLoadMore).toHaveBeenCalledOnce();
-  });
-
-  it("advances history offsets beyond one hundred rows", () => {
-    const page = Array.from({ length: 51 }, (_, index) =>
-      attention("error", `history-${index}`, `2026-08-10T08:00:${String(index).padStart(2, "0")}Z`));
-    expect(attentionHistoryNextOffset(page, [page])).toBe(50);
-    expect(attentionHistoryNextOffset(page, [page, page])).toBe(100);
-    expect(attentionHistoryNextOffset(page.slice(0, 50), [page, page, page])).toBeUndefined();
-  });
-
-  it("keeps the hard quality gate incomplete when local evidence is missing", () => {
-    const report: AttentionQualityReport = {
-      reviewedSamples: 0,
-      stuckPrecision: null,
-      feedbackSamples: 0,
-      falsePositiveRate: null,
-      notificationSamples: 0,
-      notificationP95Seconds: null,
-      jumpAttempts: 0,
-      jumpSuccessRate: null,
-      realAppVerified: false,
-      requiredSamples: 100,
-      requiredPrecision: 0.9,
-      maximumFalsePositiveRate: 0.1,
-      maximumNotificationP95Seconds: 2,
-      requiredJumpSuccessRate: 0.95,
-      passed: false,
-    };
-    render(
-      <I18nextProvider i18n={i18n}>
-        <AttentionQualityGate report={report} />
-      </I18nextProvider>,
-    );
-
-    expect(screen.getByText("验收未完成")).toBeTruthy();
-    expect(screen.getByText("0 / 100")).toBeTruthy();
-    expect(screen.getAllByText("未记录").length).toBeGreaterThanOrEqual(3);
   });
 });
