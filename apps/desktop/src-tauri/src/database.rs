@@ -9409,6 +9409,16 @@ mod concurrency_tests {
             )
             .expect("database should open");
             let state = exact_history_state(agent);
+            assert_eq!(
+                state
+                    .events
+                    .iter()
+                    .filter(|event| event.event_type == "prompt")
+                    .count(),
+                1,
+                "each explicit human input should produce one prompt for {}",
+                agent.as_str()
+            );
             assert!(
                 state
                     .events

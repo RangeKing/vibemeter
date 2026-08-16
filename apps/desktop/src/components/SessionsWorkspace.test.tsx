@@ -148,4 +148,16 @@ describe("SessionReplay trajectory", () => {
     expect([...segments].every((segment) => Number.parseFloat(segment.style.minWidth) === 0 && segment.style.flexShrink === "1")).toBe(true);
     expect(screen.queryByText("注意力复核")).toBeNull();
   });
+
+  it("shows trajectory labels immediately instead of relying on the delayed native title", () => {
+    renderReplay();
+
+    const span = document.querySelector<HTMLElement>(".trajectory-span");
+    expect(span).not.toBeNull();
+    expect(span?.getAttribute("title")).toBeNull();
+
+    fireEvent.mouseEnter(span!, { clientX: 240, clientY: 160 });
+
+    expect(screen.getByRole("tooltip").textContent).toContain("user");
+  });
 });

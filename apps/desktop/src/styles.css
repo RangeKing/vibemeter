@@ -861,6 +861,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .trajectory-span:hover, .trajectory-span:focus-visible { z-index: 3; filter: brightness(1.18) saturate(1.08); transform: scaleY(1.28); }
 .trajectory-span.is-instant:hover, .trajectory-span.is-instant:focus-visible { transform: translateX(-50%) scale(1.2); }
 .trajectory-span:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.trajectory-hover-tooltip { position: fixed; z-index: 1200; width: max-content; max-width: min(280px, calc(100vw - 24px)); padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 7px; color: var(--ink); background: var(--surface-strong); box-shadow: 0 10px 28px rgb(0 0 0 / 24%); font-size: var(--font-caption); font-weight: 650; line-height: 1.35; pointer-events: none; transform: translate(-50%, -100%); transition: none; white-space: nowrap; }
 .trajectory-time-axis { display: grid; grid-template-columns: 48px minmax(0, 1fr); height: 20px; margin-top: 3px; }
 .trajectory-time-axis > div { position: relative; border-top: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent); }
 .trajectory-time-axis time { position: absolute; top: 5px; color: var(--faint); font-size: 8px; font-variant-numeric: tabular-nums; line-height: 1; transform: translateX(-50%); white-space: nowrap; }

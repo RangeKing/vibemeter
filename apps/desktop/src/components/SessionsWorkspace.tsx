@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "./RangePicker";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "./ui";
@@ -12,6 +13,7 @@ import { buildTrajectory, type TrajectoryLane } from "./sessionTrajectory";
 
 const PAGE_SIZE = 50;
 const phaseKeys = new Set(["understand", "inspect", "edit", "verify", "fix", "plan", "execute"]);
+type TrajectoryTooltip = { text: string; x: number; y: number };
 
 function formatPhaseTime(value: string | undefined, locale: Locale): string | undefined {
   if (!value) return undefined;
@@ -40,6 +42,7 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
   const [showAllPhases, setShowAllPhases] = useState(false);
   const [expandedPhaseIds, setExpandedPhaseIds] = useState<Set<string>>(() => new Set());
   const [activePhaseId, setActivePhaseId] = useState<string>();
+  const [trajectoryTooltip, setTrajectoryTooltip] = useState<TrajectoryTooltip>();
   const phaseRefs = useRef(new Map<string, HTMLElement>());
   const highlightTimer = useRef<number | undefined>(undefined);
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
@@ -64,6 +67,7 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
     setShowAllPhases(false);
     setExpandedPhaseIds(new Set());
     setActivePhaseId(undefined);
+    setTrajectoryTooltip(undefined);
   }, [detail.id]);
 
   useEffect(() => () => {
@@ -93,6 +97,24 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
 
   function phaseLabel(phaseKey: string) {
     return t(`sessions.phase.${phaseKeys.has(phaseKey) ? phaseKey : "other"}`);
+  }
+
+  function showTrajectoryTooltip(text: string, x: number, y: number) {
+    const horizontalMargin = 112;
+    setTrajectoryTooltip({
+      text,
+      x: Math.min(Math.max(x, horizontalMargin), Math.max(horizontalMargin, window.innerWidth - horizontalMargin)),
+      y: Math.max(32, y - 8),
+    });
+  }
+
+  function showMouseTooltip(event: ReactMouseEvent<HTMLElement>, text: string) {
+    showTrajectoryTooltip(text, event.clientX, event.clientY);
+  }
+
+  function showFocusTooltip(event: ReactFocusEvent<HTMLElement>, text: string) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    showTrajectoryTooltip(text, bounds.left + bounds.width / 2, bounds.top);
   }
 
   function eventStatus(success: boolean | undefined) {
@@ -144,7 +166,10 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
                     className={`trajectory-phase-segment phase-${phaseKeys.has(phase.phaseKey) ? phase.phaseKey : "other"}`}
                     style={{ flexGrow: Math.max(1, phase.eventCount), flexShrink: 1, flexBasis: 0, minWidth: 0 }}
                     onClick={() => focusPhase(phase.id)}
-                    title={title}
+                    onMouseEnter={(event) => showMouseTooltip(event, title)}
+                    onMouseLeave={() => setTrajectoryTooltip(undefined)}
+                    onFocus={(event) => showFocusTooltip(event, title)}
+                    onBlur={() => setTrajectoryTooltip(undefined)}
                     aria-label={title}
                   >
                     {failures.map((event, index) => <i key={`failure-${event.sequence}-${index}`} className="trajectory-failure-tick" style={{ left: `${phase.events.length > 1 ? (phase.events.indexOf(event) / (phase.events.length - 1)) * 100 : 50}%` }} />)}
@@ -170,7 +195,10 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
                           className={`trajectory-span ${span.instant ? "is-instant" : ""} status-${status}`}
                           style={{ left: `${span.position}%`, width: `${span.width}%` }}
                           onClick={() => focusPhase(span.phaseId, true)}
-                          title={title}
+                          onMouseEnter={(event) => showMouseTooltip(event, title)}
+                          onMouseLeave={() => setTrajectoryTooltip(undefined)}
+                          onFocus={(event) => showFocusTooltip(event, title)}
+                          onBlur={() => setTrajectoryTooltip(undefined)}
                           aria-label={`${t(`sessions.lane.${lane}`)} · ${title}`}
                         />
                       );
@@ -195,6 +223,15 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
                 ))}
               </div>
             </div>
+            {trajectoryTooltip ? (
+              <div
+                className="trajectory-hover-tooltip"
+                role="tooltip"
+                style={{ left: trajectoryTooltip.x, top: trajectoryTooltip.y }}
+              >
+                {trajectoryTooltip.text}
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div className="phase-timeline">

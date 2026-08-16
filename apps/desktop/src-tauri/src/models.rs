@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.9.0";
+pub const PARSER_VERSION: &str = "6.10.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -238,6 +238,10 @@ pub struct ParseState {
     pub previous_codex_total: TokenUsage,
     pub last_claude_message_id: Option<String>,
     pub last_claude_message_usage: TokenUsage,
+    #[serde(default)]
+    pub last_zcode_user_fingerprint: Option<String>,
+    #[serde(default)]
+    pub last_zcode_user_position: Option<usize>,
     pub seen_tool_ids: HashSet<String>,
     #[serde(skip)]
     pub source_record_ids: HashSet<String>,
@@ -317,6 +321,8 @@ impl ParseState {
             previous_codex_total: TokenUsage::default(),
             last_claude_message_id: None,
             last_claude_message_usage: TokenUsage::default(),
+            last_zcode_user_fingerprint: None,
+            last_zcode_user_position: None,
             seen_tool_ids: HashSet::new(),
             source_record_ids: HashSet::new(),
             new_source_record_ids: HashSet::new(),

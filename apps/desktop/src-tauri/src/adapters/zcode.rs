@@ -1,5 +1,6 @@
 use crate::adapters::common;
 use crate::models::{ParseState, TokenUsage};
+use crate::privacy::stable_hash;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::Value;
 
@@ -169,18 +170,37 @@ fn parse_model_io(state: &mut ParseState, record: &Value) {
     common::set_model(state, model);
 
     let query_source = record.get("querySource").and_then(Value::as_str);
-    let user_text = record
-        .get("request")
-        .and_then(|request| request.get("messages"))
-        .and_then(Value::as_array)
-        .and_then(|messages| {
-            messages.iter().rev().find_map(|message| {
-                (message.get("role").and_then(Value::as_str) == Some("user"))
-                    .then(|| message.get("content").and_then(text_content))
-                    .flatten()
-            })
+    let user_message =
+        record
+            .get("request")
+            .and_then(|request| request.get("messages"))
+            .and_then(Value::as_array)
+            .and_then(|messages| {
+                messages.iter().enumerate().rev().find(|(_, message)| {
+                    message.get("role").and_then(Value::as_str) == Some("user")
+                })
+            });
+    let user_position = user_message.map(|(position, _)| position);
+    let user_text = user_message
+        .and_then(|(_, message)| message.get("content"))
+        .and_then(text_content);
+    let user_fingerprint = user_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(stable_hash);
+    let explicit_new_prompt =
+        user_message.is_some_and(|(_, message)| message.get("cacheControl").is_some());
+    let prompt_query = matches!(query_source, Some("main_turn") | None);
+    let human = prompt_query
+        && user_fingerprint.as_ref().is_some_and(|fingerprint| {
+            state.last_zcode_user_fingerprint.as_ref() != Some(fingerprint)
+                || (explicit_new_prompt && state.last_zcode_user_position != user_position)
         });
-    let human = user_text.is_some() && query_source != Some("session_title");
+    if prompt_query && let Some(fingerprint) = user_fingerprint {
+        state.last_zcode_user_fingerprint = Some(fingerprint);
+        state.last_zcode_user_position = user_position;
+    }
     common::observe_timestamp(state, timestamp.as_deref(), human);
     if human {
         common::consider_title(state, user_text.as_deref());
@@ -447,5 +467,57 @@ mod tests {
         assert_eq!(state.usage.cache_read_tokens, 30);
         assert_eq!(state.usage.reasoning_tokens, 20);
         assert_eq!(state.tool_calls, 1);
+    }
+
+    #[test]
+    fn cumulative_model_context_does_not_replay_old_user_prompts() {
+        let mut state = ParseState::new(AgentKind::ZCode, "fallback".into());
+        for record in [
+            serde_json::json!({
+                "type": "model_io",
+                "sessionId": "zcode-session-1",
+                "querySource": "main_turn",
+                "startedAt": "2026-08-15T13:50:13.800Z",
+                "request": {"messages": [
+                    {"role": "system", "content": "system context"},
+                    {"role": "user", "content": "Initial request", "cacheControl": {"type": "ephemeral"}}
+                ]}
+            }),
+            serde_json::json!({
+                "type": "model_io",
+                "sessionId": "zcode-session-1",
+                "querySource": "main_turn",
+                "startedAt": "2026-08-15T13:50:24.821Z",
+                "request": {"messages": [
+                    {"role": "system", "content": "system context"},
+                    {"role": "user", "content": "Initial request", "cacheControl": {"type": "ephemeral"}},
+                    {"role": "assistant", "content": "Calling a tool"},
+                    {"role": "tool", "content": "tool result"}
+                ]}
+            }),
+            serde_json::json!({
+                "type": "model_io",
+                "sessionId": "zcode-session-1",
+                "querySource": "main_turn",
+                "startedAt": "2026-08-15T13:56:29.157Z",
+                "request": {"messages": [
+                    {"role": "user", "content": "Initial request"},
+                    {"role": "assistant", "content": "First answer"},
+                    {"role": "user", "content": "Follow-up request"}
+                ]}
+            }),
+        ] {
+            parse_record(&mut state, &record);
+        }
+
+        assert_eq!(
+            state
+                .events
+                .iter()
+                .filter(|event| event.event_type == "prompt")
+                .count(),
+            2
+        );
+        assert_eq!(state.human_interventions, 2);
     }
 }
