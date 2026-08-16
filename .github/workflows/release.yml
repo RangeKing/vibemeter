@@ -76,9 +76,11 @@ jobs:
           - label: Apple Silicon
             target: aarch64-apple-darwin
             archive: arm64
+            dmg_arch: aarch64
           - label: Intel
             target: x86_64-apple-darwin
             archive: x64
+            dmg_arch: x64
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
@@ -126,6 +128,26 @@ jobs:
           generateReleaseNotes: true
           releaseAssetNamePattern: VibeMeter_[version]_macOS_[arch].[ext]
           retryAttempts: 2
+
+      - name: Hide DMG support files
+        run: |
+          python3 -m pip install --disable-pip-version-check -r scripts/requirements-dmg.txt
+          APP_VERSION="$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")"
+          DMG_ASSET_NAME="VibeMeter_${APP_VERSION}_macOS_${{ matrix.dmg_arch }}.dmg"
+          DMG_PATH="$(find "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" -type f -name '*.dmg' ! -name 'rw.*' -print -quit)"
+          if [ -z "$DMG_PATH" ]; then
+            echo "Tauri did not produce a DMG for ${{ matrix.target }}."
+            exit 1
+          fi
+          bash scripts/finalize-dmg.sh "$DMG_PATH"
+          bash scripts/check-dmg-layout.sh "$DMG_PATH"
+          ditto "$DMG_PATH" "$DMG_ASSET_NAME"
+          echo "DMG_ASSET_PATH=$DMG_ASSET_NAME" >> "$GITHUB_ENV"
+
+      - name: Replace release DMG with finalized layout
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_ASSET_PATH" --clobber
 
       - name: Upload ZIP to GitHub Release
         env:
