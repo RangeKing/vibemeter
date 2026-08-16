@@ -4,7 +4,6 @@ import { BarChart3, Blocks, CalendarDays, Scale, Sparkles, Workflow } from "luci
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
-import { CursorAccountUsagePanel } from "../components/CursorAccountUsagePanel";
 import { EChart } from "../components/EChart";
 import { focusHeatmapIndex, HeatmapCell } from "../components/HeatmapCell";
 import { RangePicker } from "../components/RangePicker";
@@ -323,8 +322,6 @@ export function DataPage({ locale }: { locale: Locale }) {
         <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
         <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(ledgerDays || data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
       </section>
-
-      <CursorAccountUsagePanel locale={locale} range={range} compact />
 
       <section className="data-panel trend-panel">
         <header className="panel-heading"><div><h2>{t("data.trend")}</h2></div><span className="panel-kicker"><Sparkles size={13} />{t("data.combinedAgents")}</span></header>

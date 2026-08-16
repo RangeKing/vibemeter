@@ -34,7 +34,6 @@ vi.mock("../components/EChart", () => ({
     return null;
   },
 }));
-vi.mock("../components/CursorAccountUsagePanel", () => ({ CursorAccountUsagePanel: () => null }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -160,6 +159,16 @@ describe("DataPage query transition", () => {
 
     const button = await screen.findByRole("button", { name: "ZCode" });
     expect(button.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("does not render a standalone Cursor usage panel", async () => {
+    overview.mockResolvedValue(emptyOverview);
+    sources.mockResolvedValue([]);
+
+    renderDataPage();
+
+    await screen.findByRole("heading", { name: /你与 Agent/ });
+    expect(screen.queryByLabelText("Cursor Dashboard 用量")).toBeNull();
   });
 
   it("reserves enough right-side space for workflow values", async () => {

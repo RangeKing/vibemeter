@@ -1,6 +1,6 @@
 use crate::live::project_label_from_cwd;
 use crate::models::{LiveAction, LiveSession};
-use crate::privacy::stable_hash;
+use crate::privacy::{sanitize_title, stable_hash};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -525,7 +525,15 @@ fn discover_zcode(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
     // ZCode 3.6+ records the authoritative current turn lifecycle in the CLI
     // database. The task index and model-I/O logs can still say "completed"
     // while the same session has already started another turn.
-    for session in discover_zcode_cli_sessions(&root.join("cli/db/db.sqlite"), now) {
+    for mut session in discover_zcode_cli_sessions(&root.join("cli/db/db.sqlite"), now) {
+        if let Some(fallback) = sessions.get(&session.id) {
+            if session.project_label == "Unknown project" {
+                session.project_label = fallback.project_label.clone();
+            }
+            if session.conversation_title.is_none() {
+                session.conversation_title = fallback.conversation_title.clone();
+            }
+        }
         sessions.insert(session.id.clone(), session);
     }
     sessions.into_values().collect()
@@ -561,10 +569,11 @@ fn zcode_snapshot_session(
     let (phase, action_kind, action_label) = zcode_snapshot_action(snapshot, status);
     let started_at =
         timestamp_from_value(meta.get("createdAt")).or_else(|| Some(updated_at.clone()));
-    Some(runtime_session(
+    Some(runtime_session_with_title(
         "zcode",
         source_id.to_string(),
         project_label_from_cwd(work_dir),
+        meta.get("title").and_then(Value::as_str).map(str::to_owned),
         runtime_signal(
             status,
             phase,
@@ -636,7 +645,7 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
         return Vec::new();
     };
     let mut statement = match connection.prepare(
-        "SELECT workspace_path, task_id, task_status, created_at, updated_at
+        "SELECT workspace_path, task_id, title, task_status, created_at, updated_at
          FROM tasks WHERE deleted=0 AND archived=0",
     ) {
         Ok(statement) => statement,
@@ -647,8 +656,9 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
-            row.get::<_, i64>(3)?,
+            row.get::<_, Option<String>>(3)?,
             row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
         ))
     });
     let Ok(rows) = rows else {
@@ -656,7 +666,7 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
     };
     let mut result = Vec::new();
     for row in rows.flatten() {
-        let (workspace_path, task_id, raw_status, created_at, updated_at) = row;
+        let (workspace_path, task_id, title, raw_status, created_at, updated_at) = row;
         let Some(status) = raw_status.as_deref().and_then(runtime_status) else {
             continue;
         };
@@ -672,10 +682,11 @@ fn discover_zcode_tasks(path: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
             continue;
         }
         let started_at = timestamp_from_number(created_at).unwrap_or_else(|| updated_at.clone());
-        result.push(runtime_session(
+        result.push(runtime_session_with_title(
             "zcode",
             task_id,
             project_label_from_cwd(&workspace_path),
+            title,
             runtime_signal(
                 status,
                 match status {
@@ -719,7 +730,9 @@ fn discover_zcode_cli_sessions(path: &Path, now: DateTime<Utc>) -> Vec<LiveSessi
         return Vec::new();
     };
     let mut statement = match connection.prepare(
-        "SELECT session.id, session.directory, session.time_created, session.time_updated,
+        "SELECT session.id,
+                COALESCE(NULLIF(session.directory, ''), NULLIF(session.path, ''), ''),
+                session.title, session.time_created, session.time_updated,
                 turn_usage.status, turn_usage.started_at, turn_usage.completed_at
          FROM session
          JOIN turn_usage ON turn_usage.session_id=session.id
@@ -735,11 +748,12 @@ fn discover_zcode_cli_sessions(path: &Path, now: DateTime<Utc>) -> Vec<LiveSessi
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(2)?,
             row.get::<_, i64>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, i64>(5)?,
-            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<i64>>(7)?,
         ))
     });
     let Ok(rows) = rows else {
@@ -755,6 +769,7 @@ fn discover_zcode_cli_sessions(path: &Path, now: DateTime<Utc>) -> Vec<LiveSessi
         let (
             source_id,
             work_dir,
+            title,
             created_at,
             session_updated_at,
             raw_status,
@@ -796,10 +811,11 @@ fn discover_zcode_cli_sessions(path: &Path, now: DateTime<Utc>) -> Vec<LiveSessi
         let started_at = timestamp_from_number(turn_started_at)
             .or_else(|| timestamp_from_number(created_at))
             .or_else(|| Some(updated_at.clone()));
-        result.push(runtime_session(
+        result.push(runtime_session_with_title(
             "zcode",
             source_id,
             project_label_from_cwd(&work_dir),
+            title,
             runtime_signal(
                 status,
                 match status {
@@ -874,10 +890,14 @@ fn zcode_model_io_session(path: &Path, now: DateTime<Utc>) -> Option<LiveSession
         .or_else(|| record.get("cwd"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    Some(runtime_session(
+    Some(runtime_session_with_title(
         "zcode",
         source_id.to_string(),
         project_label_from_cwd(work_dir),
+        record
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         runtime_signal(
             status,
             match status {
@@ -909,6 +929,24 @@ fn runtime_session(
     signal: RuntimeSignal,
     process: Option<(u32, &str)>,
 ) -> LiveSession {
+    runtime_session_with_title(
+        agent,
+        source_session_id,
+        project_label,
+        None,
+        signal,
+        process,
+    )
+}
+
+fn runtime_session_with_title(
+    agent: &str,
+    source_session_id: String,
+    project_label: String,
+    conversation_title: Option<String>,
+    signal: RuntimeSignal,
+    process: Option<(u32, &str)>,
+) -> LiveSession {
     let id = stable_hash(&format!("{agent}:{source_session_id}"));
     let occurred_at = signal.occurred_at;
     let started_at = signal.started_at.unwrap_or_else(|| occurred_at.clone());
@@ -921,7 +959,7 @@ fn runtime_session(
         source_session_id,
         agent: agent.into(),
         project_label,
-        conversation_title: None,
+        conversation_title: conversation_title.and_then(|title| sanitize_title(&title)),
         status: signal.status.into(),
         phase: signal.phase.into(),
         started_at,
@@ -1337,6 +1375,7 @@ mod tests {
                 "CREATE TABLE tasks(
                     workspace_path TEXT NOT NULL,
                     task_id TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
                     task_status TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -1347,8 +1386,8 @@ mod tests {
             .expect("tasks schema");
         tasks
             .execute(
-                "INSERT INTO tasks(workspace_path, task_id, task_status, created_at, updated_at)
-                 VALUES(?1, ?2, 'completed', ?3, ?4)",
+                "INSERT INTO tasks(workspace_path, task_id, title, task_status, created_at, updated_at)
+                 VALUES(?1, ?2, 'Fallback task title', 'completed', ?3, ?4)",
                 rusqlite::params![
                     "/tmp/zcode-project",
                     session_id,
@@ -1364,6 +1403,8 @@ mod tests {
             "CREATE TABLE session(
                 id TEXT PRIMARY KEY,
                 directory TEXT NOT NULL,
+                path TEXT,
+                title TEXT NOT NULL,
                 time_created INTEGER NOT NULL,
                 time_updated INTEGER NOT NULL
              );
@@ -1379,11 +1420,13 @@ mod tests {
         )
         .expect("cli schema");
         cli.execute(
-            "INSERT INTO session(id, directory, time_created, time_updated)
-             VALUES(?1, ?2, ?3, ?4)",
+            "INSERT INTO session(id, directory, path, title, time_created, time_updated)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 session_id,
+                "",
                 "/tmp/zcode-project",
+                "Evaluate dsh-iris",
                 started_at,
                 now.timestamp_millis()
             ],
@@ -1403,6 +1446,10 @@ mod tests {
             .expect("ZCode session");
         assert_eq!(session.status, "running");
         assert_eq!(session.project_label, "zcode-project");
+        assert_eq!(
+            session.conversation_title.as_deref(),
+            Some("Evaluate dsh-iris")
+        );
     }
 
     #[test]
