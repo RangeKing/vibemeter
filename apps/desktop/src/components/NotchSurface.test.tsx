@@ -14,6 +14,7 @@ import {
   liveElapsedEnd,
   leftWingWidthForSession,
   NotchAttentionQueue,
+  notchAttentionItemsForActiveSessions,
   notchPulseValue,
   notchVisibleActions,
   pickRightWingSession,
@@ -62,6 +63,36 @@ function session(
 }
 
 describe("Notch session selection", () => {
+  it("does not render an error attention item twice for the same active session", () => {
+    const attention: AttentionEvent = {
+      id: "attention-error-duplicate",
+      kind: "error",
+      state: "open",
+      reasonKey: "blocking-error",
+      agent: "zcode",
+      sourceSessionId: "same-session",
+      projectLabel: "vibemeter",
+      openedAt: "2026-08-18T08:00:00Z",
+      latestEvidenceAt: "2026-08-18T08:00:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 1,
+      interventionCount: 0,
+    };
+
+    expect(
+      notchAttentionItemsForActiveSessions([attention], [session("same-session", "error", "zcode")]),
+    ).toEqual([]);
+    expect(
+      notchAttentionItemsForActiveSessions([attention], [session("same-session", "running", "zcode")]),
+    ).toEqual([]);
+    expect(
+      notchAttentionItemsForActiveSessions([attention], [session("other-session", "error", "zcode")]),
+    ).toHaveLength(1);
+  });
+
   it("shows an honest unavailable state instead of an empty attention queue", () => {
     render(
       <I18nextProvider i18n={i18n}>
@@ -70,6 +101,7 @@ describe("Notch session selection", () => {
           available={false}
           onFeedback={vi.fn()}
           onJump={vi.fn()}
+          onRemove={vi.fn()}
         />
       </I18nextProvider>,
     );
@@ -105,6 +137,7 @@ describe("Notch session selection", () => {
           jumpErrorId={attention.id}
           onFeedback={vi.fn()}
           onJump={vi.fn()}
+          onRemove={vi.fn()}
         />
       </I18nextProvider>,
     );
@@ -115,6 +148,78 @@ describe("Notch session selection", () => {
     expect(screen.getByRole("button", { name: "已处理" }).className).toContain(
       "notch-attention-action-text",
     );
+  });
+
+  it("activates attention actions on pointerdown", () => {
+    const attention: AttentionEvent = {
+      id: "attention-actions",
+      kind: "error",
+      state: "open",
+      reasonKey: "blocking-error",
+      agent: "codex",
+      sourceSessionId: "source-session",
+      projectLabel: "VibeMeter",
+      openedAt: "2026-08-10T08:00:00Z",
+      latestEvidenceAt: "2026-08-10T08:00:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 1,
+      interventionCount: 0,
+    };
+    const onFeedback = vi.fn();
+    const onJump = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[attention]}
+          onFeedback={onFeedback}
+          onJump={onJump}
+          onRemove={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "已处理" }), { button: 0 });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "返回源会话" }), { button: 0 });
+
+    expect(onFeedback).toHaveBeenCalledWith(attention.id, "handled");
+    expect(onJump).toHaveBeenCalledWith(attention.id);
+  });
+
+  it("offers a removable attention action", () => {
+    const attention: AttentionEvent = {
+      id: "attention-remove",
+      kind: "error",
+      state: "open",
+      reasonKey: "blocking-error",
+      agent: "codex",
+      sourceSessionId: "source-session",
+      projectLabel: "VibeMeter",
+      openedAt: "2026-08-10T08:00:00Z",
+      latestEvidenceAt: "2026-08-10T08:00:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-lifecycle",
+      ruleVersion: "test",
+      evidenceCount: 1,
+      interventionCount: 0,
+    };
+    const onRemove = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[attention]}
+          onFeedback={vi.fn()}
+          onJump={vi.fn()}
+          onRemove={onRemove}
+        />
+      </I18nextProvider>,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "移除关注事件" }), { button: 0 });
+    expect(onRemove).toHaveBeenCalledWith(attention.id);
   });
 
   it("does not render completion-review items in the Notch", () => {
@@ -141,6 +246,7 @@ describe("Notch session selection", () => {
           items={[attention]}
           onFeedback={vi.fn()}
           onJump={vi.fn()}
+          onRemove={vi.fn()}
         />
       </I18nextProvider>,
     );

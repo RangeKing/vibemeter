@@ -151,6 +151,7 @@ export function NotchAttentionQueue({
   jumpErrorId,
   onFeedback,
   onJump,
+  onRemove,
 }: {
   items: AttentionEvent[];
   available?: boolean;
@@ -160,9 +161,29 @@ export function NotchAttentionQueue({
     feedback: "handled" | "not-relevant" | "not-stuck" | "snoozed",
   ) => void;
   onJump: (id: string) => void;
+  onRemove: (id: string) => void;
 }) {
   const { t } = useTranslation();
   const visibleItems = items.filter((attention) => attention.kind !== "completion-review");
+  const activateOnPointerDown = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    action: () => void,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    action();
+  };
+  const activateOnClick = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    action: () => void,
+  ) => {
+    // Pointer activation is handled on pointerdown so a hover-opened NSPanel
+    // cannot swallow the first click. detail=0 preserves keyboard activation.
+    if (event.detail !== 0) return;
+    event.stopPropagation();
+    action();
+  };
   if (!available) {
     return (
       <section className="notch-attention-queue is-unavailable">
@@ -191,12 +212,34 @@ export function NotchAttentionQueue({
           <span className="notch-attention-actions">
             <button
               className="notch-attention-action-text"
-              onClick={() => onFeedback(attention.id, "handled")}
+              onPointerDown={(event) => activateOnPointerDown(event, () => onFeedback(attention.id, "handled"))}
+              onClick={(event) => activateOnClick(event, () => onFeedback(attention.id, "handled"))}
             >
               {t("live.attention.action.handled")}
             </button>
-            {attention.kind === "stuck" ? <button onClick={() => onFeedback(attention.id, "not-stuck")}>{t("live.attention.action.not-stuck")}</button> : null}
-            <button onClick={() => onJump(attention.id)} aria-label={t("live.jump")}><ArrowUpRight size={12} /></button>
+            {attention.kind === "stuck" ? (
+              <button
+                onPointerDown={(event) => activateOnPointerDown(event, () => onFeedback(attention.id, "not-stuck"))}
+                onClick={(event) => activateOnClick(event, () => onFeedback(attention.id, "not-stuck"))}
+              >
+                {t("live.attention.action.not-stuck")}
+              </button>
+            ) : null}
+            <button
+              onPointerDown={(event) => activateOnPointerDown(event, () => onRemove(attention.id))}
+              onClick={(event) => activateOnClick(event, () => onRemove(attention.id))}
+              aria-label={t("notch.removeAttention")}
+              title={t("notch.removeAttention")}
+            >
+              <Trash2 size={12} />
+            </button>
+            <button
+              onPointerDown={(event) => activateOnPointerDown(event, () => onJump(attention.id))}
+              onClick={(event) => activateOnClick(event, () => onJump(attention.id))}
+              aria-label={t("live.jump")}
+            >
+              <ArrowUpRight size={12} />
+            </button>
           </span>
           {jumpErrorId === attention.id ? (
             <p className="notch-attention-error" role="alert">{t("live.attention.jumpFailed")}</p>
@@ -205,6 +248,21 @@ export function NotchAttentionQueue({
       ))}
     </section>
   );
+}
+
+export function notchAttentionItemsForActiveSessions(
+  items: AttentionEvent[],
+  activeSessions: Pick<LiveSession, "agent" | "sourceSessionId" | "status">[],
+): AttentionEvent[] {
+  return items.filter((attention) => {
+    if (attention.kind !== "waiting" && attention.kind !== "error") return true;
+    return !activeSessions.some(
+      (session) =>
+        session.agent === attention.agent &&
+        session.sourceSessionId === attention.sourceSessionId &&
+        ACTIVE_STATUSES.has(session.status),
+    );
+  });
 }
 
 function liveActionKey(action: LiveSession["actions"][number]): string {
@@ -452,9 +510,10 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const attentionQueue = (snapshot.data?.attentionQueue ?? []).filter(
     (attention) => attention.kind !== "completion-review",
   );
-  const topAttention = attentionQueue[0];
   const providerCounts = useMemo(() => activeProviderCounts(sessions), [sessions]);
   const activeSessions = providerCounts.active;
+  const visibleAttentionQueue = notchAttentionItemsForActiveSessions(attentionQueue, activeSessions);
+  const topAttention = visibleAttentionQueue[0];
   const activeSessionSignature = activeSessions
     .map((session) => session.id)
     .sort()
@@ -472,12 +531,12 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     }
   }, [activeJumpError, activeSessionIds]);
   useEffect(() => {
-    if (attentionJumpError && !attentionQueue.some((item) => item.id === attentionJumpError)) {
+    if (attentionJumpError && !visibleAttentionQueue.some((item) => item.id === attentionJumpError)) {
       setAttentionJumpError(undefined);
     }
-  }, [attentionJumpError, attentionQueue]);
+  }, [attentionJumpError, visibleAttentionQueue]);
   const rightSession = pickRightWingSession(sessions, now);
-  const hasActivity = activeSessions.length > 0 || attentionQueue.length > 0;
+  const hasActivity = activeSessions.length > 0 || visibleAttentionQueue.length > 0;
   const singleWingSession = activeSessions.length === 1 ? activeSessions[0] : undefined;
   const singleWingAttention = !singleWingSession && topAttention ? topAttention : undefined;
   const visibleSessions = activeSessions;
@@ -503,7 +562,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         ? 1
         : 0,
       showClearUndo: Boolean(clearUndo),
-      attentionCount: attentionQueue.length,
+      attentionCount: visibleAttentionQueue.length,
       attentionErrorCount: attentionJumpError ? 1 : 0,
     },
   );
@@ -670,6 +729,10 @@ export function NotchSurface({ locale }: { locale: Locale }) {
     await api.setAttentionFeedback(id, feedback);
     await snapshot.refetch();
   };
+  const removeAttention = async (id: string) => {
+    await updateAttention(id, "not-relevant");
+    if (attentionJumpError === id) setAttentionJumpError(undefined);
+  };
   const jumpToAttention = async (id: string) => {
     try {
       await api.jumpToAttention(id);
@@ -808,11 +871,12 @@ export function NotchSurface({ locale }: { locale: Locale }) {
         }`}
       >
         <NotchAttentionQueue
-          items={attentionQueue}
+          items={visibleAttentionQueue}
           available={snapshot.data?.attentionAvailable !== false}
           jumpErrorId={attentionJumpError}
           onFeedback={(id, feedback) => void updateAttention(id, feedback)}
           onJump={(id) => void jumpToAttention(id)}
+          onRemove={(id) => void removeAttention(id)}
         />
         {visibleSessions.map((session, index) => {
           const reason =

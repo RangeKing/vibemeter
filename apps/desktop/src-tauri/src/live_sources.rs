@@ -479,52 +479,38 @@ fn parse_kimi_wire(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
 
 fn discover_zcode(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
     let mut sessions = HashMap::new();
-    {
-        let mut merge_fallback = |session: LiveSession| {
-            sessions
-                .entry(session.id.clone())
-                .and_modify(|existing: &mut LiveSession| {
-                    if existing.updated_at < session.updated_at
-                        || existing.project_label == "Unknown project"
-                    {
-                        *existing = session.clone();
-                    }
-                })
-                .or_insert(session);
+    let snapshots_root = root.join("v2/sessions");
+    for path in recent_files(&snapshots_root, 5, |path| {
+        path.extension().and_then(|value| value.to_str()) == Some("json")
+    }) {
+        let Some(snapshot) = read_json(&path, MAX_SNAPSHOT_BYTES) else {
+            continue;
         };
-        let snapshots_root = root.join("v2/sessions");
-        for path in recent_files(&snapshots_root, 5, |path| {
-            path.extension().and_then(|value| value.to_str()) == Some("json")
+        let Some(session) = zcode_snapshot_session(&snapshot, &path, now) else {
+            continue;
+        };
+        merge_discovered_session(&mut sessions, session);
+    }
+    let index = root.join("v2/tasks-index.sqlite");
+    for session in discover_zcode_tasks(&index, now) {
+        merge_discovered_session(&mut sessions, session);
+    }
+    for directory in [root.join("cli/debug"), root.join("cli/rollout")] {
+        for path in recent_files(&directory, 3, |path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.starts_with("model-io-") && name.ends_with(".jsonl"))
         }) {
-            let Some(snapshot) = read_json(&path, MAX_SNAPSHOT_BYTES) else {
+            let Some(session) = zcode_model_io_session(&path, now) else {
                 continue;
             };
-            let Some(session) = zcode_snapshot_session(&snapshot, &path, now) else {
-                continue;
-            };
-            merge_fallback(session);
-        }
-        let index = root.join("v2/tasks-index.sqlite");
-        for session in discover_zcode_tasks(&index, now) {
-            merge_fallback(session);
-        }
-        for directory in [root.join("cli/debug"), root.join("cli/rollout")] {
-            for path in recent_files(&directory, 3, |path| {
-                path.file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| name.starts_with("model-io-") && name.ends_with(".jsonl"))
-            }) {
-                let Some(session) = zcode_model_io_session(&path, now) else {
-                    continue;
-                };
-                merge_fallback(session);
-            }
+            merge_discovered_session(&mut sessions, session);
         }
     }
 
-    // ZCode 3.6+ records the authoritative current turn lifecycle in the CLI
-    // database. The task index and model-I/O logs can still say "completed"
-    // while the same session has already started another turn.
+    // ZCode 3.6+ records the current turn lifecycle in the CLI database. Use
+    // the freshest signal across all local stores: a model-I/O record can be
+    // newer than a stale CLI error when the agent continues the same turn.
     for mut session in discover_zcode_cli_sessions(&root.join("cli/db/db.sqlite"), now) {
         if let Some(fallback) = sessions.get(&session.id) {
             if session.project_label == "Unknown project" {
@@ -534,9 +520,39 @@ fn discover_zcode(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
                 session.conversation_title = fallback.conversation_title.clone();
             }
         }
-        sessions.insert(session.id.clone(), session);
+        merge_discovered_session(&mut sessions, session);
     }
     sessions.into_values().collect()
+}
+
+fn merge_discovered_session(sessions: &mut HashMap<String, LiveSession>, session: LiveSession) {
+    sessions
+        .entry(session.id.clone())
+        .and_modify(|existing: &mut LiveSession| {
+            if timestamp_is_after(&session.updated_at, &existing.updated_at) {
+                let project_label = if session.project_label == "Unknown project" {
+                    existing.project_label.clone()
+                } else {
+                    session.project_label.clone()
+                };
+                let conversation_title = session
+                    .conversation_title
+                    .clone()
+                    .or_else(|| existing.conversation_title.clone());
+                *existing = session.clone();
+                existing.project_label = project_label;
+                existing.conversation_title = conversation_title;
+            } else if existing.project_label == "Unknown project"
+                && session.project_label != "Unknown project"
+            {
+                existing.project_label = session.project_label.clone();
+                existing.conversation_title = session
+                    .conversation_title
+                    .clone()
+                    .or_else(|| existing.conversation_title.clone());
+            }
+        })
+        .or_insert(session);
 }
 
 fn zcode_snapshot_session(
@@ -867,9 +883,9 @@ fn zcode_model_io_session(path: &Path, now: DateTime<Utc>) -> Option<LiveSession
         .get("sessionId")
         .and_then(Value::as_str)
         .filter(|value| valid_identifier(value))?;
-    let status = if record.get("error").is_some() {
+    let status = if record.get("error").is_some_and(value_is_present_error) {
         "error"
-    } else if record.get("response").is_some() {
+    } else if record.get("response").is_some_and(|value| !value.is_null()) {
         "completed"
     } else {
         "running"
@@ -995,6 +1011,17 @@ fn runtime_signal(
         action_label: action_label.into(),
         occurred_at,
         started_at,
+    }
+}
+
+fn value_is_present_error(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+        Value::Number(_) => true,
     }
 }
 
@@ -1355,6 +1382,126 @@ mod tests {
         assert_eq!(session.status, "completed");
         assert_eq!(session.phase, "completed");
         assert_eq!(session.actions[0].label, "Completed");
+    }
+
+    #[test]
+    fn zcode_model_io_does_not_treat_null_error_as_blocking() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("model-io.jsonl");
+        let now = Utc::now();
+        let record = serde_json::json!({
+            "type": "model_io",
+            "sessionId": "zcode-session-active",
+            "timestamp": now.to_rfc3339(),
+            "error": null,
+            "response": null,
+            "request": {}
+        });
+        fs::write(&path, format!("{}\n", record)).expect("model io");
+
+        let session = zcode_model_io_session(&path, now).expect("active model io");
+        assert_eq!(session.status, "running");
+        assert_eq!(session.phase, "thinking");
+    }
+
+    #[test]
+    fn zcode_model_io_keeps_a_real_error_blocking() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("model-io.jsonl");
+        let now = Utc::now();
+        let record = serde_json::json!({
+            "type": "model_io",
+            "sessionId": "zcode-session-error",
+            "timestamp": now.to_rfc3339(),
+            "error": {"kind": "blocked"},
+            "response": null,
+            "request": {}
+        });
+        fs::write(&path, format!("{}\n", record)).expect("model io");
+
+        let session = zcode_model_io_session(&path, now).expect("error model io");
+        assert_eq!(session.status, "error");
+        assert_eq!(session.phase, "error");
+    }
+
+    #[test]
+    fn zcode_fresh_model_io_progress_overrides_a_stale_cli_error() {
+        let directory = tempdir().expect("tempdir");
+        let root = directory.path();
+        let now = DateTime::parse_from_rfc3339("2026-08-18T12:00:30Z")
+            .expect("fixed clock")
+            .with_timezone(&Utc);
+        let session_id = "sess_zcode-recovered";
+        let model_io_at = now - chrono::Duration::seconds(1);
+        let stale_error_at = now - chrono::Duration::seconds(10);
+
+        fs::create_dir_all(root.join("cli/debug")).expect("debug directory");
+        fs::write(
+            root.join("cli/debug/model-io-recovery.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "model_io",
+                    "sessionId": session_id,
+                    "timestamp": model_io_at.to_rfc3339(),
+                    "error": null,
+                    "response": null,
+                    "request": {}
+                })
+            ),
+        )
+        .expect("model io");
+
+        fs::create_dir_all(root.join("cli/db")).expect("cli database directory");
+        let cli = Connection::open(root.join("cli/db/db.sqlite")).expect("cli database");
+        cli.execute_batch(
+            "CREATE TABLE session(
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                path TEXT,
+                title TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL
+             );
+             CREATE TABLE turn_usage(
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                completed_at INTEGER,
+                tool_call_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(session_id, turn_id)
+             );",
+        )
+        .expect("cli schema");
+        cli.execute(
+            "INSERT INTO session(id, directory, path, title, time_created, time_updated)
+             VALUES(?1, '/tmp/zcode-project', '', 'Recovered session', ?2, ?3)",
+            rusqlite::params![
+                session_id,
+                (now - chrono::Duration::seconds(30)).timestamp_millis(),
+                stale_error_at.timestamp_millis()
+            ],
+        )
+        .expect("cli session");
+        cli.execute(
+            "INSERT INTO turn_usage(session_id, turn_id, status, started_at, completed_at)
+             VALUES(?1, 'turn-error', 'error', ?2, ?3)",
+            rusqlite::params![
+                session_id,
+                (now - chrono::Duration::seconds(30)).timestamp_millis(),
+                stale_error_at.timestamp_millis()
+            ],
+        )
+        .expect("stale cli error");
+
+        let sessions = discover_zcode(root, now);
+        let session = sessions
+            .into_iter()
+            .find(|session| session.source_session_id == session_id)
+            .expect("ZCode session");
+        assert_eq!(session.status, "running");
+        assert_eq!(session.updated_at, model_io_at.to_rfc3339());
     }
 
     #[test]
