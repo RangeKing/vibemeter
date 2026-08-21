@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, render } from "@testing-library/react";
+import officialGrokIconUrl from "@lobehub/icons-static-svg/icons/grok.svg";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentIcon, agentIconUrl } from "./AgentIcon";
 import { AgentBadge } from "./ui";
@@ -25,7 +26,7 @@ describe("Agent brand icons", () => {
     expect(urls.every(Boolean)).toBe(true);
     expect(new Set(urls).size).toBe(AGENTS.length);
     expect(agentIconUrl("deepseek-harness")).toContain("DeepSeek");
-    expect(agentIconUrl("grok-build")).toContain("aria-label");
+    expect(agentIconUrl("grok-build")).toBe(officialGrokIconUrl);
     expect(agentIconUrl("zcode")).toContain("ZCode");
     expect(agentIconUrl("deepseek-harness")).not.toBe(agentIconUrl("zcode"));
   });
