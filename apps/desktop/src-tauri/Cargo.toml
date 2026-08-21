@@ -1,6 +1,6 @@
 [package]
 name = "vibemeter"
-version = "0.4.2"
+version = "0.4.3"
 description = "Track your agents. Discover your coding type."
 authors = ["VibeMeter"]
 edition = "2024"
