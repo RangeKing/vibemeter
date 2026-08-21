@@ -43,6 +43,9 @@ jobs:
         with:
           components: clippy,rustfmt
 
+      - name: Refresh official API pricing
+        run: npm run pricing:update
+
       - name: Install dependencies
         run: npm ci
 
@@ -100,6 +103,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Refresh official API pricing
+        run: npm run pricing:update
 
       - name: Install dependencies
         run: npm ci

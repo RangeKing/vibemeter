@@ -1,5 +1,6 @@
 use crate::adapters::{
-    claude, codex, common, cursor, database_history, deepseek_harness, kimi, openclaw, zcode,
+    claude, codex, common, cursor, database_history, deepseek_harness, grok_build, kimi, openclaw,
+    zcode,
 };
 use crate::database::Database;
 use crate::errors::AppResult;
@@ -35,6 +36,7 @@ enum SourceAdapter {
     Codex,
     Cursor,
     DeepSeekHarness,
+    GrokBuild,
     Kimi,
     OpenClaw,
     ZCode,
@@ -211,6 +213,7 @@ fn run_index(
         AgentKind::ClaudeCode,
         AgentKind::Codex,
         AgentKind::DeepSeekHarness,
+        AgentKind::GrokBuild,
         AgentKind::KimiCode,
         AgentKind::Cursor,
         AgentKind::OpenClaw,
@@ -283,6 +286,8 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
 
     let fallback_id = if source.adapter == SourceAdapter::Kimi {
         kimi_source_identity(&source.path).unwrap_or_else(|| file_hash.clone())
+    } else if source.adapter == SourceAdapter::GrokBuild {
+        grok_source_identity(&source.path).unwrap_or_else(|| file_hash.clone())
     } else {
         source
             .path
@@ -293,7 +298,7 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
     };
     let can_resume = !matches!(
         source.adapter,
-        SourceAdapter::ZCode | SourceAdapter::DeepSeekHarness
+        SourceAdapter::ZCode | SourceAdapter::DeepSeekHarness | SourceAdapter::GrokBuild
     ) && !force
         && cursor.as_ref().is_some_and(|cursor| {
             cursor.source_size < source.size
@@ -313,6 +318,9 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
     if source.adapter == SourceAdapter::Kimi && state.project_root.is_none() {
         restore_kimi_session_context(&source.path, &mut state);
     }
+    if source.adapter == SourceAdapter::GrokBuild {
+        grok_build::restore_session_context(&source.path, &mut state);
+    }
     if !can_resume {
         state.replace_source_record_ids = true;
     }
@@ -320,7 +328,7 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
         && state.project_root.is_none()
         && matches!(
             source.adapter,
-            SourceAdapter::Kimi | SourceAdapter::OpenClaw
+            SourceAdapter::Kimi | SourceAdapter::OpenClaw | SourceAdapter::GrokBuild
         )
     {
         restore_transient_project_context(
@@ -431,7 +439,10 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
                 if can_resume
                     && matches!(
                         source.adapter,
-                        SourceAdapter::Kimi | SourceAdapter::OpenClaw | SourceAdapter::ZCode
+                        SourceAdapter::Kimi
+                            | SourceAdapter::OpenClaw
+                            | SourceAdapter::ZCode
+                            | SourceAdapter::GrokBuild
                     )
                     && database.history_record_id_exists(
                         &file_hash,
@@ -448,6 +459,7 @@ fn parse_source_file(database: &Database, source: &SourceFile, force: bool) -> A
                         deepseek_harness::parse_record(&mut state, &record)
                     }
                     SourceAdapter::Kimi => kimi::parse_record(&mut state, &record),
+                    SourceAdapter::GrokBuild => grok_build::parse_record(&mut state, &record),
                     SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, &record),
                     SourceAdapter::ZCode => zcode::parse_record(&mut state, &record),
                 }
@@ -606,6 +618,21 @@ fn restore_kimi_session_context(path: &Path, state: &mut ParseState) {
     );
 }
 
+fn grok_source_identity(path: &Path) -> Option<String> {
+    let summary = path.parent()?.join("summary.json");
+    let content = fs::read(summary).ok()?;
+    if content.len() > MAX_RECORD_BYTES {
+        return None;
+    }
+    serde_json::from_slice::<Value>(&content)
+        .ok()?
+        .get("info")
+        .and_then(|info| info.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
 fn collect_jsonl_files(
     root: &Path,
     agent: AgentKind,
@@ -621,6 +648,10 @@ fn collect_jsonl_files(
             continue;
         }
         let extension = entry.path().extension().and_then(|value| value.to_str());
+        let file_name = entry.file_name().to_string_lossy();
+        if adapter == SourceAdapter::GrokBuild && file_name != "updates.jsonl" {
+            continue;
+        }
         let is_zcode_json = adapter == SourceAdapter::ZCode && extension == Some("json");
         let is_deepseek_log = adapter == SourceAdapter::DeepSeekHarness
             && entry
@@ -631,7 +662,6 @@ fn collect_jsonl_files(
         if !is_jsonl && !is_zcode_json && !is_deepseek_log {
             continue;
         }
-        let file_name = entry.file_name().to_string_lossy();
         if adapter == SourceAdapter::ZCode
             && ((is_zcode_json && file_name.ends_with(".deleted.json"))
                 || (is_jsonl && !file_name.starts_with("model-io-")))
@@ -720,6 +750,11 @@ fn source_roots() -> Vec<SourceRoot> {
         adapter: SourceAdapter::Kimi,
     });
     roots.push(SourceRoot {
+        agent: AgentKind::GrokBuild,
+        path: home.join(".grok/sessions"),
+        adapter: SourceAdapter::GrokBuild,
+    });
+    roots.push(SourceRoot {
         agent: AgentKind::Cursor,
         path: home.join(".cursor/projects"),
         adapter: SourceAdapter::Cursor,
@@ -804,6 +839,7 @@ fn agent_kind_from_name(value: &str) -> Option<AgentKind> {
         "codex" => Some(AgentKind::Codex),
         "deepseek-harness" => Some(AgentKind::DeepSeekHarness),
         "kimi-code" => Some(AgentKind::KimiCode),
+        "grok-build" => Some(AgentKind::GrokBuild),
         "cursor" => Some(AgentKind::Cursor),
         "openclaw" => Some(AgentKind::OpenClaw),
         "hermes" => Some(AgentKind::Hermes),
@@ -831,6 +867,7 @@ fn read_content_preview_from_source(
             SourceAdapter::Cursor => cursor::parse_record(&mut state, record),
             SourceAdapter::DeepSeekHarness => deepseek_harness::parse_record(&mut state, record),
             SourceAdapter::Kimi => kimi::parse_record(&mut state, record),
+            SourceAdapter::GrokBuild => grok_build::parse_record(&mut state, record),
             SourceAdapter::OpenClaw => openclaw::parse_record(&mut state, record),
             SourceAdapter::ZCode => zcode::parse_record(&mut state, record),
         };

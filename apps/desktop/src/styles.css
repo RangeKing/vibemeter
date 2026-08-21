@@ -54,6 +54,7 @@
   --agent-hermes: #b9439d;
   --agent-zcode: #c98400;
   --agent-deepseek: #008c63;
+  --agent-grok: #4a6cf7;
   --trajectory-input: #168a68;
   --trajectory-agent: #6b4fd8;
   --trajectory-tools: #d36b16;
@@ -116,6 +117,7 @@
   --agent-hermes: #e86ccb;
   --agent-zcode: #ffc247;
   --agent-deepseek: #34d399;
+  --agent-grok: #7c93ff;
   --trajectory-input: #4dd3a0;
   --trajectory-agent: #a58bff;
   --trajectory-tools: #f5a238;
@@ -171,6 +173,7 @@
     --agent-hermes: #e86ccb;
     --agent-zcode: #ffc247;
     --agent-deepseek: #34d399;
+    --agent-grok: #7c93ff;
     --trajectory-input: #4dd3a0;
     --trajectory-agent: #a58bff;
     --trajectory-tools: #f5a238;

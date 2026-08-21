@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.10.0";
+pub const PARSER_VERSION: &str = "6.11.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -11,6 +11,7 @@ pub enum AgentKind {
     Codex,
     DeepSeekHarness,
     KimiCode,
+    GrokBuild,
     Cursor,
     OpenClaw,
     Hermes,
@@ -24,6 +25,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::DeepSeekHarness => "deepseek-harness",
             Self::KimiCode => "kimi-code",
+            Self::GrokBuild => "grok-build",
             Self::Cursor => "cursor",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
@@ -239,6 +241,8 @@ pub struct ParseState {
     pub last_claude_message_id: Option<String>,
     pub last_claude_message_usage: TokenUsage,
     #[serde(default)]
+    pub previous_grok_total: TokenUsage,
+    #[serde(default)]
     pub last_zcode_user_fingerprint: Option<String>,
     #[serde(default)]
     pub last_zcode_user_position: Option<usize>,
@@ -321,6 +325,7 @@ impl ParseState {
             previous_codex_total: TokenUsage::default(),
             last_claude_message_id: None,
             last_claude_message_usage: TokenUsage::default(),
+            previous_grok_total: TokenUsage::default(),
             last_zcode_user_fingerprint: None,
             last_zcode_user_position: None,
             seen_tool_ids: HashSet::new(),

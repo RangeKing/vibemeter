@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
@@ -96,6 +96,21 @@ function renderDataPage() {
   );
 }
 
+function source(agent: string): SourceStatus {
+  return {
+    agent,
+    available: true,
+    selected: true,
+    capabilityLevel: "full",
+    liveCapability: "exact",
+    parserVersion: "test-parser",
+    sessionCount: 1,
+    status: "ready",
+    warningCount: 0,
+    pathLabel: "test",
+  };
+}
+
 describe("DataPage query transition", () => {
   beforeAll(async () => {
     Object.defineProperty(window, "matchMedia", {
@@ -184,5 +199,40 @@ describe("DataPage query transition", () => {
       const chart = chartProps.find((props) => props.ariaLabel === "工作流足迹");
       expect(chart?.option?.grid?.right).toBeGreaterThanOrEqual(48);
     });
+  });
+
+  it("updates the API-equivalent cost when an agent is filtered out", async () => {
+    const usage = {
+      inputTokens: 1,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cacheWrite1hTokens: 0,
+      reasoningTokens: 0,
+    };
+    overview.mockResolvedValue({
+      ...emptyOverview,
+      totals: { ...emptyOverview.totals, sessionCount: 2, estimatedCostUsd: 99 },
+      agents: [
+        { id: "codex", label: "codex", value: 1, provenance: "observed" },
+        { id: "claude-code", label: "claude-code", value: 1, provenance: "observed" },
+      ],
+      daily: [
+        { date: "2026-08-10", agent: "codex", model: "gpt-5.4", usage, activeSeconds: 1, sessionCount: 1, toolCalls: 0, errors: 0, estimatedCostUsd: 10 },
+        { date: "2026-08-10", agent: "claude-code", model: "claude-sonnet-4-6", usage, activeSeconds: 1, sessionCount: 1, toolCalls: 0, errors: 0, estimatedCostUsd: 3 },
+      ],
+    });
+    sources.mockResolvedValue([source("codex"), source("claude-code")]);
+
+    renderDataPage();
+
+    const costLabel = await screen.findByText("API 等价成本估算");
+    const costMetric = costLabel.parentElement;
+    expect(costMetric?.textContent).toContain("US$13.00");
+
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+
+    await waitFor(() => expect(costMetric?.textContent).toContain("US$3.00"));
+    expect(costMetric?.textContent).not.toContain("US$13.00");
   });
 });

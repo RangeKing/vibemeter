@@ -1139,7 +1139,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
 
 fn history_evidence_coverage(agent: &str) -> Option<&'static str> {
     match agent {
-        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode" => {
+        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "grok-build" | "zcode" => {
             Some("full-history")
         }
         "cursor" | "openclaw" | "hermes" => Some("partial-history"),
@@ -4391,7 +4391,7 @@ impl Database {
         Ok(OverviewResponse {
             range: range.into(),
             generated_at: Utc::now().to_rfc3339(),
-            pricing_version: crate::pricing::PRICING_VERSION.into(),
+            pricing_version: crate::pricing::pricing_version().into(),
             totals,
             daily,
             hourly,
@@ -7602,6 +7602,7 @@ fn stored_agent_kind(agent: &str) -> Option<AgentKind> {
         "codex" => Some(AgentKind::Codex),
         "deepseek-harness" => Some(AgentKind::DeepSeekHarness),
         "kimi-code" => Some(AgentKind::KimiCode),
+        "grok-build" => Some(AgentKind::GrokBuild),
         "cursor" => Some(AgentKind::Cursor),
         "openclaw" => Some(AgentKind::OpenClaw),
         "hermes" => Some(AgentKind::Hermes),
@@ -7643,14 +7644,19 @@ fn query_daily(connection: &Connection, start_date: &str) -> AppResult<Vec<Daily
                 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                 SUM(cache_write_tokens), SUM(cache_write_1h_tokens), SUM(reasoning_tokens),
                 SUM(active_seconds), COUNT(DISTINCT session_id), SUM(tool_calls),
-                SUM(errors), SUM(estimated_cost_usd)
+                SUM(errors), SUM(estimated_cost_usd),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN input_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN output_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_read_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_write_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_write_1h_tokens ELSE 0 END),0)
          FROM daily_rows
          GROUP BY date, agent, model ORDER BY date, agent, model",
     )?;
     Ok(statement
         .query_map(
             params![start_date, format!("{start_date}T00:00:00Z")],
-            daily_from_row,
+            daily_with_recomputed_cost,
         )?
         .collect::<Result<Vec<_>, _>>()?)
 }
@@ -7920,7 +7926,7 @@ fn query_task_for_session(
 
 fn capabilities_for_agent(agent: &str) -> Vec<String> {
     let capabilities = match agent {
-        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode" => &[
+        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "grok-build" | "zcode" => &[
             "session_timestamps",
             "model_name",
             "token_usage",
@@ -7962,6 +7968,25 @@ fn daily_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DailyUsagePoint> 
         errors: read_u64(row, 12)?,
         estimated_cost_usd: row.get(13)?,
     })
+}
+
+fn daily_with_recomputed_cost(row: &rusqlite::Row<'_>) -> rusqlite::Result<DailyUsagePoint> {
+    let mut point = daily_from_row(row)?;
+    let missing_usage = TokenUsage {
+        input_tokens: read_u64(row, 14)?,
+        output_tokens: read_u64(row, 15)?,
+        cache_read_tokens: read_u64(row, 16)?,
+        cache_write_tokens: read_u64(row, 17)?,
+        cache_write_1h_tokens: read_u64(row, 18)?,
+        reasoning_tokens: 0,
+    };
+    if missing_usage.total() > 0
+        && let Some(agent) = stored_agent_kind(&point.agent)
+        && let Some(cost) = crate::pricing::estimate_cost(agent, &point.model, &missing_usage)
+    {
+        point.estimated_cost_usd = Some(point.estimated_cost_usd.unwrap_or(0.0) + cost);
+    }
+    Ok(point)
 }
 
 fn query_usage_distribution(
@@ -9287,6 +9312,7 @@ mod concurrency_tests {
                 ("codex", "full", "exact", PARSER_VERSION),
                 ("deepseek-harness", "full", "exact", PARSER_VERSION),
                 ("kimi-code", "full", "exact", PARSER_VERSION),
+                ("grok-build", "full", "exact", PARSER_VERSION),
                 ("zcode", "full", "exact", PARSER_VERSION),
                 ("cursor", "partial", "none", PARSER_VERSION),
                 ("openclaw", "partial", "none", PARSER_VERSION),
@@ -13307,6 +13333,16 @@ mod concurrency_tests {
         assert_eq!(ninety_days.estimated_cost_usd, Some(15.0));
         assert_eq!(month.cost_coverage, 1.0);
         assert_eq!(ninety_days.cost_coverage, 1.0);
+
+        let daily = query_daily(&connection, &ninety_day_start).expect("daily totals");
+        assert_eq!(daily.len(), 2);
+        assert_eq!(
+            daily
+                .iter()
+                .map(|point| point.estimated_cost_usd)
+                .collect::<Vec<_>>(),
+            vec![Some(10.0), Some(5.0)]
+        );
     }
 
     #[test]

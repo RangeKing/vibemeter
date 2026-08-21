@@ -27,11 +27,23 @@ const COMPARISON_COLORS = [
   "var(--warning)",
   "var(--agent-hermes)",
   "var(--agent-zcode)",
+  "var(--agent-grok)",
   "var(--red)",
   "var(--chart-4)",
 ];
 
 type DailyTotal = { date: string; tokens: number; activeSeconds: number; sessions: number };
+
+export function estimatedCostForPoints(points: DailyUsagePoint[]): number | undefined {
+  let total = 0;
+  let hasCost = false;
+  for (const point of points) {
+    if (point.estimatedCostUsd === undefined) continue;
+    total += point.estimatedCostUsd;
+    hasCost = true;
+  }
+  return hasCost ? total : undefined;
+}
 
 function durationParts(seconds: number) {
   const safeSeconds = Math.max(0, Math.floor(seconds));
@@ -105,6 +117,7 @@ function agentColor(agent: string, colors: ReturnType<typeof useChartColors>, fa
   if (agent === "openclaw") return colors.agent[4];
   if (agent === "hermes") return colors.agent[5];
   if (agent === "zcode") return colors.agent[6];
+  if (agent === "grok-build") return colors.agent[8];
   return colors.agent[(fallbackIndex + 3) % colors.agent.length];
 }
 
@@ -242,6 +255,7 @@ export function DataPage({ locale }: { locale: Locale }) {
   const ledgerCacheTokens = cacheTokenTotal(ledgerUsage);
   const ledgerSeconds = filteredDaily.reduce((sum, point) => sum + point.activeSeconds, 0);
   const ledgerDays = new Set(filteredDaily.filter((point) => tokenTotal(point.usage) > 0 || point.sessionCount > 0).map((point) => point.date)).size;
+  const ledgerCost = estimatedCostForPoints(filteredDaily);
   const activeDuration = durationParts(ledgerSeconds || data.totals.activeSeconds);
   const toggleAgent = (agent: string) => {
     setAgentFilter((current) => {
@@ -319,7 +333,7 @@ export function DataPage({ locale }: { locale: Locale }) {
           </div>
           <small className="data-token-footnote" title={t("data.localTokenFootnote")}>{t("data.localTokenFootnote")}</small>
         </div>
-        <div className="cost"><span>{t("metrics.cost")}</span><strong>{data.totals.estimatedCostUsd !== undefined ? formatCurrency(data.totals.estimatedCostUsd, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
+        <div className="cost"><span>{t("metrics.cost")}</span><strong>{ledgerCost !== undefined ? formatCurrency(ledgerCost, locale) : t("metrics.unavailable")}</strong><small>{t("data.observedLocally")}</small></div>
         <div><span>{t("metrics.activeDays")}</span><strong>{formatCompact(ledgerDays || data.totals.activeDays, locale)}</strong><small>{t("data.observedLocally")}</small></div>
       </section>
 

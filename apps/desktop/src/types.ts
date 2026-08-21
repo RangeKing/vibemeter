@@ -246,7 +246,7 @@ export interface WorkPulse {
 export interface LiveSession {
   id: string;
   sourceSessionId: string;
-  agent: "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode";
+  agent: "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "grok-build" | "zcode";
   projectLabel: string;
   conversationTitle?: string;
   status: "waiting" | "error" | "running" | "paused" | "idle" | "completed";

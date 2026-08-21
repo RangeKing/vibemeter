@@ -1,0 +1,614 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-21T07:48:35Z",
+  "sources": [
+    {
+      "provider": "openai",
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "sha256": "dfa208624c7cb3d8635a04e766ab420fbaf7b3f637ef145adb6f4bcd68bfaf65",
+      "modelCount": 6
+    },
+    {
+      "provider": "anthropic",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "sha256": "363a9878892f76b77f0b14909e7857469c1e9b9299c1e4d9e74708cb68c145fc",
+      "modelCount": 15
+    },
+    {
+      "provider": "deepseek",
+      "url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "sha256": "1ccc6df3da4fea4df677f20538b6195f881e33786e227e478d09b3b6363c796d",
+      "modelCount": 2
+    },
+    {
+      "provider": "kimi",
+      "url": "https://platform.kimi.com/docs/pricing/chat",
+      "sha256": "50c640d1c207323028c28dbe3904475ad811952e032073a47c859abcd831274a",
+      "modelCount": 4
+    },
+    {
+      "provider": "zai",
+      "url": "https://docs.z.ai/guides/overview/pricing",
+      "sha256": "ad41e859a97dfca4965411e6b4a1ecff89ec6f8c62f6d514960a1152138635bb",
+      "modelCount": 19
+    },
+    {
+      "provider": "xai",
+      "url": "https://docs.x.ai/developers/models",
+      "sha256": "1a5f881287d12db37c8ddaad4f2c4619f66c88f981e96333bea647fdd83b6f08",
+      "modelCount": 7
+    },
+    {
+      "provider": "cursor",
+      "url": "https://cursor.com/docs/models-and-pricing",
+      "sha256": "2f14569130a49be716ead3ff7891d391a64920cf40974ec82714d81e63a9fd97",
+      "modelCount": 2
+    }
+  ],
+  "models": [
+    {
+      "name": "kimi-k2-5",
+      "aliases": [],
+      "currency": "CNY",
+      "input": 4.0,
+      "cacheRead": 0.7,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 21.0
+    },
+    {
+      "name": "kimi-k2-6",
+      "aliases": [],
+      "currency": "CNY",
+      "input": 6.5,
+      "cacheRead": 1.1,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 27.0
+    },
+    {
+      "name": "kimi-k2-7-code",
+      "aliases": [],
+      "currency": "CNY",
+      "input": 6.5,
+      "cacheRead": 1.3,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 27.0
+    },
+    {
+      "name": "kimi-k3",
+      "aliases": [],
+      "currency": "CNY",
+      "input": 20.0,
+      "cacheRead": 2.0,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 100.0
+    },
+    {
+      "name": "claude-fable-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 10.0,
+      "cacheRead": 1.0,
+      "cacheWrite": 12.5,
+      "cacheWrite1h": 20.0,
+      "output": 50.0
+    },
+    {
+      "name": "claude-haiku-3-5-retired-except-on-bedrock-and-google-cloud",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.8,
+      "cacheRead": 0.08,
+      "cacheWrite": 1.0,
+      "cacheWrite1h": 1.6,
+      "output": 4.0
+    },
+    {
+      "name": "claude-haiku-4-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.0,
+      "cacheRead": 0.1,
+      "cacheWrite": 1.25,
+      "cacheWrite1h": 2.0,
+      "output": 5.0
+    },
+    {
+      "name": "claude-mythos-5-limited-availability",
+      "aliases": [],
+      "currency": "USD",
+      "input": 10.0,
+      "cacheRead": 1.0,
+      "cacheWrite": 12.5,
+      "cacheWrite1h": 20.0,
+      "output": 50.0
+    },
+    {
+      "name": "claude-opus-4-1-retired-except-on-bedrock-and-google-cloud",
+      "aliases": [],
+      "currency": "USD",
+      "input": 15.0,
+      "cacheRead": 1.5,
+      "cacheWrite": 18.75,
+      "cacheWrite1h": 30.0,
+      "output": 75.0
+    },
+    {
+      "name": "claude-opus-4-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "cacheWrite1h": 10.0,
+      "output": 25.0
+    },
+    {
+      "name": "claude-opus-4-6",
+      "aliases": [],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "cacheWrite1h": 10.0,
+      "output": 25.0
+    },
+    {
+      "name": "claude-opus-4-7",
+      "aliases": [],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "cacheWrite1h": 10.0,
+      "output": 25.0
+    },
+    {
+      "name": "claude-opus-4-8",
+      "aliases": [],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "cacheWrite1h": 10.0,
+      "output": 25.0
+    },
+    {
+      "name": "claude-opus-4-retired-except-on-google-cloud",
+      "aliases": [],
+      "currency": "USD",
+      "input": 15.0,
+      "cacheRead": 1.5,
+      "cacheWrite": 18.75,
+      "cacheWrite1h": 30.0,
+      "output": 75.0
+    },
+    {
+      "name": "claude-opus-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "cacheWrite1h": 10.0,
+      "output": 25.0
+    },
+    {
+      "name": "claude-sonnet-4-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 3.0,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "cacheWrite1h": 6.0,
+      "output": 15.0
+    },
+    {
+      "name": "claude-sonnet-4-6",
+      "aliases": [],
+      "currency": "USD",
+      "input": 3.0,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "cacheWrite1h": 6.0,
+      "output": 15.0
+    },
+    {
+      "name": "claude-sonnet-4-retired-except-on-bedrock-and-google-cloud",
+      "aliases": [],
+      "currency": "USD",
+      "input": 3.0,
+      "cacheRead": 0.3,
+      "cacheWrite": 3.75,
+      "cacheWrite1h": 6.0,
+      "output": 15.0
+    },
+    {
+      "name": "claude-sonnet-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 2.0,
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "cacheWrite1h": 4.0,
+      "output": 10.0
+    },
+    {
+      "name": "composer-2-5",
+      "aliases": [
+        "composer-2.5"
+      ],
+      "currency": "USD",
+      "input": 0.5,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.5
+    },
+    {
+      "name": "composer-2-5-fast",
+      "aliases": [
+        "composer-2.5-fast"
+      ],
+      "currency": "USD",
+      "input": 3.0,
+      "cacheRead": 0.5,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 15.0
+    },
+    {
+      "name": "deepseek-v4-flash",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.22,
+      "cacheRead": 0.007,
+      "cacheWrite": 0.22,
+      "cacheWrite1h": null,
+      "output": 0.66
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.66,
+      "cacheRead": 0.022,
+      "cacheWrite": 0.66,
+      "cacheWrite1h": null,
+      "output": 1.98
+    },
+    {
+      "name": "glm-4-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.6,
+      "cacheRead": 0.11,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.2
+    },
+    {
+      "name": "glm-4-5-air",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.2,
+      "cacheRead": 0.03,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 1.1
+    },
+    {
+      "name": "glm-4-5-airx",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.1,
+      "cacheRead": 0.22,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.5
+    },
+    {
+      "name": "glm-4-5-flash",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.0,
+      "cacheRead": 0.0,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.0
+    },
+    {
+      "name": "glm-4-5-x",
+      "aliases": [],
+      "currency": "USD",
+      "input": 2.2,
+      "cacheRead": 0.45,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 8.9
+    },
+    {
+      "name": "glm-4-5v",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.6,
+      "cacheRead": 0.11,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 1.8
+    },
+    {
+      "name": "glm-4-6",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.6,
+      "cacheRead": 0.11,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.2
+    },
+    {
+      "name": "glm-4-6v",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.3,
+      "cacheRead": 0.05,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.9
+    },
+    {
+      "name": "glm-4-6v-flash",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.0,
+      "cacheRead": 0.0,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.0
+    },
+    {
+      "name": "glm-4-6v-flashx",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.04,
+      "cacheRead": 0.004,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.4
+    },
+    {
+      "name": "glm-4-7",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.6,
+      "cacheRead": 0.11,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.2
+    },
+    {
+      "name": "glm-4-7-flash",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.0,
+      "cacheRead": 0.0,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.0
+    },
+    {
+      "name": "glm-4-7-flashx",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.07,
+      "cacheRead": 0.01,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.4
+    },
+    {
+      "name": "glm-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.0,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 3.2
+    },
+    {
+      "name": "glm-5-1",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.4,
+      "cacheRead": 0.26,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.4
+    },
+    {
+      "name": "glm-5-2",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.4,
+      "cacheRead": 0.26,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.4
+    },
+    {
+      "name": "glm-5-3",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.4,
+      "cacheRead": 0.26,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.4
+    },
+    {
+      "name": "glm-5-turbo",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.2,
+      "cacheRead": 0.24,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.0
+    },
+    {
+      "name": "glm-5v-turbo",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.2,
+      "cacheRead": 0.24,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.0
+    },
+    {
+      "name": "gpt-5-6-cyber",
+      "aliases": [],
+      "currency": "USD",
+      "input": 12.5,
+      "cacheRead": 1.25,
+      "cacheWrite": 15.625,
+      "cacheWrite1h": null,
+      "output": 75.0
+    },
+    {
+      "name": "gpt-5-6-luna",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.2,
+      "cacheRead": 0.02,
+      "cacheWrite": 0.25,
+      "cacheWrite1h": null,
+      "output": 1.2
+    },
+    {
+      "name": "gpt-5-6-sol",
+      "aliases": [
+        "gpt-5-6"
+      ],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": 6.25,
+      "cacheWrite1h": null,
+      "output": 30.0
+    },
+    {
+      "name": "gpt-5-6-terra",
+      "aliases": [],
+      "currency": "USD",
+      "input": 2.0,
+      "cacheRead": 0.2,
+      "cacheWrite": 2.5,
+      "cacheWrite1h": null,
+      "output": 12.0
+    },
+    {
+      "name": "grok-4-20-0309-non-reasoning",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.25,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.5
+    },
+    {
+      "name": "grok-4-20-0309-reasoning",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.25,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.5
+    },
+    {
+      "name": "grok-4-20-multi-agent-0309",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.25,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.5
+    },
+    {
+      "name": "grok-4-3",
+      "aliases": [
+        "grok-4-3-latest"
+      ],
+      "currency": "USD",
+      "input": 1.25,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.5
+    },
+    {
+      "name": "grok-4-5",
+      "aliases": [
+        "grok-4-5-latest"
+      ],
+      "currency": "USD",
+      "input": 2.0,
+      "cacheRead": 0.3,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 6.0
+    },
+    {
+      "name": "grok-4-6",
+      "aliases": [],
+      "currency": "USD",
+      "input": 2.0,
+      "cacheRead": 0.5,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 6.0
+    },
+    {
+      "name": "grok-build-0-1",
+      "aliases": [
+        "grok-code-fast-1",
+        "grok-code-fast",
+        "grok-code-fast-1-0825"
+      ],
+      "currency": "USD",
+      "input": 1.0,
+      "cacheRead": 0.2,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.0
+    },
+    {
+      "name": "o4-mini-2025-04-16",
+      "aliases": [],
+      "currency": "USD",
+      "input": 100.0,
+      "cacheRead": 4.0,
+      "cacheWrite": 1.0,
+      "cacheWrite1h": null,
+      "output": 16.0
+    },
+    {
+      "name": "o4-mini-2025-04-16with-data-sharing",
+      "aliases": [],
+      "currency": "USD",
+      "input": 100.0,
+      "cacheRead": 2.0,
+      "cacheWrite": 0.5,
+      "cacheWrite1h": null,
+      "output": 8.0
+    }
+  ]
+}

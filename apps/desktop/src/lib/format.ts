@@ -75,6 +75,7 @@ export function agentName(value: string): string {
   if (value === "codex") return "Codex";
   if (value === "deepseek-harness") return "DeepSeek Harness";
   if (value === "kimi-code") return "Kimi Code";
+  if (value === "grok-build") return "Grok Build";
   if (value === "cursor") return "Cursor";
   if (value === "openclaw") return "OpenClaw";
   if (value === "hermes") return "Hermes";

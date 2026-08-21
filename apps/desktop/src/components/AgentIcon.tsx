@@ -7,6 +7,7 @@ import hermesIconUrl from "@lobehub/icons-static-svg/icons/hermesagent.svg";
 import kimiIconUrl from "@lobehub/icons-static-svg/icons/kimi.svg";
 import openClawIconUrl from "@lobehub/icons-static-svg/icons/openclaw.svg";
 import zcodeIconUrl from "../assets/providers/zcode.svg";
+import grokBuildIconUrl from "../assets/providers/grok.svg";
 
 const AGENT_ICON_URLS: Record<string, string> = {
   "claude-code": claudeCodeIconUrl,
@@ -17,6 +18,7 @@ const AGENT_ICON_URLS: Record<string, string> = {
   "kimi-code": kimiIconUrl,
   openclaw: openClawIconUrl,
   zcode: zcodeIconUrl,
+  "grok-build": grokBuildIconUrl,
 };
 
 export function agentIconUrl(agent: string): string | undefined {
