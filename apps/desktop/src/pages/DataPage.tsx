@@ -14,7 +14,7 @@ import { buildHourlyActivity, findPeakActivity } from "../lib/activity";
 import { chartTooltip, useChartColors } from "../lib/chartTheme";
 import { agentName, cacheTokenTotal, formatCompact, formatCurrency, formatDate, sumTokenUsage, tokenTotal } from "../lib/format";
 import { summarizeProviderAccountUsage } from "../lib/providerUsage";
-import { dataFilterAgents, defaultDataAgents } from "../lib/sourceStatus";
+import { dataFilterAgents, defaultDataAgents, parseDataPageAgents } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { DailyUsagePoint, HourlyUsagePoint, Locale, RangeKey } from "../types";
 
@@ -185,13 +185,18 @@ export function DataPage({ locale }: { locale: Locale }) {
     enabled: cursorDashboardEnabled,
     refetchInterval: cursorDashboardEnabled ? 30_000 : false,
   });
+  const configuredDataAgents = useMemo(
+    () => parseDataPageAgents(settings.data?.dataPageAgents),
+    [settings.data?.dataPageAgents],
+  );
   const filterAgents = useMemo(
-    () => dataFilterAgents(sources.data ?? []),
-    [sources.data],
+    () => dataFilterAgents(sources.data ?? [], configuredDataAgents),
+    [configuredDataAgents, sources.data],
   );
   const defaultAgents = useMemo(
-    () => defaultDataAgents(sources.data ?? [], overview.data?.agents ?? []),
-    [overview.data?.agents, sources.data],
+    () => defaultDataAgents(sources.data ?? [], overview.data?.agents ?? [])
+      .filter((agent) => filterAgents.includes(agent)),
+    [filterAgents, overview.data?.agents, sources.data],
   );
   useEffect(() => {
     if (!sources.data || !overview.data) return;

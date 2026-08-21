@@ -154,7 +154,7 @@ describe("DataPage query transition", () => {
     expect(screen.queryByRole("heading", { name: "工作事件" })).toBeNull();
   });
 
-  it("renders the ZCode filter before historical sessions are available", async () => {
+  it("does not render an undetected ZCode filter", async () => {
     const zcode: SourceStatus = {
       agent: "zcode",
       available: false,
@@ -172,8 +172,8 @@ describe("DataPage query transition", () => {
 
     renderDataPage();
 
-    const button = await screen.findByRole("button", { name: "ZCode" });
-    expect(button.getAttribute("aria-pressed")).toBe("false");
+    await screen.findByRole("heading", { name: /你与 Agent/ });
+    expect(screen.queryByRole("button", { name: "ZCode" })).toBeNull();
   });
 
   it("does not render a standalone Cursor usage panel", async () => {
@@ -234,5 +234,38 @@ describe("DataPage query transition", () => {
 
     await waitFor(() => expect(costMetric?.textContent).toContain("US$3.00"));
     expect(costMetric?.textContent).not.toContain("US$13.00");
+  });
+
+  it("hides undetected Agents from the top-right filter in automatic mode", async () => {
+    overview.mockResolvedValue({
+      ...emptyOverview,
+      agents: [{ id: "codex", label: "codex", value: 1, provenance: "observed" }],
+      daily: [],
+    });
+    sources.mockResolvedValue([
+      source("codex"),
+      { ...source("zcode"), available: false, sessionCount: 0, status: "not-found" },
+    ]);
+    settings.mockResolvedValue({ credentialsAllowed: "false", cursorDashboardUsage: "false", dataPageAgents: "auto" });
+
+    renderDataPage();
+
+    expect(await screen.findByRole("button", { name: "Codex" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "ZCode" })).toBeNull();
+  });
+
+  it("respects a custom Data page Agent display list", async () => {
+    overview.mockResolvedValue({
+      ...emptyOverview,
+      agents: [{ id: "grok-build", label: "grok-build", value: 1, provenance: "observed" }],
+      daily: [],
+    });
+    sources.mockResolvedValue([source("codex"), source("grok-build")]);
+    settings.mockResolvedValue({ credentialsAllowed: "false", cursorDashboardUsage: "false", dataPageAgents: '["grok-build"]' });
+
+    renderDataPage();
+
+    expect(await screen.findByRole("button", { name: "Grok Build" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Codex" })).toBeNull();
   });
 });

@@ -783,6 +783,7 @@ export interface AppSettings {
   liveHooksEnabled: string;
   notchEnabled: string;
   menuBarEnabled: string;
+  dataPageAgents: string;
 }
 
 export interface DiagnosticRetentionStatus {

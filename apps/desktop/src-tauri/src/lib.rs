@@ -30,6 +30,7 @@ use crate::models::{
     ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
+use crate::source_capabilities::source_capabilities;
 use chrono::Utc;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -664,6 +665,7 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("liveHooksEnabled", "true"),
             ("notchEnabled", "true"),
             ("menuBarEnabled", "true"),
+            ("dataPageAgents", "auto"),
             ("iaMigrationTipSeen", "false"),
         ] {
             settings.insert(
@@ -724,6 +726,16 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),
+        "dataPageAgents" => {
+            value == "auto"
+                || serde_json::from_str::<Vec<String>>(value).is_ok_and(|agents| {
+                    agents.iter().all(|agent| {
+                        source_capabilities()
+                            .iter()
+                            .any(|capability| capability.agent == agent.as_str())
+                    })
+                })
+        }
         _ => return Err(AppError::InvalidRequest("unknown setting".into())),
     };
     if valid {
@@ -1113,5 +1125,14 @@ mod startup_tests {
         assert!(validate_setting("useSystemProxy", "true").is_ok());
         assert!(validate_setting("useSystemProxy", "false").is_ok());
         assert!(validate_setting("useSystemProxy", "automatic").is_err());
+    }
+
+    #[test]
+    fn data_page_agent_setting_accepts_auto_and_known_agents_only() {
+        assert!(validate_setting("dataPageAgents", "auto").is_ok());
+        assert!(validate_setting("dataPageAgents", "[]").is_ok());
+        assert!(validate_setting("dataPageAgents", r#"["codex","grok-build"]"#).is_ok());
+        assert!(validate_setting("dataPageAgents", r#"["not-an-agent"]"#).is_err());
+        assert!(validate_setting("dataPageAgents", "not-json").is_err());
     }
 }

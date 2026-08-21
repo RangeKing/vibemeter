@@ -1,13 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowRight, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { ArrowRight, BarChart3, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import desktopPackage from "../../package.json";
-import { ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
+import { AgentBadge, ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
 import { refreshHistoryIndex } from "../lib/indexRefresh";
-import { sourceCapabilityNameGroups } from "../lib/sourceStatus";
+import { detectedDataAgents, parseDataPageAgents, serializeDataPageAgents, sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { AppSettings, DiagnosticRetentionStatus, Locale, Theme } from "../types";
 
@@ -71,12 +71,16 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const setPage = useUiStore((state) => state.setPage);
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 30_000 });
   const live = useQuery({ queryKey: ["live-snapshot"], queryFn: api.liveSnapshot, refetchInterval: 3_000 });
   const diagnostics = useQuery({ queryKey: ["diagnostic-retention"], queryFn: api.diagnosticRetention, refetchInterval: 60_000 });
   const [loginEnabled, setLoginEnabled] = useState(false);
   const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
   const [historyRefreshPending, setHistoryRefreshPending] = useState(false);
   const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
+  const [dataPageAgentsDraft, setDataPageAgentsDraft] = useState<string | null>(null);
+  const [dataPageAgentsPending, setDataPageAgentsPending] = useState(false);
+  const [agentDetectionPending, setAgentDetectionPending] = useState(false);
   const [diagnosticClearCount, setDiagnosticClearCount] = useState<number | null>(null);
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
@@ -176,12 +180,55 @@ export function SettingsPage({ locale }: { locale: Locale }) {
     onError: () => { void diagnostics.refetch(); },
   });
 
-  if (settings.isLoading || projects.isLoading) return <LoadingState />;
-  if (settings.isError || !settings.data || projects.isError) return <ErrorState retry={() => void Promise.all([settings.refetch(), projects.refetch()])} />;
+  if (settings.isLoading || projects.isLoading || sources.isLoading) return <LoadingState />;
+  if (settings.isError || !settings.data || projects.isError || sources.isError || !sources.data) return <ErrorState retry={() => void Promise.all([settings.refetch(), projects.refetch(), sources.refetch()])} />;
   const data = settings.data;
+  const detectedAgents = detectedDataAgents(sources.data);
+  const configuredDataAgents = parseDataPageAgents(dataPageAgentsDraft ?? data.dataPageAgents);
+  const autoDataPageAgents = configuredDataAgents === undefined;
+  const selectedDataAgents = new Set(configuredDataAgents ?? detectedAgents);
   const theme = data.theme as Theme;
   const diagnosticStatus = diagnostics.data;
   const diagnosticPending = setDiagnostics.isPending || clearDiagnostics.isPending;
+  const persistDataPageAgents = async (value: string) => {
+    const previous = dataPageAgentsDraft;
+    setDataPageAgentsDraft(value);
+    setDataPageAgentsPending(true);
+    try {
+      await setSetting("dataPageAgents", value);
+    } catch {
+      setDataPageAgentsDraft(previous);
+    } finally {
+      setDataPageAgentsPending(false);
+    }
+  };
+  const toggleDataPageAgent = (agent: string, checked: boolean) => {
+    const base = autoDataPageAgents ? detectedAgents : [...selectedDataAgents];
+    const next = checked ? [...base, agent] : base.filter((item) => item !== agent);
+    void persistDataPageAgents(serializeDataPageAgents(next));
+  };
+  const setDataPageAuto = (enabled: boolean) => {
+    void persistDataPageAgents(enabled ? "auto" : serializeDataPageAgents(detectedAgents));
+  };
+  const detectAgents = async () => {
+    setAgentDetectionPending(true);
+    try {
+      await refreshHistoryIndex({
+        start: api.refreshIndex,
+        status: api.indexStatus,
+        force: true,
+        completed: async () => {
+          await Promise.all([
+            sources.refetch(),
+            client.invalidateQueries({ queryKey: ["overview"] }),
+            client.invalidateQueries({ queryKey: ["settings"] }),
+          ]);
+        },
+      });
+    } finally {
+      setAgentDetectionPending(false);
+    }
+  };
   const toggleDiagnostics = (enabled: boolean) => {
     if (enabled) {
       if (window.confirm(t("settings.diagnosticEnableConfirm"))) setDiagnostics.mutate(true);
@@ -204,6 +251,33 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <div className="setting-row multiline">
             <div><strong>{t("settings.manageSources")}</strong><p>{t("settings.manageSourcesBody")}</p></div>
             <button className="button secondary" onClick={() => setPage("sources")}>{t("settings.openSources")}<ArrowRight size={13} /></button>
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <header><BarChart3 size={17} /><div><h2>{t("settings.dataPageAgents")}</h2><p>{t("settings.dataPageAgentsBody")}</p></div></header>
+          <div className="setting-row multiline">
+            <div><strong>{t("settings.dataPageAgentsAuto")}</strong><p>{t("settings.dataPageAgentsAutoBody")}</p></div>
+            <Toggle checked={autoDataPageAgents} disabled={dataPageAgentsPending} onCheckedChange={setDataPageAuto} label={t("settings.dataPageAgentsAuto")} />
+          </div>
+          <div className="setting-row multiline">
+            <div><strong>{t("settings.dataPageAgentsDetect")}</strong><p>{t("settings.dataPageAgentsDetectBody")}</p></div>
+            <button className="button secondary" disabled={agentDetectionPending} onClick={() => void detectAgents()}><RefreshCw size={13} className={agentDetectionPending ? "spin" : ""} />{agentDetectionPending ? t("settings.dataPageAgentsDetecting") : t("settings.dataPageAgentsDetect")}</button>
+          </div>
+          <div className="data-page-agent-options" role="group" aria-label={t("settings.dataPageAgentsList")}>
+            {sources.data.map((source) => (
+              <label className={`data-page-agent-option ${source.available ? "" : "is-missing"}`} key={source.agent}>
+                <AgentBadge agent={source.agent} compact />
+                <span><strong>{source.available ? t("settings.dataPageAgentsDetected") : t("settings.dataPageAgentsNotDetected")}</strong><small>{source.available ? t("settings.dataPageAgentsAvailable") : t("settings.dataPageAgentsUnavailable")}</small></span>
+                <input
+                  type="checkbox"
+                  checked={selectedDataAgents.has(source.agent)}
+                  disabled={autoDataPageAgents || !source.available || dataPageAgentsPending}
+                  aria-label={source.agent}
+                  onChange={(event) => toggleDataPageAgent(source.agent, event.target.checked)}
+                />
+              </label>
+            ))}
           </div>
         </section>
 

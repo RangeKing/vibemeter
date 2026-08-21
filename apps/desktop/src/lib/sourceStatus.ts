@@ -41,6 +41,8 @@ export function parseSourceCapabilities(registry: unknown): SourceCapabilityEntr
 
 export const sourceCapabilities = parseSourceCapabilities(capabilityRegistry);
 
+export const DATA_PAGE_AGENTS_AUTO = "auto";
+
 export function sourceNamesForLiveCapability(capability: SourceLiveCapability): string[] {
   return sourceCapabilities
     .filter((source) => source.liveCapability === capability)
@@ -94,8 +96,28 @@ export function defaultDataAgents(
     .map((source) => source.agent);
 }
 
-export function dataFilterAgents(sources: SourceStatus[]): string[] {
+export function detectedDataAgents(sources: SourceStatus[]): string[] {
   return sources
-    .filter((source) => source.available || source.liveCapability !== "none")
+    .filter((source) => source.available)
     .map((source) => source.agent);
+}
+
+export function parseDataPageAgents(value: string | undefined): string[] | undefined {
+  if (!value || value === DATA_PAGE_AGENTS_AUTO) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.some((agent) => typeof agent !== "string")) return undefined;
+    return [...new Set(parsed)];
+  } catch {
+    return undefined;
+  }
+}
+
+export function serializeDataPageAgents(agents: string[]): string {
+  return JSON.stringify([...new Set(agents)].sort());
+}
+
+export function dataFilterAgents(sources: SourceStatus[], configuredAgents?: string[]): string[] {
+  const allowed = configuredAgents ? new Set(configuredAgents) : undefined;
+  return detectedDataAgents(sources).filter((agent) => !allowed || allowed.has(agent));
 }

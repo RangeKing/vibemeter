@@ -1287,6 +1287,14 @@ body.modal-open { overflow: hidden; }
 .setting-row strong { font-size: var(--font-meta); font-weight: 680; }
 .setting-row p { max-width: 470px; margin: 4px 0 0; color: var(--muted); font-size: var(--font-meta); font-weight: 510; line-height: 1.5; }
 .setting-row select { min-width: 145px; font-size: var(--font-meta); }
+.data-page-agent-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.data-page-agent-option { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 50px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.data-page-agent-option > .agent-badge { min-width: 0; }
+.data-page-agent-option > span:not(.agent-badge) { display: grid; grid-column: 2; min-width: 0; gap: 3px; }
+.data-page-agent-option > span:not(.agent-badge) strong { overflow: hidden; color: var(--ink); font-size: var(--font-caption); text-overflow: ellipsis; white-space: nowrap; }
+.data-page-agent-option > span:not(.agent-badge) small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.data-page-agent-option > input { grid-column: 3; grid-row: 1; width: 15px; height: 15px; accent-color: var(--accent); }
+.data-page-agent-option.is-missing { opacity: .58; }
 .diagnostic-retention-row { align-items: flex-start; }
 .diagnostic-retention-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; margin: 12px 0 0; }
 .diagnostic-retention-details div { min-width: 0; }
@@ -1503,6 +1511,7 @@ html[data-surface="menubar"], html[data-surface="menubar"] body, html[data-surfa
   .vcti-page-header { align-items: flex-start; flex-direction: column; }
   .vcti-period { min-width: min(100%, 340px); }
   .vcti-reveal { grid-template-columns: 1fr; }
+  .data-page-agent-options { grid-template-columns: 1fr; }
   .vcti-reveal .vcti-avatar.large { grid-row: 1; width: min(340px, 80%); margin-top: 32px; }
   .vcti-reveal-copy { padding-top: 28px; }
   .vcti-identity-evidence > header { align-items: flex-start; flex-direction: column; gap: 2px; }
