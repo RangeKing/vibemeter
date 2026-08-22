@@ -18,6 +18,8 @@ const DEEPSEEK_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
 const ZCODE_LIVE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
 const ZCODE_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
 const ZCODE_MODEL_IO_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const GROK_LIVE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const GROK_COMPLETED_WINDOW: StdDuration = StdDuration::from_secs(90);
 const MAX_DISCOVERY_FILES: usize = 64;
 const MAX_SNAPSHOT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_JSONL_TAIL_BYTES: u64 = 768 * 1024;
@@ -41,6 +43,9 @@ pub(crate) fn discover() -> Vec<LiveSession> {
             sessions.insert(session.id.clone(), session);
         }
         for session in discover_deepseek_harness(&home.join(".dsh"), now) {
+            sessions.insert(session.id.clone(), session);
+        }
+        for session in discover_grok(&home.join(".grok"), now) {
             sessions.insert(session.id.clone(), session);
         }
         for session in discover_zcode(&zcode_root(&home), now) {
@@ -70,8 +75,212 @@ pub(crate) fn provider_available(provider: &str) -> bool {
             let root = zcode_root(&home);
             root.is_dir() || Path::new("/Applications/ZCode.app").is_dir()
         }
+        "grok-build" => home.join(".grok/sessions").is_dir(),
         _ => false,
     }
+}
+
+fn discover_grok(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
+    recent_files(&root.join("sessions"), 4, |path| {
+        path.file_name().and_then(|value| value.to_str()) == Some("updates.jsonl")
+    })
+    .into_iter()
+    .filter_map(|path| grok_session(&path, now))
+    .collect()
+}
+
+fn grok_session(path: &Path, now: DateTime<Utc>) -> Option<LiveSession> {
+    let modified = modified_at(path)?;
+    if !is_recent(modified, GROK_LIVE_WINDOW) {
+        return None;
+    }
+    let summary = read_json_object(&path.parent()?.join("summary.json"))?;
+    let source_session_id = summary
+        .get("info")
+        .and_then(|info| info.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| valid_identifier(value))?
+        .to_string();
+    let project_label = project_label_from_cwd(
+        summary
+            .get("info")
+            .and_then(|info| info.get("cwd"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    let started_at = summary
+        .get("created_at")
+        .and_then(|value| timestamp_from_value(Some(value)));
+    let title = summary
+        .get("session_summary")
+        .and_then(Value::as_str)
+        .and_then(safe_label);
+    let signal = parse_grok_updates(path, now)?;
+    if signal.status == "completed"
+        && !is_recent_timestamp(&signal.occurred_at, now, GROK_COMPLETED_WINDOW)
+    {
+        return None;
+    }
+    Some(runtime_session_with_title(
+        "grok-build",
+        source_session_id,
+        project_label,
+        title,
+        RuntimeSignal {
+            started_at: signal.started_at.or(started_at),
+            ..signal
+        },
+        process_for("grok").map(|(pid, _)| (pid, "cli")),
+    ))
+}
+
+fn parse_grok_updates(path: &Path, now: DateTime<Utc>) -> Option<RuntimeSignal> {
+    let lines = tail_lines(path, MAX_JSONL_TAIL_BYTES)?;
+    let mut latest = None;
+    let mut started_at = None;
+    for line in lines {
+        let Ok(envelope) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        let params = envelope.get("params").unwrap_or(&Value::Null);
+        let update = params.get("update").unwrap_or(&Value::Null);
+        let kind = update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let occurred_at = record_timestamp(&envelope).unwrap_or_else(|| now.to_rfc3339());
+        match kind {
+            "session_start"
+            | "turn_start"
+            | "user_message_chunk"
+            | "agent_message_chunk"
+            | "agent_thought_chunk"
+            | "usage_update" => {
+                started_at.get_or_insert_with(|| occurred_at.clone());
+                latest = Some(runtime_signal(
+                    "running",
+                    "thinking",
+                    if kind == "user_message_chunk" {
+                        "prompt"
+                    } else {
+                        "think"
+                    },
+                    if kind == "user_message_chunk" {
+                        "Prompt"
+                    } else {
+                        "Thinking"
+                    },
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "tool_call" => {
+                started_at.get_or_insert_with(|| occurred_at.clone());
+                let label = update
+                    .get("title")
+                    .or_else(|| update.get("name"))
+                    .and_then(Value::as_str)
+                    .and_then(safe_label)
+                    .unwrap_or_else(|| "Tool".into());
+                latest = Some(runtime_signal(
+                    "running",
+                    runtime_phase(&label),
+                    "tool",
+                    label,
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "tool_call_update" => {
+                let status = update
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                latest = Some(
+                    if matches!(
+                        status.as_str(),
+                        "failed" | "error" | "cancelled" | "canceled"
+                    ) {
+                        runtime_signal(
+                            "error",
+                            "error",
+                            "error",
+                            "Tool error",
+                            occurred_at,
+                            started_at.clone(),
+                        )
+                    } else {
+                        runtime_signal(
+                            "running",
+                            "running-tool",
+                            "tool",
+                            "Running tool",
+                            occurred_at,
+                            started_at.clone(),
+                        )
+                    },
+                );
+            }
+            "turn_end" => {
+                let status = update
+                    .get("stopReason")
+                    .or_else(|| update.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("completed");
+                let (status, phase, kind, label) =
+                    if matches!(status, "error" | "failed" | "blocked") {
+                        ("error", "error", "error", "Error")
+                    } else if matches!(status, "cancelled" | "canceled" | "aborted") {
+                        ("paused", "paused", "paused", "Stopped")
+                    } else {
+                        ("completed", "completed", "complete", "Completed")
+                    };
+                latest = Some(runtime_signal(
+                    status,
+                    phase,
+                    kind,
+                    label,
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "session_end" => {
+                latest = Some(runtime_signal(
+                    "completed",
+                    "completed",
+                    "complete",
+                    "Completed",
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "error" => {
+                latest = Some(runtime_signal(
+                    "error",
+                    "error",
+                    "error",
+                    "Error",
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            "hook_execution"
+                if update.get("event_name").and_then(Value::as_str) == Some("session_start") =>
+            {
+                latest = Some(runtime_signal(
+                    "running",
+                    "thinking",
+                    "session",
+                    "Grok Build",
+                    occurred_at,
+                    started_at.clone(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    latest
 }
 
 fn discover_deepseek_harness(root: &Path, now: DateTime<Utc>) -> Vec<LiveSession> {
@@ -1249,6 +1458,9 @@ fn process_for(provider: &str) -> Option<(u32, bool)> {
                 "zcode" => lower == "zcode" || lower.contains("zcode-host-local"),
                 "deepseek-harness" => {
                     lower.ends_with("/dsh") || lower.contains("/dsh web") || lower == "dsh"
+                }
+                "grok" => {
+                    lower == "grok" || lower.ends_with("/grok") || lower.contains("grok-build")
                 }
                 _ => false,
             };

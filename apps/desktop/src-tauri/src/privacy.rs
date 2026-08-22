@@ -83,11 +83,11 @@ pub fn sanitize_title(value: &str) -> Option<String> {
 }
 
 pub fn sanitize_prompt_excerpt(value: &str) -> Option<String> {
-    sanitize_bounded_text(value, 240)
+    sanitize_bounded_text(value, 2_000)
 }
 
 pub fn sanitize_result_excerpt(value: &str) -> Option<String> {
-    sanitize_bounded_text(value, 800)
+    sanitize_bounded_text(value, 2_000)
 }
 
 pub fn sanitize_git_subject(value: &str) -> Option<String> {
@@ -260,6 +260,19 @@ mod tests {
         let title = sanitize_title("Fix /Users/alice/Secret/app.rs with sk-test_1234567890")
             .expect("title");
         assert_eq!(title, "Fix [path] with [secret]");
+    }
+
+    #[test]
+    fn context_previews_are_bounded_and_redacted() {
+        let preview = sanitize_prompt_excerpt(&format!(
+            "/Users/alice/private/repo sk-abcdefghijklmnop {}",
+            "x".repeat(2_100)
+        ))
+        .expect("context preview");
+        assert!(preview.chars().count() <= 2_001);
+        assert!(preview.contains("[path]"));
+        assert!(preview.contains("[secret]"));
+        assert!(!preview.contains("/Users/alice/private/repo"));
     }
 
     #[test]

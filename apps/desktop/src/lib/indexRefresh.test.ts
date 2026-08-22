@@ -23,4 +23,15 @@ describe("history evidence refresh", () => {
     expect(completed).toHaveBeenCalledOnce();
     expect(status).toHaveBeenCalledTimes(4);
   });
+
+  it("passes force through when a user requests a fresh Agent scan", async () => {
+    const start = vi.fn().mockResolvedValue(true);
+    const status = vi.fn().mockResolvedValue({ running: false, finishedAt: "forced-pass" });
+    const completed = vi.fn();
+
+    await refreshHistoryIndex({ start, status, completed, force: true, pollIntervalMs: 0 });
+
+    expect(start).toHaveBeenCalledWith(true);
+    expect(completed).toHaveBeenCalledOnce();
+  });
 });

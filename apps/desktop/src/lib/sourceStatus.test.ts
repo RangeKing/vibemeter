@@ -4,7 +4,10 @@ import {
   capabilityTranslationKey,
   dataFilterAgents,
   defaultDataAgents,
+  detectedDataAgents,
+  parseDataPageAgents,
   parseSourceCapabilities,
+  serializeDataPageAgents,
   sourceCapabilityNameGroups,
   sourceNamesForLiveCapability,
   sourceLiveTranslationKey,
@@ -19,7 +22,7 @@ describe("source status language", () => {
   });
 
   it("groups sources by the shared live capability contract", () => {
-    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex", "DeepSeek Harness", "Kimi Code", "ZCode"]);
+    expect(sourceNamesForLiveCapability("exact")).toEqual(["Claude Code", "Codex", "DeepSeek Harness", "Kimi Code", "Grok Build", "ZCode"]);
     expect(sourceNamesForLiveCapability("experimental")).toEqual([]);
     expect(sourceNamesForLiveCapability("none")).toEqual(["Cursor", "OpenClaw", "Hermes"]);
     expect(sourceLiveTranslationKey("exact", true)).toBe("sources.liveCapabilities.exactReady");
@@ -31,7 +34,7 @@ describe("source status language", () => {
 
   it("builds the product-copy source groups from the same registry", () => {
     expect(sourceCapabilityNameGroups()).toEqual({
-      exact: "Claude Code、Codex、DeepSeek Harness、Kimi Code、ZCode",
+      exact: "Claude Code、Codex、DeepSeek Harness、Kimi Code、Grok Build、ZCode",
       experimental: "",
       historyOnly: "Cursor、OpenClaw、Hermes",
     });
@@ -87,7 +90,7 @@ describe("source status language", () => {
     ).toEqual(["codex"]);
   });
 
-  it("keeps exact live sources available as Data filters before history is observed", () => {
+  it("only shows installed Agents as Data filters before history is observed", () => {
     const source = (overrides: Partial<SourceStatus>): SourceStatus => ({
       agent: "codex",
       available: true,
@@ -119,6 +122,28 @@ describe("source status language", () => {
         status: "not-found",
       }),
       source({ agent: "openclaw", available: false, liveCapability: "none", sessionCount: 0 }),
-    ])).toEqual(["codex", "zcode", "kimi-code"]);
+    ])).toEqual(["codex"]);
+  });
+
+  it("uses detected Agents by default and preserves an explicit display list", () => {
+    const source = (agent: string, available: boolean): SourceStatus => ({
+      agent,
+      available,
+      selected: true,
+      capabilityLevel: "full",
+      liveCapability: "exact",
+      parserVersion: "test-parser",
+      sessionCount: 0,
+      status: available ? "ready" : "not-found",
+      warningCount: 0,
+      pathLabel: "",
+    });
+
+    const sources = [source("codex", true), source("grok-build", true), source("zcode", false)];
+    expect(detectedDataAgents(sources)).toEqual(["codex", "grok-build"]);
+    expect(dataFilterAgents(sources, ["grok-build", "zcode"])).toEqual(["grok-build"]);
+    expect(parseDataPageAgents("auto")).toBeUndefined();
+    expect(parseDataPageAgents(serializeDataPageAgents(["grok-build", "codex", "grok-build"]))).toEqual(["codex", "grok-build"]);
+    expect(parseDataPageAgents("[]")).toEqual([]);
   });
 });

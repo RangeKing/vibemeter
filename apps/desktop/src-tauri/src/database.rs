@@ -1,16 +1,18 @@
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     AgentKind, AttentionEvent, AttentionQualityReport, BehaviorSignals, BehaviorSummary,
-    CanonicalEvent, ComparisonItem, CoverageNotice, DailyUsagePoint, DistributionItem,
+    CanonicalEvent, ComparisonItem, ContextBrowser, ContextBrowserCategory, ContextMetric,
+    ContextSummary, ContextTimelineEvent, CoverageNotice, DailyUsagePoint, DistributionItem,
     EvidenceReference, FileChange, FileChangeAccumulator, GitCommitEvidence, GitEvidence,
     GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat, InsightsResponse,
     LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint,
     NotchClearResult, NotchCompletedSession, ObservedLiveEvent, OverviewResponse, OverviewTotals,
     PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem,
     PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase,
-    ProjectControl, Provenance, SavePlaybookRequest, SessionDetail, SessionListFilters,
-    SessionSummary, SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary,
-    TokenUsage, VctiProfile,
+    ProjectControl, ProjectFilterOption, ProjectMemberSummary, ProjectSummary, Provenance,
+    SavePlaybookRequest, SessionContext, SessionDetail, SessionListFilters, SessionSummary,
+    SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage,
+    VctiProfile,
 };
 use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
@@ -459,7 +461,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 28;
+const DATABASE_SCHEMA_VERSION: i64 = 29;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 pub(crate) const ATTENTION_NOTIFICATION_LEASE_SECONDS: i64 = 5 * 60;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
@@ -895,6 +897,29 @@ CREATE INDEX attention_events_terminal_history_idx
 PRAGMA user_version = 28;
 "#;
 
+const MIGRATION_V29: &str = r#"
+CREATE TABLE IF NOT EXISTS project_metadata (
+    project_hash TEXT PRIMARY KEY,
+    local_path TEXT,
+    last_seen_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_group_members (
+    group_id TEXT NOT NULL,
+    project_hash TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL,
+    FOREIGN KEY(group_id) REFERENCES project_groups(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS project_group_members_group_idx
+    ON project_group_members(group_id, project_hash);
+PRAGMA user_version = 29;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -1139,7 +1164,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
 
 fn history_evidence_coverage(agent: &str) -> Option<&'static str> {
     match agent {
-        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode" => {
+        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "grok-build" | "zcode" => {
             Some("full-history")
         }
         "cursor" | "openclaw" | "hermes" => Some("partial-history"),
@@ -2854,6 +2879,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     if version < 28 {
         connection.execute_batch(MIGRATION_V28)?;
     }
+    if version < 29 {
+        connection.execute_batch(MIGRATION_V29)?;
+    }
     Ok(())
 }
 
@@ -3116,6 +3144,24 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let project_metadata_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('project_metadata')
+         WHERE name IN('project_hash','local_path','last_seen_at')",
+        [],
+        |row| row.get(0),
+    )?;
+    let project_group_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('project_groups')
+         WHERE name IN('id','name','created_at','updated_at')",
+        [],
+        |row| row.get(0),
+    )?;
+    let project_group_member_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('project_group_members')
+         WHERE name IN('group_id','project_hash','added_at')",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 16
@@ -3131,6 +3177,9 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || attention_intervention_columns != 6
         || attention_review_columns != 6
         || attention_quality_columns != 4
+        || project_metadata_columns != 3
+        || project_group_columns != 4
+        || project_group_member_columns != 3
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -3666,6 +3715,22 @@ impl Database {
             }
         };
         let now = Utc::now().to_rfc3339();
+        if let Some(project_hash) = state.project_hash.as_deref() {
+            let local_path = state.project_root.as_ref().map(|root| {
+                std::fs::canonicalize(root)
+                    .unwrap_or_else(|_| root.clone())
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            transaction.execute(
+                "INSERT INTO project_metadata(project_hash, local_path, last_seen_at)
+                 VALUES(?1, ?2, ?3)
+                 ON CONFLICT(project_hash) DO UPDATE SET
+                    local_path=COALESCE(excluded.local_path, project_metadata.local_path),
+                    last_seen_at=excluded.last_seen_at",
+                params![project_hash, local_path, now],
+            )?;
+        }
         let excluded = state.project_hash.as_deref().is_some_and(|project_hash| {
             transaction
                 .query_row(
@@ -4174,12 +4239,28 @@ impl Database {
     pub fn projects(&self) -> AppResult<Vec<ProjectControl>> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
-            "SELECT s.project_hash, COALESCE(MAX(s.project_label), ''), COUNT(*),
-                    EXISTS(SELECT 1 FROM excluded_projects ep WHERE ep.project_hash=s.project_hash)
-             FROM sessions s WHERE s.project_hash IS NOT NULL
-             GROUP BY s.project_hash ORDER BY 2",
+            "WITH known_projects AS (
+                SELECT project_hash FROM sessions WHERE project_hash IS NOT NULL
+                UNION SELECT project_hash FROM excluded_projects
+                UNION SELECT project_hash FROM project_metadata
+                UNION SELECT project_hash FROM project_group_members
+             )
+             SELECT kp.project_hash,
+                    COALESCE(MAX(s.project_label), ep.project_label, ''),
+                    COUNT(s.id),
+                    EXISTS(SELECT 1 FROM excluded_projects excluded
+                           WHERE excluded.project_hash=kp.project_hash),
+                    pm.local_path, pgm.group_id, pg.name
+             FROM known_projects kp
+             LEFT JOIN sessions s ON s.project_hash=kp.project_hash
+             LEFT JOIN excluded_projects ep ON ep.project_hash=kp.project_hash
+             LEFT JOIN project_metadata pm ON pm.project_hash=kp.project_hash
+             LEFT JOIN project_group_members pgm ON pgm.project_hash=kp.project_hash
+             LEFT JOIN project_groups pg ON pg.id=pgm.group_id
+             GROUP BY kp.project_hash, ep.project_label, pm.local_path, pgm.group_id, pg.name
+             ORDER BY 2 COLLATE NOCASE",
         )?;
-        let mut items = statement
+        let items = statement
             .query_map([], |row| {
                 let project_hash: String = row.get(0)?;
                 let label: String = row.get(1)?;
@@ -4192,31 +4273,348 @@ impl Database {
                     },
                     session_count: read_u64(row, 2)?,
                     excluded: row.get::<_, i64>(3)? != 0,
+                    local_path: row.get(4)?,
+                    group_id: row.get(5)?,
+                    group_name: row.get(6)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let mut excluded_statement = connection.prepare(
-            "SELECT project_hash, project_label FROM excluded_projects ORDER BY project_label",
-        )?;
-        for item in excluded_statement
-            .query_map([], |row| {
-                Ok(ProjectControl {
-                    project_hash: row.get(0)?,
-                    project_label: row.get(1)?,
-                    session_count: 0,
-                    excluded: true,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-        {
-            if !items
-                .iter()
-                .any(|existing| existing.project_hash == item.project_hash)
-            {
-                items.push(item);
+        Ok(items)
+    }
+
+    pub fn create_project_group(&self, name: &str, project_hashes: &[String]) -> AppResult<String> {
+        let name = name.trim();
+        let members = unique_project_hashes(project_hashes);
+        if name.is_empty() {
+            return Err(AppError::InvalidRequest(
+                "project group name cannot be empty".into(),
+            ));
+        }
+        if members.len() < 2 {
+            return Err(AppError::InvalidRequest(
+                "a project group needs at least two projects".into(),
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        validate_project_group_name(&transaction, name, None)?;
+        for project_hash in &members {
+            let known: bool = transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sessions WHERE project_hash=?1
+                    UNION ALL SELECT 1 FROM excluded_projects WHERE project_hash=?1
+                    UNION ALL SELECT 1 FROM project_metadata WHERE project_hash=?1
+                )",
+                params![project_hash],
+                |row| row.get(0),
+            )?;
+            if !known {
+                return Err(AppError::InvalidRequest(
+                    "project group members must be existing projects".into(),
+                ));
+            }
+            let assigned: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_group_members WHERE project_hash=?1)",
+                params![project_hash],
+                |row| row.get(0),
+            )?;
+            if assigned {
+                return Err(AppError::InvalidRequest(
+                    "a project can belong to only one project group".into(),
+                ));
             }
         }
-        Ok(items)
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        transaction.execute(
+            "INSERT INTO project_groups(id, name, created_at, updated_at)
+             VALUES(?1, ?2, ?3, ?3)",
+            params![id, name, now],
+        )?;
+        for project_hash in members {
+            transaction.execute(
+                "INSERT INTO project_group_members(group_id, project_hash, added_at)
+                 VALUES(?1, ?2, ?3)",
+                params![id, project_hash, now],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(id)
+    }
+
+    pub fn rename_project_group(&self, group_id: &str, name: &str) -> AppResult<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::InvalidRequest(
+                "project group name cannot be empty".into(),
+            ));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        validate_project_group_name(&transaction, name, Some(group_id))?;
+        let changed = transaction.execute(
+            "UPDATE project_groups SET name=?1, updated_at=?2 WHERE id=?3",
+            params![name, Utc::now().to_rfc3339(), group_id],
+        )?;
+        if changed == 0 {
+            return Err(AppError::InvalidRequest("project group not found".into()));
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn update_project_group_members(
+        &self,
+        group_id: &str,
+        project_hashes: &[String],
+    ) -> AppResult<()> {
+        let members = unique_project_hashes(project_hashes);
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        let exists: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM project_groups WHERE id=?1)",
+            params![group_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(AppError::InvalidRequest("project group not found".into()));
+        }
+        if members.len() < 2 {
+            transaction.execute("DELETE FROM project_groups WHERE id=?1", params![group_id])?;
+            transaction.commit()?;
+            return Ok(());
+        }
+        for project_hash in &members {
+            let known: bool = transaction.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sessions WHERE project_hash=?1
+                    UNION ALL SELECT 1 FROM excluded_projects WHERE project_hash=?1
+                    UNION ALL SELECT 1 FROM project_metadata WHERE project_hash=?1
+                )",
+                params![project_hash],
+                |row| row.get(0),
+            )?;
+            if !known {
+                return Err(AppError::InvalidRequest(
+                    "project group members must be existing projects".into(),
+                ));
+            }
+            let assigned_to: Option<String> = transaction
+                .query_row(
+                    "SELECT group_id FROM project_group_members WHERE project_hash=?1",
+                    params![project_hash],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if assigned_to.as_deref().is_some_and(|id| id != group_id) {
+                return Err(AppError::InvalidRequest(
+                    "a project can belong to only one project group".into(),
+                ));
+            }
+        }
+        transaction.execute(
+            "DELETE FROM project_group_members WHERE group_id=?1",
+            params![group_id],
+        )?;
+        let now = Utc::now().to_rfc3339();
+        for project_hash in members {
+            transaction.execute(
+                "INSERT INTO project_group_members(group_id, project_hash, added_at)
+                 VALUES(?1, ?2, ?3)",
+                params![group_id, project_hash, now],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE project_groups SET updated_at=?1 WHERE id=?2",
+            params![now, group_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_project_group(&self, group_id: &str) -> AppResult<()> {
+        let connection = self.connect()?;
+        let changed =
+            connection.execute("DELETE FROM project_groups WHERE id=?1", params![group_id])?;
+        if changed == 0 {
+            return Err(AppError::InvalidRequest("project group not found".into()));
+        }
+        Ok(())
+    }
+
+    pub fn project_summaries(
+        &self,
+        range: &str,
+        agent: Option<&str>,
+    ) -> AppResult<Vec<ProjectSummary>> {
+        let projects = self.projects()?;
+        let connection = self.connect()?;
+        let start_timestamp = format!("{}T00:00:00Z", range_start(range));
+        let agent_filter = agent.unwrap_or("");
+        let mut summaries = BTreeMap::<String, ProjectSummary>::new();
+        for project in &projects {
+            let (session_count, active_seconds, usage, files_touched, lines_added, lines_deleted,
+                tool_calls, errors, estimated_cost_usd, covered_tokens, latest_activity):
+                (u64, u64, TokenUsage, u64, u64, u64, u64, u64, Option<f64>, u64, Option<String>) =
+                connection.query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(active_seconds),0),
+                            COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+                            COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),
+                            COALESCE(SUM(cache_write_1h_tokens),0), COALESCE(SUM(reasoning_tokens),0),
+                            COALESCE(SUM(files_touched),0), COALESCE(SUM(lines_added),0),
+                            COALESCE(SUM(lines_deleted),0), COALESCE(SUM(tool_calls),0),
+                            COALESCE(SUM(errors),0), SUM(estimated_cost_usd),
+                            COALESCE(SUM(cost_coverage_tokens),0),
+                            MAX(COALESCE(ended_at, started_at))
+                     FROM sessions
+                     WHERE project_hash=?1 AND COALESCE(ended_at, started_at)>=?2
+                       AND (?3='' OR agent=?3)",
+                    params![project.project_hash, start_timestamp, agent_filter],
+                    |row| {
+                        Ok((
+                            read_u64(row, 0)?,
+                            read_u64(row, 1)?,
+                            TokenUsage {
+                                input_tokens: read_u64(row, 2)?,
+                                output_tokens: read_u64(row, 3)?,
+                                cache_read_tokens: read_u64(row, 4)?,
+                                cache_write_tokens: read_u64(row, 5)?,
+                                cache_write_1h_tokens: read_u64(row, 6)?,
+                                reasoning_tokens: read_u64(row, 7)?,
+                            },
+                            read_u64(row, 8)?,
+                            read_u64(row, 9)?,
+                            read_u64(row, 10)?,
+                            read_u64(row, 11)?,
+                            read_u64(row, 12)?,
+                            row.get(13)?,
+                            read_u64(row, 14)?,
+                            row.get(15)?,
+                        ))
+                    },
+                )?;
+            if session_count == 0 {
+                continue;
+            }
+            let (id, kind, label) = match (&project.group_id, &project.group_name) {
+                (Some(group_id), Some(group_name)) => (
+                    format!("group:{group_id}"),
+                    "group".to_string(),
+                    group_name.clone(),
+                ),
+                _ => (
+                    format!("project:{}", project.project_hash),
+                    "project".to_string(),
+                    display_project_label(&project.project_label),
+                ),
+            };
+            let entry = summaries
+                .entry(id.clone())
+                .or_insert_with(|| ProjectSummary {
+                    id,
+                    kind,
+                    label,
+                    member_count: 0,
+                    session_count: 0,
+                    active_seconds: 0,
+                    usage: TokenUsage::default(),
+                    estimated_cost_usd: None,
+                    cost_coverage: 0.0,
+                    files_touched: 0,
+                    lines_added: 0,
+                    lines_deleted: 0,
+                    tool_calls: 0,
+                    errors: 0,
+                    latest_activity: None,
+                    members: Vec::new(),
+                });
+            entry.member_count += 1;
+            entry.session_count += session_count;
+            entry.active_seconds += active_seconds;
+            entry.usage.input_tokens += usage.input_tokens;
+            entry.usage.output_tokens += usage.output_tokens;
+            entry.usage.cache_read_tokens += usage.cache_read_tokens;
+            entry.usage.cache_write_tokens += usage.cache_write_tokens;
+            entry.usage.cache_write_1h_tokens += usage.cache_write_1h_tokens;
+            entry.usage.reasoning_tokens += usage.reasoning_tokens;
+            entry.files_touched += files_touched;
+            entry.lines_added += lines_added;
+            entry.lines_deleted += lines_deleted;
+            entry.tool_calls += tool_calls;
+            entry.errors += errors;
+            entry.estimated_cost_usd = match (entry.estimated_cost_usd, estimated_cost_usd) {
+                (Some(left), Some(right)) => Some(left + right),
+                (None, value) => value,
+                (value, None) => value,
+            };
+            let total_tokens = entry.usage.total();
+            let project_tokens = usage.total();
+            let previous_tokens = total_tokens.saturating_sub(project_tokens);
+            entry.cost_coverage = if total_tokens == 0 {
+                0.0
+            } else {
+                (entry.cost_coverage * previous_tokens as f64 + covered_tokens as f64)
+                    / total_tokens as f64
+            };
+            if entry.latest_activity.as_ref().is_none_or(|current| {
+                latest_activity
+                    .as_ref()
+                    .is_some_and(|latest| latest > current)
+            }) {
+                entry.latest_activity = latest_activity;
+            }
+            entry.members.push(ProjectMemberSummary {
+                project_hash: project.project_hash.clone(),
+                project_label: project.project_label.clone(),
+                local_path: project.local_path.clone(),
+                session_count,
+            });
+        }
+        let mut result = summaries.into_values().collect::<Vec<_>>();
+        for summary in &mut result {
+            if summary.kind == "group" {
+                let group_id = summary.id.strip_prefix("group:").unwrap_or_default();
+                let existing_members = summary
+                    .members
+                    .iter()
+                    .map(|member| member.project_hash.as_str())
+                    .collect::<HashSet<_>>();
+                let missing_members = projects
+                    .iter()
+                    .filter(|project| {
+                        project.group_id.as_deref() == Some(group_id)
+                            && !existing_members.contains(project.project_hash.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                for project in missing_members {
+                    let member_session_count: u64 = connection.query_row(
+                        "SELECT COUNT(*) FROM sessions
+                         WHERE project_hash=?1 AND COALESCE(ended_at, started_at)>=?2
+                           AND (?3='' OR agent=?3)",
+                        params![project.project_hash, start_timestamp, agent_filter],
+                        |row| read_u64(row, 0),
+                    )?;
+                    summary.members.push(ProjectMemberSummary {
+                        project_hash: project.project_hash.clone(),
+                        project_label: project.project_label.clone(),
+                        local_path: project.local_path.clone(),
+                        session_count: member_session_count,
+                    });
+                }
+                summary.member_count = summary.members.len() as u64;
+            }
+            summary.members.sort_by(|left, right| {
+                left.project_label
+                    .to_lowercase()
+                    .cmp(&right.project_label.to_lowercase())
+            });
+            let total_tokens = summary.usage.total();
+            if total_tokens == 0 {
+                summary.cost_coverage = 0.0;
+            }
+        }
+        result.sort_by(|left, right| right.latest_activity.cmp(&left.latest_activity));
+        Ok(result)
     }
 
     pub fn exclude_project(&self, project_hash: &str) -> AppResult<()> {
@@ -4328,6 +4726,9 @@ impl Database {
                  DELETE FROM canonical_events;
                  DELETE FROM live_session_metrics;
                  DELETE FROM excluded_projects;
+                 DELETE FROM project_group_members;
+                 DELETE FROM project_groups;
+                 DELETE FROM project_metadata;
                  DELETE FROM app_settings
                  WHERE key LIKE 'databaseHistoryRevision:%'
                     OR key IN(
@@ -4391,7 +4792,7 @@ impl Database {
         Ok(OverviewResponse {
             range: range.into(),
             generated_at: Utc::now().to_rfc3339(),
-            pricing_version: crate::pricing::PRICING_VERSION.into(),
+            pricing_version: crate::pricing::pricing_version().into(),
             totals,
             daily,
             hourly,
@@ -6238,6 +6639,105 @@ impl Database {
         })
     }
 
+    pub fn session_context(&self, id: &str, offset: u64, limit: u64) -> AppResult<SessionContext> {
+        let detail = self.session_detail(id)?;
+        let connection = self.connect()?;
+        let all_events = query_session_events(&connection, id)?;
+        let event_count = all_events.len() as u64;
+        let usage = detail.summary.usage.clone();
+        let total_tokens = usage.total();
+        let token_coverage = if total_tokens > 0 {
+            "observed"
+        } else {
+            "not-recorded"
+        };
+        let coverage = if total_tokens > 0 {
+            "observed"
+        } else if event_count > 0 {
+            "estimated"
+        } else {
+            "not-recorded"
+        };
+        let cache_tokens = usage
+            .cache_read_tokens
+            .saturating_add(usage.cache_write_tokens)
+            .saturating_add(usage.cache_write_1h_tokens);
+        let has_token_usage = total_tokens > 0;
+        let token = |value: u64| has_token_usage.then_some(value);
+        let composition = [
+            ("input", token(usage.input_tokens)),
+            ("output", token(usage.output_tokens)),
+            ("cache", token(cache_tokens)),
+            ("reasoning", token(usage.reasoning_tokens)),
+            ("system", None),
+            ("tools", None),
+            ("user", None),
+            ("inject", None),
+            ("assistant", None),
+            ("tool", None),
+        ]
+        .into_iter()
+        .map(|(key, tokens)| ContextMetric {
+            key: key.into(),
+            tokens,
+            coverage: if tokens.is_some() {
+                token_coverage.into()
+            } else {
+                "not-recorded".into()
+            },
+        })
+        .collect();
+        let requested_offset = offset.min(event_count);
+        let requested_limit = limit.clamp(1, 100);
+        let events = all_events
+            .iter()
+            .rev()
+            .skip(requested_offset as usize)
+            .take(requested_limit as usize)
+            .enumerate()
+            .map(|(index, event)| ContextTimelineEvent {
+                id: format!("context-event-{}-{}", event.sequence, index),
+                sequence: event.sequence,
+                occurred_at: event.occurred_at.clone(),
+                kind: context_event_kind(event),
+                name: event.name.clone(),
+                phase: event.category.clone(),
+                success: event.success,
+                duration_ms: event.duration_ms,
+                coverage: context_coverage(&event.provenance),
+            })
+            .collect::<Vec<_>>();
+        let next_offset = requested_offset.saturating_add(events.len() as u64);
+        Ok(SessionContext {
+            status: if total_tokens > 0 || event_count > 0 {
+                if total_tokens > 0 { "ready" } else { "partial" }
+            } else {
+                "not-recorded"
+            }
+            .into(),
+            summary: ContextSummary {
+                total_tokens: token(total_tokens),
+                input_tokens: token(usage.input_tokens),
+                output_tokens: token(usage.output_tokens),
+                cache_tokens: token(cache_tokens),
+                reasoning_tokens: token(usage.reasoning_tokens),
+                compactions: all_events
+                    .iter()
+                    .filter(|event| event.event_type == "context.compact")
+                    .count() as u64,
+                event_count,
+                coverage: coverage.into(),
+            },
+            composition,
+            events,
+            has_more: next_offset < event_count,
+            next_offset: (next_offset < event_count).then_some(next_offset),
+            browser: ContextBrowser {
+                categories: context_browser_categories(),
+            },
+        })
+    }
+
     pub(crate) fn session_source_locator(&self, id: &str) -> AppResult<Option<(String, String)>> {
         let connection = self.connect()?;
         Ok(connection
@@ -6359,6 +6859,57 @@ impl Database {
         )?;
         Ok(())
     }
+}
+
+fn unique_project_hashes(project_hashes: &[String]) -> Vec<String> {
+    project_hashes
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn validate_project_group_name(
+    transaction: &rusqlite::Transaction<'_>,
+    name: &str,
+    current_group_id: Option<&str>,
+) -> AppResult<()> {
+    let duplicate_group = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM project_groups
+            WHERE name=?1 COLLATE NOCASE
+              AND (?2 IS NULL OR id<>?2)
+        )",
+        params![name, current_group_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if duplicate_group {
+        return Err(AppError::InvalidRequest(
+            "project group name is already in use".into(),
+        ));
+    }
+    let duplicate_project = transaction.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sessions s
+            LEFT JOIN project_group_members member ON member.project_hash=s.project_hash
+            WHERE s.project_hash IS NOT NULL AND member.project_hash IS NULL
+              AND COALESCE(NULLIF(trim(s.project_label),''), substr(s.project_hash,1,6))=?1 COLLATE NOCASE
+            UNION ALL
+            SELECT 1 FROM excluded_projects
+            WHERE project_label=?1 COLLATE NOCASE
+        )",
+        params![name],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if duplicate_project {
+        return Err(AppError::InvalidRequest(
+            "project group name conflicts with an existing project".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn prune_notch_session_history(transaction: &Transaction<'_>, now: DateTime<Utc>) -> AppResult<()> {
@@ -7602,6 +8153,7 @@ fn stored_agent_kind(agent: &str) -> Option<AgentKind> {
         "codex" => Some(AgentKind::Codex),
         "deepseek-harness" => Some(AgentKind::DeepSeekHarness),
         "kimi-code" => Some(AgentKind::KimiCode),
+        "grok-build" => Some(AgentKind::GrokBuild),
         "cursor" => Some(AgentKind::Cursor),
         "openclaw" => Some(AgentKind::OpenClaw),
         "hermes" => Some(AgentKind::Hermes),
@@ -7643,14 +8195,19 @@ fn query_daily(connection: &Connection, start_date: &str) -> AppResult<Vec<Daily
                 SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
                 SUM(cache_write_tokens), SUM(cache_write_1h_tokens), SUM(reasoning_tokens),
                 SUM(active_seconds), COUNT(DISTINCT session_id), SUM(tool_calls),
-                SUM(errors), SUM(estimated_cost_usd)
+                SUM(errors), SUM(estimated_cost_usd),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN input_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN output_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_read_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_write_tokens ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN estimated_cost_usd IS NULL THEN cache_write_1h_tokens ELSE 0 END),0)
          FROM daily_rows
          GROUP BY date, agent, model ORDER BY date, agent, model",
     )?;
     Ok(statement
         .query_map(
             params![start_date, format!("{start_date}T00:00:00Z")],
-            daily_from_row,
+            daily_with_recomputed_cost,
         )?
         .collect::<Result<Vec<_>, _>>()?)
 }
@@ -7770,6 +8327,38 @@ fn query_session_events(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn context_coverage(provenance: &str) -> String {
+    if provenance == "observed" {
+        "observed".into()
+    } else {
+        "estimated".into()
+    }
+}
+
+fn context_event_kind(event: &CanonicalEvent) -> String {
+    match event.event_type.as_str() {
+        "prompt.observed" | "prompt" => "input",
+        "context.compact" | "context-compaction" => "compact",
+        "tool.observed" | "tool.start" | "tool.finish" | "tool.error" => "tool",
+        "verification.observed" | "file.change" => "file",
+        "lifecycle.error" | "agent.error" => "error",
+        "model.switch" => "model",
+        _ => "activity",
+    }
+    .into()
+}
+
+fn context_browser_categories() -> Vec<ContextBrowserCategory> {
+    ["system", "tools", "user", "inject", "assistant", "tool"]
+        .into_iter()
+        .map(|key| ContextBrowserCategory {
+            key: key.into(),
+            items: Vec::new(),
+            coverage: "not-recorded".into(),
+        })
+        .collect()
 }
 
 fn phase_for_event(event: &CanonicalEvent) -> &'static str {
@@ -7920,7 +8509,7 @@ fn query_task_for_session(
 
 fn capabilities_for_agent(agent: &str) -> Vec<String> {
     let capabilities = match agent {
-        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "zcode" => &[
+        "claude-code" | "codex" | "deepseek-harness" | "kimi-code" | "grok-build" | "zcode" => &[
             "session_timestamps",
             "model_name",
             "token_usage",
@@ -7962,6 +8551,25 @@ fn daily_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DailyUsagePoint> 
         errors: read_u64(row, 12)?,
         estimated_cost_usd: row.get(13)?,
     })
+}
+
+fn daily_with_recomputed_cost(row: &rusqlite::Row<'_>) -> rusqlite::Result<DailyUsagePoint> {
+    let mut point = daily_from_row(row)?;
+    let missing_usage = TokenUsage {
+        input_tokens: read_u64(row, 14)?,
+        output_tokens: read_u64(row, 15)?,
+        cache_read_tokens: read_u64(row, 16)?,
+        cache_write_tokens: read_u64(row, 17)?,
+        cache_write_1h_tokens: read_u64(row, 18)?,
+        reasoning_tokens: 0,
+    };
+    if missing_usage.total() > 0
+        && let Some(agent) = stored_agent_kind(&point.agent)
+        && let Some(cost) = crate::pricing::estimate_cost(agent, &point.model, &missing_usage)
+    {
+        point.estimated_cost_usd = Some(point.estimated_cost_usd.unwrap_or(0.0) + cost);
+    }
+    Ok(point)
 }
 
 fn query_usage_distribution(
@@ -8339,9 +8947,18 @@ fn session_list_where_clause() -> &'static str {
             OR COALESCE(project_label,'') LIKE ?4
             OR EXISTS(SELECT 1 FROM file_changes fc WHERE fc.session_id=sessions.id AND fc.path LIKE ?4))
         AND (?5='' OR COALESCE(model,'')=?5)
-        AND (?6='' OR project_label=?6 OR COALESCE(project_label, project_hash)=?6
-            OR (length(COALESCE(project_label, project_hash))=16
-                AND substr(COALESCE(project_label, project_hash),1,6)=?6))
+        AND (?6='' OR
+            (?6 LIKE 'group:%' AND EXISTS(
+                SELECT 1 FROM project_group_members member
+                WHERE member.group_id=substr(?6,7)
+                  AND member.project_hash=sessions.project_hash
+            )) OR
+            (?6 LIKE 'project:%' AND project_hash=substr(?6,9)) OR
+            (?6 NOT LIKE 'group:%' AND ?6 NOT LIKE 'project:%'
+             AND (project_label=?6 OR COALESCE(project_label, project_hash)=?6
+               OR (length(COALESCE(project_label, project_hash))=16
+                   AND substr(COALESCE(project_label, project_hash),1,6)=?6)))
+        )
         AND (
             ?7='' OR
             (?7='verified' AND verification_events > 0) OR
@@ -8434,7 +9051,7 @@ fn query_session_facets(
     connection: &Connection,
     start_timestamp: &str,
     agent: Option<&str>,
-) -> AppResult<(Vec<String>, Vec<String>)> {
+) -> AppResult<(Vec<String>, Vec<ProjectFilterOption>)> {
     let agent_filter = agent.unwrap_or("");
     let mut model_statement = connection.prepare(
         "SELECT DISTINCT model FROM sessions
@@ -8448,20 +9065,54 @@ fn query_session_facets(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut project_statement = connection.prepare(
-        "SELECT DISTINCT COALESCE(project_label, project_hash) FROM sessions
-         WHERE COALESCE(ended_at, started_at) >= ?1
-           AND (?2='' OR agent=?2)
-           AND COALESCE(project_label, project_hash) IS NOT NULL
-           AND trim(COALESCE(project_label, project_hash)) != ''
-         ORDER BY 1 COLLATE NOCASE",
+        "SELECT s.project_hash, COALESCE(NULLIF(MAX(s.project_label),''), s.project_hash),
+                COUNT(DISTINCT s.project_hash)
+         FROM sessions s
+         LEFT JOIN project_group_members member ON member.project_hash=s.project_hash
+         WHERE COALESCE(s.ended_at, s.started_at) >= ?1
+           AND (?2='' OR s.agent=?2)
+           AND s.project_hash IS NOT NULL AND member.project_hash IS NULL
+         GROUP BY s.project_hash
+         ORDER BY 2 COLLATE NOCASE",
     )?;
     let mut projects = project_statement
         .query_map(params![start_timestamp, agent_filter], |row| {
-            Ok(display_project_label(&row.get::<_, String>(0)?))
+            let project_hash: String = row.get(0)?;
+            Ok(ProjectFilterOption {
+                id: format!("project:{project_hash}"),
+                kind: "project".into(),
+                label: display_project_label(&row.get::<_, String>(1)?),
+                member_count: read_u64(row, 2)?,
+            })
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    projects.sort_by_key(|left| left.to_lowercase());
-    projects.dedup();
+    let mut group_statement = connection.prepare(
+        "SELECT groups.id, groups.name,
+                (SELECT COUNT(*) FROM project_group_members member_count
+                 WHERE member_count.group_id=groups.id)
+         FROM project_groups groups
+         WHERE EXISTS(
+             SELECT 1 FROM project_group_members member
+             JOIN sessions s ON s.project_hash=member.project_hash
+             WHERE member.group_id=groups.id
+               AND COALESCE(s.ended_at, s.started_at)>=?1
+               AND (?2='' OR s.agent=?2)
+         )
+         ORDER BY groups.name COLLATE NOCASE",
+    )?;
+    let mut groups = group_statement
+        .query_map(params![start_timestamp, agent_filter], |row| {
+            let group_id: String = row.get(0)?;
+            Ok(ProjectFilterOption {
+                id: format!("group:{group_id}"),
+                kind: "group".into(),
+                label: row.get(1)?,
+                member_count: read_u64(row, 2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    groups.append(&mut projects);
+    let projects = groups;
     Ok((models, projects))
 }
 
@@ -9287,6 +9938,7 @@ mod concurrency_tests {
                 ("codex", "full", "exact", PARSER_VERSION),
                 ("deepseek-harness", "full", "exact", PARSER_VERSION),
                 ("kimi-code", "full", "exact", PARSER_VERSION),
+                ("grok-build", "full", "exact", PARSER_VERSION),
                 ("zcode", "full", "exact", PARSER_VERSION),
                 ("cursor", "partial", "none", PARSER_VERSION),
                 ("openclaw", "partial", "none", PARSER_VERSION),
@@ -9721,6 +10373,42 @@ mod concurrency_tests {
             names,
             ["Earlier", "Later", "SameFirst", "SameSecond", "Untimed"]
         );
+    }
+
+    #[test]
+    fn session_context_returns_recent_events_first_and_paginates_older_history() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database =
+            Database::open(temporary.path().join("context.sqlite")).expect("database should open");
+        let mut state = partial_text_history_state(AgentKind::Codex);
+        state.usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 40,
+            cache_read_tokens: 20,
+            ..TokenUsage::default()
+        };
+        let session_id = database
+            .persist_parse_state("context-file", 1, 1, 1, &state)
+            .expect("context session should persist");
+
+        let recent = database
+            .session_context(&session_id, 0, 2)
+            .expect("recent context should load");
+        assert_eq!(recent.summary.total_tokens, Some(160));
+        assert_eq!(recent.summary.input_tokens, Some(100));
+        assert_eq!(recent.summary.cache_tokens, Some(20));
+        assert_eq!(recent.summary.coverage, "observed");
+        assert_eq!(recent.events.len(), 2);
+        assert!(recent.has_more);
+        assert_eq!(recent.next_offset, Some(2));
+
+        let older = database
+            .session_context(&session_id, 2, 50)
+            .expect("older context should load");
+        assert!(!older.events.is_empty());
+        assert!(!older.has_more);
+        assert_eq!(older.next_offset, None);
+        assert_ne!(recent.events[0].id, older.events[0].id);
     }
 
     #[test]
@@ -13155,7 +13843,12 @@ mod concurrency_tests {
         assert_eq!(code_only.total, 2);
         assert!(code_only.items.iter().all(|item| item.files_touched > 0));
         assert!(code_only.models.iter().any(|item| item == "model-a"));
-        assert!(code_only.projects.iter().any(|item| item == "proj-one"));
+        assert!(
+            code_only
+                .projects
+                .iter()
+                .any(|item| item.label == "proj-one")
+        );
 
         let verified = database
             .sessions(
@@ -13209,6 +13902,91 @@ mod concurrency_tests {
             .sessions("today", SessionListFilters::default(), 1, 2)
             .expect("page 1");
         assert_eq!(page_two.items.len(), 1);
+    }
+
+    #[test]
+    fn project_groups_merge_filters_and_summaries_without_rewriting_sessions() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("project-groups.sqlite"))
+            .expect("database should open");
+        let date = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        let first_root = temporary.path().join("codex-worktree-a");
+        let second_root = temporary.path().join("codex-worktree-b");
+        std::fs::create_dir_all(&first_root).expect("first project root");
+        std::fs::create_dir_all(&second_root).expect("second project root");
+        let persist = |id: &str, hash: &str, label: &str, root: &Path| {
+            let mut state = ParseState::new(AgentKind::Codex, id.into());
+            state.started_at = Some(format!("{date}T10:00:00Z"));
+            state.ended_at = Some(format!("{date}T10:01:00Z"));
+            state.project_hash = Some(hash.into());
+            state.project_label = Some(label.into());
+            state.project_root = Some(root.to_path_buf());
+            state.usage.input_tokens = 10;
+            state.usage.output_tokens = 5;
+            state.active_seconds = 60;
+            database
+                .persist_parse_state(&format!("{id}-file"), 1, 1, 1, &state)
+                .expect("project session should persist");
+        };
+        persist("folder-a", "hash-a", "Project A", &first_root);
+        persist("folder-b", "hash-b", "Project B", &second_root);
+
+        let group_id = database
+            .create_project_group("Shared workspace", &["hash-a".into(), "hash-b".into()])
+            .expect("group should be created");
+        let projects = database.projects().expect("projects should load");
+        assert!(
+            projects
+                .iter()
+                .all(|project| project.group_id.as_deref() == Some(group_id.as_str()))
+        );
+        assert!(projects.iter().all(|project| project.local_path.is_some()));
+
+        let filtered = database
+            .sessions(
+                "today",
+                SessionListFilters {
+                    project: Some(&format!("group:{group_id}")),
+                    ..SessionListFilters::default()
+                },
+                0,
+                10,
+            )
+            .expect("group filter should load");
+        assert_eq!(filtered.total, 2);
+        assert_eq!(filtered.items.len(), 2);
+
+        let summaries = database
+            .project_summaries("today", None)
+            .expect("project summaries should load");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].label, "Shared workspace");
+        assert_eq!(summaries[0].session_count, 2);
+        assert_eq!(summaries[0].members.len(), 2);
+        assert!(
+            summaries[0]
+                .members
+                .iter()
+                .all(|member| member.local_path.is_some())
+        );
+
+        database
+            .rename_project_group(&group_id, "Renamed workspace")
+            .expect("group should rename");
+        assert_eq!(
+            database.projects().unwrap()[0].group_name.as_deref(),
+            Some("Renamed workspace")
+        );
+        database
+            .update_project_group_members(&group_id, &["hash-a".into()])
+            .expect("removing the last member should ungroup");
+        assert!(
+            database
+                .projects()
+                .unwrap()
+                .iter()
+                .all(|project| project.group_id.is_none())
+        );
     }
 
     #[test]
@@ -13307,6 +14085,16 @@ mod concurrency_tests {
         assert_eq!(ninety_days.estimated_cost_usd, Some(15.0));
         assert_eq!(month.cost_coverage, 1.0);
         assert_eq!(ninety_days.cost_coverage, 1.0);
+
+        let daily = query_daily(&connection, &ninety_day_start).expect("daily totals");
+        assert_eq!(daily.len(), 2);
+        assert_eq!(
+            daily
+                .iter()
+                .map(|point| point.estimated_cost_usd)
+                .collect::<Vec<_>>(),
+            vec![Some(10.0), Some(5.0)]
+        );
     }
 
     #[test]

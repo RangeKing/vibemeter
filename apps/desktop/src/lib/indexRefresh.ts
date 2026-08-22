@@ -4,6 +4,7 @@ type RefreshHistoryIndexOptions = {
   start: (force: boolean) => Promise<boolean>;
   status: () => Promise<Pick<IndexStatus, "running" | "finishedAt">>;
   completed: () => void | Promise<void>;
+  force?: boolean;
   pollIntervalMs?: number;
   maxPolls?: number;
 };
@@ -28,13 +29,14 @@ export async function refreshHistoryIndex({
   start,
   status,
   completed,
+  force = false,
   pollIntervalMs = 250,
   maxPolls = 480,
 }: RefreshHistoryIndexOptions): Promise<void> {
-  let started = await start(false);
+  let started = await start(force);
   if (!started) {
     await waitUntilIdle(status, pollIntervalMs, maxPolls);
-    started = await start(false);
+    started = await start(force);
   }
   if (!started) throw new Error("history index refresh could not start");
   await waitUntilIdle(status, pollIntervalMs, maxPolls);

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-pub const PARSER_VERSION: &str = "6.10.0";
+pub const PARSER_VERSION: &str = "6.11.0";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -11,6 +11,7 @@ pub enum AgentKind {
     Codex,
     DeepSeekHarness,
     KimiCode,
+    GrokBuild,
     Cursor,
     OpenClaw,
     Hermes,
@@ -24,6 +25,7 @@ impl AgentKind {
             Self::Codex => "codex",
             Self::DeepSeekHarness => "deepseek-harness",
             Self::KimiCode => "kimi-code",
+            Self::GrokBuild => "grok-build",
             Self::Cursor => "cursor",
             Self::OpenClaw => "openclaw",
             Self::Hermes => "hermes",
@@ -239,6 +241,8 @@ pub struct ParseState {
     pub last_claude_message_id: Option<String>,
     pub last_claude_message_usage: TokenUsage,
     #[serde(default)]
+    pub previous_grok_total: TokenUsage,
+    #[serde(default)]
     pub last_zcode_user_fingerprint: Option<String>,
     #[serde(default)]
     pub last_zcode_user_position: Option<usize>,
@@ -321,6 +325,7 @@ impl ParseState {
             previous_codex_total: TokenUsage::default(),
             last_claude_message_id: None,
             last_claude_message_usage: TokenUsage::default(),
+            previous_grok_total: TokenUsage::default(),
             last_zcode_user_fingerprint: None,
             last_zcode_user_position: None,
             seen_tool_ids: HashSet::new(),
@@ -893,7 +898,16 @@ pub struct SessionsResponse {
     pub page: u64,
     pub page_size: u64,
     pub models: Vec<String>,
-    pub projects: Vec<String>,
+    pub projects: Vec<ProjectFilterOption>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFilterOption {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub member_count: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -962,6 +976,77 @@ pub struct ProcessPhase {
 pub struct SessionContentPreview {
     pub prompt: Option<String>,
     pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextMetric {
+    pub key: String,
+    pub tokens: Option<u64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSummary {
+    pub total_tokens: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub compactions: u64,
+    pub event_count: u64,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextTimelineEvent {
+    pub id: String,
+    pub sequence: u64,
+    pub occurred_at: Option<String>,
+    pub kind: String,
+    pub name: String,
+    pub phase: String,
+    pub success: Option<bool>,
+    pub duration_ms: Option<u64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBrowserItem {
+    pub id: String,
+    pub label: String,
+    pub text: Option<String>,
+    pub tokens: Option<u64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBrowserCategory {
+    pub key: String,
+    pub items: Vec<ContextBrowserItem>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBrowser {
+    pub categories: Vec<ContextBrowserCategory>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    pub status: String,
+    pub summary: ContextSummary,
+    pub composition: Vec<ContextMetric>,
+    pub events: Vec<ContextTimelineEvent>,
+    pub has_more: bool,
+    pub next_offset: Option<u64>,
+    pub browser: ContextBrowser,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1208,6 +1293,39 @@ pub struct ProjectControl {
     pub project_label: String,
     pub session_count: u64,
     pub excluded: bool,
+    pub local_path: Option<String>,
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMemberSummary {
+    pub project_hash: String,
+    pub project_label: String,
+    pub local_path: Option<String>,
+    pub session_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub member_count: u64,
+    pub session_count: u64,
+    pub active_seconds: u64,
+    pub usage: TokenUsage,
+    pub estimated_cost_usd: Option<f64>,
+    pub cost_coverage: f64,
+    pub files_touched: u64,
+    pub lines_added: u64,
+    pub lines_deleted: u64,
+    pub tool_calls: u64,
+    pub errors: u64,
+    pub latest_activity: Option<String>,
+    pub members: Vec<ProjectMemberSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]

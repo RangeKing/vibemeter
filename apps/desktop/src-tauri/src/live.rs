@@ -473,7 +473,7 @@ impl LiveMonitor {
                         if status == "completed"
                             && matches!(
                                 session.agent.as_str(),
-                                "deepseek-harness" | "kimi-code" | "zcode"
+                                "deepseek-harness" | "kimi-code" | "grok-build" | "zcode"
                             )
                         {
                             let _ = external_database.complete_notch_session(&session);
@@ -502,7 +502,7 @@ impl LiveMonitor {
                         if sessions.get(id).is_some_and(|session| {
                             matches!(
                                 session.agent.as_str(),
-                                "deepseek-harness" | "kimi-code" | "zcode"
+                                "deepseek-harness" | "kimi-code" | "grok-build" | "zcode"
                             )
                         }) {
                             sessions.remove(id);
@@ -787,6 +787,7 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
     };
     let kimi_available = live_sources::provider_available("kimi-code");
     let deepseek_available = live_sources::provider_available("deepseek-harness");
+    let grok_available = live_sources::provider_available("grok-build");
     let zcode_available = live_sources::provider_available("zcode");
     let providers = vec![
         HookProviderStatus {
@@ -817,6 +818,12 @@ pub fn hook_status(socket_ready: bool) -> HookStatus {
             available: kimi_available,
             installed: kimi_available,
             detail: if kimi_available { "ready" } else { "not-found" }.into(),
+        },
+        HookProviderStatus {
+            provider: "grok-build".into(),
+            available: grok_available,
+            installed: grok_available,
+            detail: if grok_available { "ready" } else { "not-found" }.into(),
         },
         HookProviderStatus {
             provider: "zcode".into(),
@@ -3590,6 +3597,7 @@ fn provider_label(agent: &str) -> &'static str {
         "codex" => "Codex",
         "deepseek-harness" => "DeepSeek Harness",
         "kimi-code" => "Kimi Code",
+        "grok-build" => "Grok Build",
         "zcode" => "ZCode",
         _ => "Agent",
     }

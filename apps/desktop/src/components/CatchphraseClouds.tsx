@@ -15,6 +15,7 @@ const AGENT_COLORS: Record<string, string> = {
   openclaw: "#3fbf9b",
   hermes: "#ee6a9d",
   zcode: "#f2b66d",
+  "grok-build": "#4a6cf7",
 };
 
 function agentColor(agent: string): string {

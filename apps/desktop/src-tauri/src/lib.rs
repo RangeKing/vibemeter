@@ -26,10 +26,11 @@ use crate::models::{
     DiagnosticRetentionStatus, ExportRequest, ExportResult, HookStatus, IndexStatus,
     InsightsResponse, LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, NotchClearResult,
     OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl, ProviderUsage,
-    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionsResponse, SharePreview,
-    ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
+    SavePlaybookRequest, SessionContext, SessionDetail, SessionListFilters, SessionsResponse,
+    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
+use crate::source_capabilities::source_capabilities;
 use chrono::Utc;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -372,6 +373,24 @@ async fn get_session_detail(state: State<'_, AppState>, id: String) -> AppResult
 }
 
 #[tauri::command]
+async fn get_session_context(
+    state: State<'_, AppState>,
+    id: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> AppResult<SessionContext> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut context =
+            database.session_context(&id, offset.unwrap_or(0), limit.unwrap_or(50))?;
+        context.browser = ingestion::session_context_browser(&database, &id, &context.events)?;
+        Ok(context)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
 async fn get_comparison(
     state: State<'_, AppState>,
     range: String,
@@ -380,6 +399,20 @@ async fn get_comparison(
     tauri::async_runtime::spawn_blocking(move || database.comparison(&range))
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_project_summaries(
+    state: State<'_, AppState>,
+    range: String,
+    agent: Option<String>,
+) -> AppResult<Vec<crate::models::ProjectSummary>> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        database.project_summaries(&range, agent.as_deref())
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
 
 #[tauri::command]
@@ -478,6 +511,54 @@ async fn delete_playbook_item(state: State<'_, AppState>, id: String) -> AppResu
 async fn get_projects(state: State<'_, AppState>) -> AppResult<Vec<ProjectControl>> {
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || database.projects())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn create_project_group(
+    state: State<'_, AppState>,
+    name: String,
+    project_hashes: Vec<String>,
+) -> AppResult<String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        database.create_project_group(&name, &project_hashes)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn rename_project_group(
+    state: State<'_, AppState>,
+    group_id: String,
+    name: String,
+) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.rename_project_group(&group_id, &name))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn update_project_group_members(
+    state: State<'_, AppState>,
+    group_id: String,
+    project_hashes: Vec<String>,
+) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        database.update_project_group_members(&group_id, &project_hashes)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn delete_project_group(state: State<'_, AppState>, group_id: String) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.delete_project_group(&group_id))
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
@@ -664,6 +745,7 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("liveHooksEnabled", "true"),
             ("notchEnabled", "true"),
             ("menuBarEnabled", "true"),
+            ("dataPageAgents", "auto"),
             ("iaMigrationTipSeen", "false"),
         ] {
             settings.insert(
@@ -724,6 +806,16 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),
+        "dataPageAgents" => {
+            value == "auto"
+                || serde_json::from_str::<Vec<String>>(value).is_ok_and(|agents| {
+                    agents.iter().all(|agent| {
+                        source_capabilities()
+                            .iter()
+                            .any(|capability| capability.agent == agent.as_str())
+                    })
+                })
+        }
         _ => return Err(AppError::InvalidRequest("unknown setting".into())),
     };
     if valid {
@@ -1032,7 +1124,9 @@ pub fn run() {
             split_session,
             get_sessions,
             get_session_detail,
+            get_session_context,
             get_comparison,
+            get_project_summaries,
             render_share_preview,
             export_share,
             render_share_png,
@@ -1043,6 +1137,10 @@ pub fn run() {
             save_playbook_item,
             delete_playbook_item,
             get_projects,
+            create_project_group,
+            rename_project_group,
+            update_project_group_members,
+            delete_project_group,
             exclude_project,
             include_project,
             clear_local_data,
@@ -1113,5 +1211,14 @@ mod startup_tests {
         assert!(validate_setting("useSystemProxy", "true").is_ok());
         assert!(validate_setting("useSystemProxy", "false").is_ok());
         assert!(validate_setting("useSystemProxy", "automatic").is_err());
+    }
+
+    #[test]
+    fn data_page_agent_setting_accepts_auto_and_known_agents_only() {
+        assert!(validate_setting("dataPageAgents", "auto").is_ok());
+        assert!(validate_setting("dataPageAgents", "[]").is_ok());
+        assert!(validate_setting("dataPageAgents", r#"["codex","grok-build"]"#).is_ok());
+        assert!(validate_setting("dataPageAgents", r#"["not-an-agent"]"#).is_err());
+        assert!(validate_setting("dataPageAgents", "not-json").is_err());
     }
 }

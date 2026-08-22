@@ -1,14 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileCode2, GitBranch, GitCommitHorizontal, Search, Split, X } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, FileCode2, FolderKanban, GitBranch, GitCommitHorizontal, LayoutList, Search, Split, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "./RangePicker";
+import { SessionContext as SessionContextView } from "./SessionContext";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "./ui";
 import { api } from "../lib/api";
-import { formatCompact, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
+import { formatCompact, formatCurrency, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
-import type { Locale, SessionDetail, SessionSummary } from "../types";
+import type { Locale, ProjectSummary, SessionContext, SessionDetail, SessionSummary } from "../types";
 import { buildTrajectory, type TrajectoryLane } from "./sessionTrajectory";
 
 const PAGE_SIZE = 50;
@@ -43,6 +44,9 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
   const [expandedPhaseIds, setExpandedPhaseIds] = useState<Set<string>>(() => new Set());
   const [activePhaseId, setActivePhaseId] = useState<string>();
   const [trajectoryTooltip, setTrajectoryTooltip] = useState<TrajectoryTooltip>();
+  const [detailTab, setDetailTab] = useState<"process" | "context">("process");
+  const [contextOffset, setContextOffset] = useState(0);
+  const [contextData, setContextData] = useState<SessionContext>();
   const phaseRefs = useRef(new Map<string, HTMLElement>());
   const highlightTimer = useRef<number | undefined>(undefined);
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
@@ -68,7 +72,39 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
     setExpandedPhaseIds(new Set());
     setActivePhaseId(undefined);
     setTrajectoryTooltip(undefined);
+    setDetailTab("process");
+    setContextOffset(0);
+    setContextData(undefined);
   }, [detail.id]);
+
+  const contextQuery = useQuery({
+    queryKey: ["session-context", detail.id, contextOffset],
+    queryFn: () => api.sessionContext(detail.id, contextOffset, 50),
+    enabled: detailTab === "context",
+  });
+
+  useEffect(() => {
+    if (!contextQuery.data) return;
+    setContextData((current) => {
+      if (contextOffset === 0 || !current) return contextQuery.data;
+      const events = Array.from(new Map(
+        [...current.events, ...contextQuery.data.events].map((event) => [event.id, event]),
+      ).values());
+      const categories = contextQuery.data.browser.categories.map((category) => {
+        const previous = current.browser.categories.find((item) => item.key === category.key);
+        const items = Array.from(new Map(
+          [...(previous?.items ?? []), ...category.items].map((item) => [item.id, item]),
+        ).values());
+        const coverage = items.some((item) => item.coverage === "observed")
+          ? "observed"
+          : category.coverage === "estimated" || previous?.coverage === "estimated"
+            ? "estimated"
+            : category.coverage;
+        return { ...category, items, coverage };
+      });
+      return { ...contextQuery.data, events, browser: { categories } };
+    });
+  }, [contextOffset, contextQuery.data]);
 
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
@@ -142,6 +178,22 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
       </div>
       {detail.task ? <div className="task-assignment"><span>{detail.task.title}</span><button onClick={() => split.mutate()} disabled={split.isPending}><Split size={13} />{t("sessions.splitTask")}</button></div> : null}
 
+      <nav className="replay-tabs" aria-label={t("sessions.detailTabs")}>
+        <button className={detailTab === "process" ? "active" : ""} aria-selected={detailTab === "process"} onClick={() => setDetailTab("process")}>{t("sessions.process")}</button>
+        <button className={detailTab === "context" ? "active" : ""} aria-selected={detailTab === "context"} onClick={() => setDetailTab("context")}>{t("sessions.contextTab")}</button>
+      </nav>
+
+      {detailTab === "context" ? (
+        <SessionContextView
+          context={contextData}
+          locale={locale}
+          isLoading={contextQuery.isLoading}
+          isError={contextQuery.isError}
+          loadingMore={contextQuery.isFetching && contextOffset > 0}
+          onRetry={() => void contextQuery.refetch()}
+          onLoadMore={() => setContextOffset(contextData?.nextOffset ?? contextData?.events.length ?? 0)}
+        />
+      ) : <>
       <section className="replay-section process-section">
         <header><div><h3>{t("sessions.process")}</h3><p>{t("sessions.processBody")}</p></div><span>{t("sessions.eventCount", { count: totalEvents })}</span></header>
         {detail.phases.length ? (
@@ -313,6 +365,7 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
       </div>
 
       <section className="capability-strip"><strong>{t("sessions.capabilities")}</strong>{detail.capabilities.map((item) => <span key={item}><CheckCircle2 size={12} />{item}</span>)}</section>
+      </>}
     </aside>
   );
 }
@@ -337,6 +390,8 @@ export function SessionsWorkspace({
   const [commitOnly, setCommitOnly] = useState(false);
   const [page, setPage] = useState(0);
   const [items, setItems] = useState<SessionSummary[]>([]);
+  const [view, setView] = useState<"projects" | "sessions">("projects");
+  const [projectSort, setProjectSort] = useState("recent");
 
   useEffect(() => {
     const handle = window.setTimeout(() => setSearch(searchInput.trim()), 250);
@@ -364,6 +419,10 @@ export function SessionsWorkspace({
       pageSize: PAGE_SIZE,
     }),
   });
+  const projectQuery = useQuery({
+    queryKey: ["project-summaries", range, agent],
+    queryFn: () => api.projectSummaries(range, agent || undefined),
+  });
   const detail = useQuery({ queryKey: ["session", selectedId], queryFn: () => api.sessionDetail(selectedId ?? ""), enabled: Boolean(selectedId) });
 
   useEffect(() => {
@@ -380,42 +439,78 @@ export function SessionsWorkspace({
   const total = query.data?.total ?? 0;
   const hasMore = items.length < total;
   const loadingMore = query.isFetching && page > 0;
+  const sortedProjects = useMemo(() => {
+    const rows = [...(projectQuery.data ?? [])];
+    const value = (item: ProjectSummary) => {
+      if (projectSort === "sessions") return item.sessionCount;
+      if (projectSort === "duration") return item.activeSeconds;
+      if (projectSort === "tokens") return tokenTotal(item.usage);
+      if (projectSort === "cost") return item.estimatedCostUsd ?? -1;
+      if (projectSort === "files") return item.filesTouched;
+      if (projectSort === "lines") return item.linesAdded + item.linesDeleted;
+      if (projectSort === "tools") return item.toolCalls;
+      if (projectSort === "errors") return item.errors;
+      return new Date(item.latestActivity ?? 0).getTime();
+    };
+    return rows.sort((left, right) => value(right) - value(left) || left.label.localeCompare(right.label));
+  }, [projectQuery.data, projectSort]);
+
+  const projectFilterOptions = (
+    <>
+      {projects.filter((item) => item.kind === "group").map((item) => <option key={item.id} value={item.id}>{item.label} · {t("sessions.projectGroup")}</option>)}
+      {projects.filter((item) => item.kind !== "group").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+    </>
+  );
 
   return (
     <div className={`page sessions-page ${selectedId ? "showing-replay" : ""}`}>
       {!selectedId ? <>
-        <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<RangePicker />} />
+        <PageHeader title={t("sessions.title")} description={t("sessions.description")} actions={<><div className="segmented compact session-view-switch"><button className={view === "projects" ? "active" : ""} onClick={() => setView("projects")}><FolderKanban size={13} />{t("sessions.projectsView")}</button><button className={view === "sessions" ? "active" : ""} onClick={() => setView("sessions")}><LayoutList size={13} />{t("sessions.sessionsView")}</button></div><RangePicker /></>} />
         <div className="session-toolbar">
           <label className="search-field"><Search size={16} /><input value={searchInput} onChange={(event) => setSearchInput(event.target.value)} placeholder={t("sessions.search")} />{searchInput ? <button onClick={() => setSearchInput("")} aria-label={t("actions.clear")}><X size={14} /></button> : null}</label>
-        <select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t("sessions.allAgents")}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="deepseek-harness">DeepSeek Harness</option><option value="kimi-code">Kimi Code</option><option value="cursor">Cursor</option><option value="openclaw">OpenClaw</option><option value="hermes">Hermes</option><option value="zcode">ZCode</option></select>
+        <select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t("sessions.allAgents")}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="deepseek-harness">DeepSeek Harness</option><option value="kimi-code">Kimi Code</option><option value="grok-build">Grok Build</option><option value="cursor">Cursor</option><option value="openclaw">OpenClaw</option><option value="hermes">Hermes</option><option value="zcode">ZCode</option></select>
           <select value={model} onChange={(event) => setModel(event.target.value)}><option value="">{t("sessions.allModels")}</option>{models.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-          <select value={project} onChange={(event) => setProject(event.target.value)}><option value="">{t("sessions.allProjects")}</option>{projects.map((item) => <option key={item} value={item}>{item}</option>)}</select>
-          <select value={state} onChange={(event) => setState(event.target.value)}><option value="">{t("sessions.allStates")}</option><option value="verified">{t("sessions.verification.verified")}</option><option value="unverified">{t("sessions.verification.unverified")}</option><option value="not-applicable">{t("sessions.verification.not-applicable")}</option></select>
-          <label className="filter-check"><input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />{t("sessions.attentionOnly")}</label>
-          <label className="filter-check"><input type="checkbox" checked={codeOnly} onChange={(event) => setCodeOnly(event.target.checked)} />{t("sessions.codeOnly")}</label>
-          <label className="filter-check"><input type="checkbox" checked={commitOnly} onChange={(event) => setCommitOnly(event.target.checked)} />{t("sessions.commitOnly")}</label>
-          <span className="result-count">{t("sessions.resultCount", { count: total, shown: items.length })}</span>
+          <select value={project} onChange={(event) => setProject(event.target.value)}><option value="">{t("sessions.allProjects")}</option>{projectFilterOptions}</select>
+          {view === "sessions" ? <>
+            <select value={state} onChange={(event) => setState(event.target.value)}><option value="">{t("sessions.allStates")}</option><option value="verified">{t("sessions.verification.verified")}</option><option value="unverified">{t("sessions.verification.unverified")}</option><option value="not-applicable">{t("sessions.verification.not-applicable")}</option></select>
+            <label className="filter-check"><input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />{t("sessions.attentionOnly")}</label>
+            <label className="filter-check"><input type="checkbox" checked={codeOnly} onChange={(event) => setCodeOnly(event.target.checked)} />{t("sessions.codeOnly")}</label>
+            <label className="filter-check"><input type="checkbox" checked={commitOnly} onChange={(event) => setCommitOnly(event.target.checked)} />{t("sessions.commitOnly")}</label>
+            <span className="result-count">{t("sessions.resultCount", { count: total, shown: items.length })}</span>
+          </> : <select value={projectSort} onChange={(event) => setProjectSort(event.target.value)} aria-label={t("sessions.projectSort")}><option value="recent">{t("sessions.sortRecent")}</option><option value="sessions">{t("metrics.sessions")}</option><option value="duration">{t("metrics.duration")}</option><option value="tokens">{t("metrics.tokens")}</option><option value="cost">{t("metrics.cost")}</option><option value="files">{t("metrics.files")}</option><option value="lines">{t("metrics.lines")}</option><option value="tools">{t("metrics.tools")}</option><option value="errors">{t("metrics.errors")}</option></select>}
         </div>
-        <section className="session-ledger">
-          {query.isLoading && page === 0 ? <LoadingState /> : query.isError ? <ErrorState retry={() => void query.refetch()} /> : items.length === 0 ? <EmptyState title={t("sessions.emptyTitle")} body={t("sessions.emptyBody")} /> : items.map((session) => (
-            <button className="session-ledger-row" key={session.id} onClick={() => selectSession(session.id)}>
-              <span className="session-date">{formatDateTime(session.startedAt, locale)}</span>
-              <AgentBadge agent={session.agent} model={session.model} />
-              <span className="session-copy"><strong><SessionTitle session={session} /></strong><small>{session.projectLabel}</small></span>
-              <SessionEvidence session={session} locale={locale} />
-              <span className="session-usage"><strong>{formatCompact(tokenTotal(session.usage), locale)}</strong><small>{t("metrics.tokens")}</small></span>
-              <VerificationPill value={session.verificationState} />
-              <ChevronRight size={15} />
-            </button>
+        {view === "projects" ? <section className="project-summary-ledger">
+          {projectQuery.isLoading ? <LoadingState /> : projectQuery.isError ? <ErrorState retry={() => void projectQuery.refetch()} /> : sortedProjects.length === 0 ? <EmptyState title={t("sessions.projectEmptyTitle")} body={t("sessions.projectEmptyBody")} /> : sortedProjects.map((item) => (
+            <article className="project-summary-row" key={item.id}>
+              <button className="project-summary-main" onClick={() => { setProject(item.id); setView("sessions"); }}>
+                <span className="project-summary-title"><FolderKanban size={16} /><strong>{item.label}</strong><small>{t(item.kind === "group" ? "sessions.projectGroup" : "sessions.projectSingle")}{item.memberCount > 1 ? ` · ${t("sessions.projectMembers", { count: item.memberCount })}` : ""}</small></span>
+                <span><strong>{item.sessionCount}</strong><small>{t("metrics.sessions")}</small></span>
+                <span><strong>{formatDuration(item.activeSeconds, locale)}</strong><small>{t("metrics.duration")}</small></span>
+                <span><strong>{formatCompact(tokenTotal(item.usage), locale)}</strong><small>{t("metrics.tokens")}</small></span>
+                <span><strong>{item.estimatedCostUsd === undefined ? t("metrics.notRecorded") : formatCurrency(item.estimatedCostUsd, locale)}</strong><small>{t("metrics.cost")}</small></span>
+                <span><strong>{item.filesTouched}</strong><small>{t("metrics.files")}</small></span>
+                <ChevronRight size={15} />
+              </button>
+              <div className="project-summary-members">{item.members.map((member) => <div key={member.projectHash}><strong>{member.projectLabel}</strong><span>{t("sessions.projectMemberSessions", { count: member.sessionCount })}</span><small title={member.localPath ?? undefined}>{member.localPath ?? t("metrics.notRecorded")}</small></div>)}</div>
+              <div className="project-summary-extra"><span><strong>+{formatCompact(item.linesAdded, locale)} / −{formatCompact(item.linesDeleted, locale)}</strong><small>{t("metrics.lines")}</small></span><span><strong>{formatCompact(item.toolCalls, locale)}</strong><small>{t("metrics.tools")}</small></span><span><strong>{formatCompact(item.errors, locale)}</strong><small>{t("metrics.errors")}</small></span></div>
+            </article>
           ))}
-        </section>
-        {hasMore ? (
-          <div className="session-pagination">
-            <button className="button secondary" disabled={loadingMore} onClick={() => setPage((current) => current + 1)}>
-              {loadingMore ? t("actions.refreshing") : t("sessions.loadMore")}
-            </button>
-          </div>
-        ) : null}
+        </section> : <>
+          <section className="session-ledger">
+            {query.isLoading && page === 0 ? <LoadingState /> : query.isError ? <ErrorState retry={() => void query.refetch()} /> : items.length === 0 ? <EmptyState title={t("sessions.emptyTitle")} body={t("sessions.emptyBody")} /> : items.map((session) => (
+              <button className="session-ledger-row" key={session.id} onClick={() => selectSession(session.id)}>
+                <span className="session-date">{formatDateTime(session.startedAt, locale)}</span>
+                <AgentBadge agent={session.agent} model={session.model} />
+                <span className="session-copy"><strong><SessionTitle session={session} /></strong><small>{session.projectLabel}</small></span>
+                <SessionEvidence session={session} locale={locale} />
+                <span className="session-usage"><strong>{formatCompact(tokenTotal(session.usage), locale)}</strong><small>{t("metrics.tokens")}</small></span>
+                <VerificationPill value={session.verificationState} />
+                <ChevronRight size={15} />
+              </button>
+            ))}
+          </section>
+          {hasMore ? <div className="session-pagination"><button className="button secondary" disabled={loadingMore} onClick={() => setPage((current) => current + 1)}>{loadingMore ? t("actions.refreshing") : t("sessions.loadMore")}</button></div> : null}
+        </>}
       </> : detail.isLoading ? <LoadingState /> : detail.isError || !detail.data ? <ErrorState retry={() => void detail.refetch()} /> : <SessionReplay detail={detail.data} locale={locale} onClose={() => selectSession(undefined)} />}
     </div>
   );

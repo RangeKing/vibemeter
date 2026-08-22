@@ -30,6 +30,13 @@
       "jumpSupported": true
     },
     {
+      "agent": "grok-build",
+      "displayName": "Grok Build",
+      "historyCapability": "full",
+      "liveCapability": "exact",
+      "jumpSupported": true
+    },
+    {
       "agent": "zcode",
       "displayName": "ZCode",
       "historyCapability": "full",

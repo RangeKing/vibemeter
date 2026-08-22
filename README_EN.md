@@ -31,6 +31,10 @@ VibeMeter does not control your agents, approve requests, or modify source repos
 - **Learn from every session.** Data brings together sessions, input/output/cache tokens, time, cost, agents, models, tools, Skills, activity patterns, and work events.
 - **Turn behavior into identity.** VCTI maps verifiable local behavior to 24 AI coding personalities, with dimensions, confidence, and evidence. Thin evidence stays explicitly incomplete.
 
+Session details now have separate Process and Context views. Context is read-only observation: coverage is labeled Observed, Estimated, or Not recorded, with token summaries, context composition, an event timeline, and complete categories for system prompts, tool schemas, user messages, injected context, agent replies, and tool results. The first request loads the 50 most recent events and can continue into older history; text is sanitized and bounded only when previewed on demand, and complete source text is not stored.
+
+The Context browser’s interaction direction was informed by [dsh-context](https://github.com/bowenliang123/dsh-context). Thanks to [bowenliang123](https://github.com/bowenliang123) for the open-source work; VibeMeter uses an independent data model and implementation.
+
 Share and Settings remain utility surfaces. Catchphrases and insight cards live on VCTI; comparison bars and session replay live on Data. Sources remain a transitional route opened from Settings. The review workspace is intentionally not shipped in VibeMeter; its previous implementation remains archived in TokenGraph. `aftervibe` remains only as a legacy database migration identifier.
 
 ## 📸 Key screens

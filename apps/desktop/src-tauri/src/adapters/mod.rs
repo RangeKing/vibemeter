@@ -4,6 +4,7 @@ pub mod common;
 pub mod cursor;
 pub mod database_history;
 pub mod deepseek_harness;
+pub mod grok_build;
 pub mod kimi;
 pub mod openclaw;
 pub mod zcode;

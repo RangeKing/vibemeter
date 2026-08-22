@@ -399,6 +399,7 @@ export function activeProviderCounts(sessions: LiveSession[]) {
     claudeCode: active.filter((session) => session.agent === "claude-code").length,
     deepSeekHarness: active.filter((session) => session.agent === "deepseek-harness").length,
     kimiCode: active.filter((session) => session.agent === "kimi-code").length,
+    grokBuild: active.filter((session) => session.agent === "grok-build").length,
     zcode: active.filter((session) => session.agent === "zcode").length,
   };
 }
@@ -544,6 +545,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
   const claudeCount = providerCounts.claudeCode;
   const deepSeekCount = providerCounts.deepSeekHarness;
   const kimiCodeCount = providerCounts.kimiCode;
+  const grokBuildCount = providerCounts.grokBuild;
   const zcodeCount = providerCounts.zcode;
   const desiredLeftWingWidth = leftWingWidthForSession(
     singleWingSession ?? (singleWingAttention ? { projectLabel: singleWingAttention.projectLabel } : undefined),
@@ -813,6 +815,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
               <ProviderCount agent="claude-code" count={claudeCount} />
               <ProviderCount agent="deepseek-harness" count={deepSeekCount} />
               <ProviderCount agent="kimi-code" count={kimiCodeCount} />
+              <ProviderCount agent="grok-build" count={grokBuildCount} />
               <ProviderCount agent="zcode" count={zcodeCount} />
             </span>
           )}
@@ -840,6 +843,7 @@ export function NotchSurface({ locale }: { locale: Locale }) {
           <ProviderCount agent="claude-code" count={claudeCount} />
           <ProviderCount agent="deepseek-harness" count={deepSeekCount} />
           <ProviderCount agent="kimi-code" count={kimiCodeCount} />
+          <ProviderCount agent="grok-build" count={grokBuildCount} />
           <ProviderCount agent="zcode" count={zcodeCount} />
         </span>
         <span className="notch-hardware" aria-hidden="true" />
