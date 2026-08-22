@@ -1,7 +1,8 @@
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     AgentKind, AttentionEvent, AttentionQualityReport, BehaviorSignals, BehaviorSummary,
-    CanonicalEvent, ComparisonItem, CoverageNotice, DailyUsagePoint, DistributionItem,
+    CanonicalEvent, ComparisonItem, ContextBrowser, ContextBrowserCategory, ContextMetric,
+    ContextSummary, ContextTimelineEvent, CoverageNotice, DailyUsagePoint, DistributionItem,
     EvidenceReference, FileChange, FileChangeAccumulator, GitCommitEvidence, GitEvidence,
     GitFileStat, HourlyUsagePoint, IndexStatus, InsightItem, InsightStat, InsightsResponse,
     LiveActivityResponse, LiveConcurrencyLane, LiveHistoryItem, LiveSession, LiveTimelinePoint,
@@ -9,8 +10,9 @@ use crate::models::{
     PARSER_VERSION, ParseState, PhraseAgentCount, PhraseCloud, PhraseCloudItem,
     PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase,
     ProjectControl, ProjectFilterOption, ProjectMemberSummary, ProjectSummary, Provenance,
-    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionSummary, SessionsResponse,
-    SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage, VctiProfile,
+    SavePlaybookRequest, SessionContext, SessionDetail, SessionListFilters, SessionSummary,
+    SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage,
+    VctiProfile,
 };
 use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
@@ -6637,6 +6639,105 @@ impl Database {
         })
     }
 
+    pub fn session_context(&self, id: &str, offset: u64, limit: u64) -> AppResult<SessionContext> {
+        let detail = self.session_detail(id)?;
+        let connection = self.connect()?;
+        let all_events = query_session_events(&connection, id)?;
+        let event_count = all_events.len() as u64;
+        let usage = detail.summary.usage.clone();
+        let total_tokens = usage.total();
+        let token_coverage = if total_tokens > 0 {
+            "observed"
+        } else {
+            "not-recorded"
+        };
+        let coverage = if total_tokens > 0 {
+            "observed"
+        } else if event_count > 0 {
+            "estimated"
+        } else {
+            "not-recorded"
+        };
+        let cache_tokens = usage
+            .cache_read_tokens
+            .saturating_add(usage.cache_write_tokens)
+            .saturating_add(usage.cache_write_1h_tokens);
+        let has_token_usage = total_tokens > 0;
+        let token = |value: u64| has_token_usage.then_some(value);
+        let composition = [
+            ("input", token(usage.input_tokens)),
+            ("output", token(usage.output_tokens)),
+            ("cache", token(cache_tokens)),
+            ("reasoning", token(usage.reasoning_tokens)),
+            ("system", None),
+            ("tools", None),
+            ("user", None),
+            ("inject", None),
+            ("assistant", None),
+            ("tool", None),
+        ]
+        .into_iter()
+        .map(|(key, tokens)| ContextMetric {
+            key: key.into(),
+            tokens,
+            coverage: if tokens.is_some() {
+                token_coverage.into()
+            } else {
+                "not-recorded".into()
+            },
+        })
+        .collect();
+        let requested_offset = offset.min(event_count);
+        let requested_limit = limit.clamp(1, 100);
+        let events = all_events
+            .iter()
+            .rev()
+            .skip(requested_offset as usize)
+            .take(requested_limit as usize)
+            .enumerate()
+            .map(|(index, event)| ContextTimelineEvent {
+                id: format!("context-event-{}-{}", event.sequence, index),
+                sequence: event.sequence,
+                occurred_at: event.occurred_at.clone(),
+                kind: context_event_kind(event),
+                name: event.name.clone(),
+                phase: event.category.clone(),
+                success: event.success,
+                duration_ms: event.duration_ms,
+                coverage: context_coverage(&event.provenance),
+            })
+            .collect::<Vec<_>>();
+        let next_offset = requested_offset.saturating_add(events.len() as u64);
+        Ok(SessionContext {
+            status: if total_tokens > 0 || event_count > 0 {
+                if total_tokens > 0 { "ready" } else { "partial" }
+            } else {
+                "not-recorded"
+            }
+            .into(),
+            summary: ContextSummary {
+                total_tokens: token(total_tokens),
+                input_tokens: token(usage.input_tokens),
+                output_tokens: token(usage.output_tokens),
+                cache_tokens: token(cache_tokens),
+                reasoning_tokens: token(usage.reasoning_tokens),
+                compactions: all_events
+                    .iter()
+                    .filter(|event| event.event_type == "context.compact")
+                    .count() as u64,
+                event_count,
+                coverage: coverage.into(),
+            },
+            composition,
+            events,
+            has_more: next_offset < event_count,
+            next_offset: (next_offset < event_count).then_some(next_offset),
+            browser: ContextBrowser {
+                categories: context_browser_categories(),
+            },
+        })
+    }
+
     pub(crate) fn session_source_locator(&self, id: &str) -> AppResult<Option<(String, String)>> {
         let connection = self.connect()?;
         Ok(connection
@@ -8226,6 +8327,38 @@ fn query_session_events(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn context_coverage(provenance: &str) -> String {
+    if provenance == "observed" {
+        "observed".into()
+    } else {
+        "estimated".into()
+    }
+}
+
+fn context_event_kind(event: &CanonicalEvent) -> String {
+    match event.event_type.as_str() {
+        "prompt.observed" | "prompt" => "input",
+        "context.compact" | "context-compaction" => "compact",
+        "tool.observed" | "tool.start" | "tool.finish" | "tool.error" => "tool",
+        "verification.observed" | "file.change" => "file",
+        "lifecycle.error" | "agent.error" => "error",
+        "model.switch" => "model",
+        _ => "activity",
+    }
+    .into()
+}
+
+fn context_browser_categories() -> Vec<ContextBrowserCategory> {
+    ["system", "tools", "user", "inject", "assistant", "tool"]
+        .into_iter()
+        .map(|key| ContextBrowserCategory {
+            key: key.into(),
+            items: Vec::new(),
+            coverage: "not-recorded".into(),
+        })
+        .collect()
 }
 
 fn phase_for_event(event: &CanonicalEvent) -> &'static str {
@@ -10240,6 +10373,42 @@ mod concurrency_tests {
             names,
             ["Earlier", "Later", "SameFirst", "SameSecond", "Untimed"]
         );
+    }
+
+    #[test]
+    fn session_context_returns_recent_events_first_and_paginates_older_history() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database =
+            Database::open(temporary.path().join("context.sqlite")).expect("database should open");
+        let mut state = partial_text_history_state(AgentKind::Codex);
+        state.usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 40,
+            cache_read_tokens: 20,
+            ..TokenUsage::default()
+        };
+        let session_id = database
+            .persist_parse_state("context-file", 1, 1, 1, &state)
+            .expect("context session should persist");
+
+        let recent = database
+            .session_context(&session_id, 0, 2)
+            .expect("recent context should load");
+        assert_eq!(recent.summary.total_tokens, Some(160));
+        assert_eq!(recent.summary.input_tokens, Some(100));
+        assert_eq!(recent.summary.cache_tokens, Some(20));
+        assert_eq!(recent.summary.coverage, "observed");
+        assert_eq!(recent.events.len(), 2);
+        assert!(recent.has_more);
+        assert_eq!(recent.next_offset, Some(2));
+
+        let older = database
+            .session_context(&session_id, 2, 50)
+            .expect("older context should load");
+        assert!(!older.events.is_empty());
+        assert!(!older.has_more);
+        assert_eq!(older.next_offset, None);
+        assert_ne!(recent.events[0].id, older.events[0].id);
     }
 
     #[test]

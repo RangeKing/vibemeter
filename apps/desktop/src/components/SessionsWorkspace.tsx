@@ -4,11 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "./RangePicker";
+import { SessionContext as SessionContextView } from "./SessionContext";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "./ui";
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
-import type { Locale, ProjectSummary, SessionDetail, SessionSummary } from "../types";
+import type { Locale, ProjectSummary, SessionContext, SessionDetail, SessionSummary } from "../types";
 import { buildTrajectory, type TrajectoryLane } from "./sessionTrajectory";
 
 const PAGE_SIZE = 50;
@@ -43,6 +44,9 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
   const [expandedPhaseIds, setExpandedPhaseIds] = useState<Set<string>>(() => new Set());
   const [activePhaseId, setActivePhaseId] = useState<string>();
   const [trajectoryTooltip, setTrajectoryTooltip] = useState<TrajectoryTooltip>();
+  const [detailTab, setDetailTab] = useState<"process" | "context">("process");
+  const [contextOffset, setContextOffset] = useState(0);
+  const [contextData, setContextData] = useState<SessionContext>();
   const phaseRefs = useRef(new Map<string, HTMLElement>());
   const highlightTimer = useRef<number | undefined>(undefined);
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
@@ -68,7 +72,39 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
     setExpandedPhaseIds(new Set());
     setActivePhaseId(undefined);
     setTrajectoryTooltip(undefined);
+    setDetailTab("process");
+    setContextOffset(0);
+    setContextData(undefined);
   }, [detail.id]);
+
+  const contextQuery = useQuery({
+    queryKey: ["session-context", detail.id, contextOffset],
+    queryFn: () => api.sessionContext(detail.id, contextOffset, 50),
+    enabled: detailTab === "context",
+  });
+
+  useEffect(() => {
+    if (!contextQuery.data) return;
+    setContextData((current) => {
+      if (contextOffset === 0 || !current) return contextQuery.data;
+      const events = Array.from(new Map(
+        [...current.events, ...contextQuery.data.events].map((event) => [event.id, event]),
+      ).values());
+      const categories = contextQuery.data.browser.categories.map((category) => {
+        const previous = current.browser.categories.find((item) => item.key === category.key);
+        const items = Array.from(new Map(
+          [...(previous?.items ?? []), ...category.items].map((item) => [item.id, item]),
+        ).values());
+        const coverage = items.some((item) => item.coverage === "observed")
+          ? "observed"
+          : category.coverage === "estimated" || previous?.coverage === "estimated"
+            ? "estimated"
+            : category.coverage;
+        return { ...category, items, coverage };
+      });
+      return { ...contextQuery.data, events, browser: { categories } };
+    });
+  }, [contextOffset, contextQuery.data]);
 
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
@@ -142,6 +178,22 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
       </div>
       {detail.task ? <div className="task-assignment"><span>{detail.task.title}</span><button onClick={() => split.mutate()} disabled={split.isPending}><Split size={13} />{t("sessions.splitTask")}</button></div> : null}
 
+      <nav className="replay-tabs" aria-label={t("sessions.detailTabs")}>
+        <button className={detailTab === "process" ? "active" : ""} aria-selected={detailTab === "process"} onClick={() => setDetailTab("process")}>{t("sessions.process")}</button>
+        <button className={detailTab === "context" ? "active" : ""} aria-selected={detailTab === "context"} onClick={() => setDetailTab("context")}>{t("sessions.contextTab")}</button>
+      </nav>
+
+      {detailTab === "context" ? (
+        <SessionContextView
+          context={contextData}
+          locale={locale}
+          isLoading={contextQuery.isLoading}
+          isError={contextQuery.isError}
+          loadingMore={contextQuery.isFetching && contextOffset > 0}
+          onRetry={() => void contextQuery.refetch()}
+          onLoadMore={() => setContextOffset(contextData?.nextOffset ?? contextData?.events.length ?? 0)}
+        />
+      ) : <>
       <section className="replay-section process-section">
         <header><div><h3>{t("sessions.process")}</h3><p>{t("sessions.processBody")}</p></div><span>{t("sessions.eventCount", { count: totalEvents })}</span></header>
         {detail.phases.length ? (
@@ -313,6 +365,7 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
       </div>
 
       <section className="capability-strip"><strong>{t("sessions.capabilities")}</strong>{detail.capabilities.map((item) => <span key={item}><CheckCircle2 size={12} />{item}</span>)}</section>
+      </>}
     </aside>
   );
 }

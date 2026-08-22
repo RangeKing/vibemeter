@@ -980,6 +980,77 @@ pub struct SessionContentPreview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ContextMetric {
+    pub key: String,
+    pub tokens: Option<u64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextSummary {
+    pub total_tokens: Option<u64>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub compactions: u64,
+    pub event_count: u64,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextTimelineEvent {
+    pub id: String,
+    pub sequence: u64,
+    pub occurred_at: Option<String>,
+    pub kind: String,
+    pub name: String,
+    pub phase: String,
+    pub success: Option<bool>,
+    pub duration_ms: Option<u64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBrowserItem {
+    pub id: String,
+    pub label: String,
+    pub text: Option<String>,
+    pub tokens: Option<u64>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBrowserCategory {
+    pub key: String,
+    pub items: Vec<ContextBrowserItem>,
+    pub coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextBrowser {
+    pub categories: Vec<ContextBrowserCategory>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionContext {
+    pub status: String,
+    pub summary: ContextSummary,
+    pub composition: Vec<ContextMetric>,
+    pub events: Vec<ContextTimelineEvent>,
+    pub has_more: bool,
+    pub next_offset: Option<u64>,
+    pub browser: ContextBrowser,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileChange {
     pub id: String,
     pub path: String,

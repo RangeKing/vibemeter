@@ -478,6 +478,59 @@ export interface SessionContentPreview {
   output?: string;
 }
 
+export interface ContextMetric {
+  key: string;
+  tokens?: number;
+  coverage: "observed" | "estimated" | "not-recorded" | string;
+}
+
+export interface ContextSummary {
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheTokens?: number;
+  reasoningTokens?: number;
+  compactions: number;
+  eventCount: number;
+  coverage: "observed" | "estimated" | "not-recorded" | string;
+}
+
+export interface ContextTimelineEvent {
+  id: string;
+  sequence: number;
+  occurredAt?: string;
+  kind: "input" | "tool" | "compact" | "file" | "error" | "model" | "activity" | string;
+  name: string;
+  phase: string;
+  success?: boolean;
+  durationMs?: number;
+  coverage: "observed" | "estimated" | "not-recorded" | string;
+}
+
+export interface ContextBrowserItem {
+  id: string;
+  label: string;
+  text?: string;
+  tokens?: number;
+  coverage: "observed" | "estimated" | "not-recorded" | string;
+}
+
+export interface ContextBrowserCategory {
+  key: "system" | "tools" | "user" | "inject" | "assistant" | "tool" | string;
+  items: ContextBrowserItem[];
+  coverage: "observed" | "estimated" | "not-recorded" | string;
+}
+
+export interface SessionContext {
+  status: "ready" | "partial" | "not-recorded" | string;
+  summary: ContextSummary;
+  composition: ContextMetric[];
+  events: ContextTimelineEvent[];
+  hasMore: boolean;
+  nextOffset?: number;
+  browser: { categories: ContextBrowserCategory[] };
+}
+
 export interface FileChange {
   id: string;
   path: string;

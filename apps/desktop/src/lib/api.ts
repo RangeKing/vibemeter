@@ -25,6 +25,7 @@ import type {
   SessionsResponse,
   SharePreview,
   ShareRenderRequest,
+  SessionContext,
   SourceStatus,
   TaskSummary,
   VctiProfile,
@@ -77,6 +78,8 @@ export const api = {
       pageSize: query.pageSize ?? 50,
     }),
   sessionDetail: (id: string) => invoke<SessionDetail>("get_session_detail", { id }),
+  sessionContext: (id: string, offset = 0, limit = 50) =>
+    invoke<SessionContext>("get_session_context", { id, offset, limit }),
   comparison: (range: string) => invoke<ComparisonItem[]>("get_comparison", { range }),
   projectSummaries: (range: string, agent?: string) =>
     invoke<ProjectSummary[]>("get_project_summaries", { range, agent }),

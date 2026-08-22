@@ -26,8 +26,8 @@ use crate::models::{
     DiagnosticRetentionStatus, ExportRequest, ExportResult, HookStatus, IndexStatus,
     InsightsResponse, LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, NotchClearResult,
     OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl, ProviderUsage,
-    SavePlaybookRequest, SessionDetail, SessionListFilters, SessionsResponse, SharePreview,
-    ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
+    SavePlaybookRequest, SessionContext, SessionDetail, SessionListFilters, SessionsResponse,
+    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
 use crate::source_capabilities::source_capabilities;
@@ -367,6 +367,24 @@ async fn get_session_detail(state: State<'_, AppState>, id: String) -> AppResult
         let mut detail = database.session_detail(&id)?;
         detail.content_preview = ingestion::session_content_preview(&database, &id)?;
         Ok(detail)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_session_context(
+    state: State<'_, AppState>,
+    id: String,
+    offset: Option<u64>,
+    limit: Option<u64>,
+) -> AppResult<SessionContext> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut context =
+            database.session_context(&id, offset.unwrap_or(0), limit.unwrap_or(50))?;
+        context.browser = ingestion::session_context_browser(&database, &id, &context.events)?;
+        Ok(context)
     })
     .await
     .map_err(|error| AppError::InvalidRequest(error.to_string()))?
@@ -1106,6 +1124,7 @@ pub fn run() {
             split_session,
             get_sessions,
             get_session_detail,
+            get_session_context,
             get_comparison,
             get_project_summaries,
             render_share_preview,

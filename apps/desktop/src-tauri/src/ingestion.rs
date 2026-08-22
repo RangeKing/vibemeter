@@ -5,7 +5,10 @@ use crate::adapters::{
 use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
-use crate::models::{AgentKind, IndexStatus, PARSER_VERSION, ParseState, SessionContentPreview};
+use crate::models::{
+    AgentKind, ContextBrowser, ContextBrowserCategory, ContextBrowserItem, ContextTimelineEvent,
+    IndexStatus, PARSER_VERSION, ParseState, SessionContentPreview,
+};
 use crate::privacy::stable_hash;
 use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
@@ -831,6 +834,69 @@ pub(crate) fn session_content_preview(
         }
     }
     Ok(SessionContentPreview::default())
+}
+
+pub(crate) fn session_context_browser(
+    database: &Database,
+    session_id: &str,
+    events: &[ContextTimelineEvent],
+) -> AppResult<ContextBrowser> {
+    let preview = session_content_preview(database, session_id)?;
+    let mut categories = ["system", "tools", "user", "inject", "assistant", "tool"]
+        .into_iter()
+        .map(|key| ContextBrowserCategory {
+            key: key.into(),
+            items: Vec::new(),
+            coverage: "not-recorded".into(),
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(text) = preview.prompt {
+        if let Some(category) = categories
+            .iter_mut()
+            .find(|category| category.key == "user")
+        {
+            category.coverage = "observed".into();
+            category.items.push(ContextBrowserItem {
+                id: "context-user-preview".into(),
+                label: "Prompt preview".into(),
+                text: Some(text),
+                tokens: None,
+                coverage: "observed".into(),
+            });
+        }
+    }
+    if let Some(text) = preview.output {
+        if let Some(category) = categories
+            .iter_mut()
+            .find(|category| category.key == "assistant")
+        {
+            category.coverage = "observed".into();
+            category.items.push(ContextBrowserItem {
+                id: "context-assistant-preview".into(),
+                label: "Output preview".into(),
+                text: Some(text),
+                tokens: None,
+                coverage: "observed".into(),
+            });
+        }
+    }
+    for event in events.iter().filter(|event| event.kind == "tool") {
+        if let Some(category) = categories
+            .iter_mut()
+            .find(|category| category.key == "tool")
+        {
+            category.coverage = event.coverage.clone();
+            category.items.push(ContextBrowserItem {
+                id: event.id.clone(),
+                label: event.name.clone(),
+                text: Some(event.phase.clone()),
+                tokens: None,
+                coverage: event.coverage.clone(),
+            });
+        }
+    }
+    Ok(ContextBrowser { categories })
 }
 
 fn agent_kind_from_name(value: &str) -> Option<AgentKind> {

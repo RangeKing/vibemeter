@@ -1,12 +1,20 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
-import type { CanonicalEvent, SessionDetail } from "../types";
+import { api } from "../lib/api";
+import type { CanonicalEvent, SessionContext, SessionDetail } from "../types";
 import { SessionReplay } from "./SessionsWorkspace";
+
+vi.mock("../lib/api", () => ({
+  api: {
+    sessionContext: vi.fn(),
+    splitSession: vi.fn(),
+  },
+}));
 
 beforeAll(async () => {
   await i18n.changeLanguage("zh-CN");
@@ -78,6 +86,36 @@ const detail = {
   attention: [],
 } as SessionDetail;
 
+const contextData: SessionContext = {
+  status: "ready",
+  summary: {
+    totalTokens: 20,
+    inputTokens: 10,
+    outputTokens: 10,
+    cacheTokens: 0,
+    reasoningTokens: 0,
+    compactions: 0,
+    eventCount: 1,
+    coverage: "observed",
+  },
+  composition: [
+    { key: "input", tokens: 10, coverage: "observed" },
+    { key: "output", tokens: 10, coverage: "observed" },
+  ],
+  events: [],
+  hasMore: false,
+  browser: {
+    categories: [
+      { key: "system", items: [], coverage: "not-recorded" },
+      { key: "tools", items: [], coverage: "not-recorded" },
+      { key: "user", items: [], coverage: "not-recorded" },
+      { key: "inject", items: [], coverage: "not-recorded" },
+      { key: "assistant", items: [], coverage: "not-recorded" },
+      { key: "tool", items: [], coverage: "not-recorded" },
+    ],
+  },
+};
+
 function renderReplay(session = detail) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -90,6 +128,17 @@ function renderReplay(session = detail) {
 }
 
 describe("SessionReplay trajectory", () => {
+  it("loads context only when the context tab is selected", async () => {
+    vi.mocked(api.sessionContext).mockResolvedValue(contextData);
+    renderReplay();
+
+    expect(api.sessionContext).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "上下文" }));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "会话上下文" })).toBeTruthy());
+    expect(api.sessionContext).toHaveBeenCalledWith("session-1", 0, 50);
+  });
+
   it("renders the dual overview and expands phase events independently", () => {
     renderReplay();
 
