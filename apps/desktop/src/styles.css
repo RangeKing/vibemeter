@@ -966,6 +966,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .context-segment.segment-tool_use, .context-dot.segment-tool_use { background: #14b8a6; }
 .context-segment.segment-tool_result, .context-dot.segment-tool_result { background: #0ea5e9; }
 .context-structure-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.context-usage-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .context-structure-item { display: grid; gap: 8px; min-width: 0; min-height: 90px; padding: 11px; border: 1px solid var(--line); border-top: 3px solid var(--line-strong); border-radius: 9px; background: var(--surface-soft); }
 .context-structure-item > div { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .context-structure-item strong { overflow: hidden; font-size: var(--font-caption); text-overflow: ellipsis; white-space: nowrap; }
@@ -985,6 +986,10 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .context-structure-item.segment-assistant .context-dot { background: #3b82f6; }
 .context-structure-item.segment-tool_use .context-dot { background: #14b8a6; }
 .context-structure-item.segment-tool_result .context-dot { background: #0ea5e9; }
+.context-usage-item.usage-input { border-top-color: var(--trajectory-input); }
+.context-usage-item.usage-cache { border-top-color: var(--chart-4); }
+.context-usage-item.usage-output { border-top-color: var(--warm); }
+.context-usage-item.usage-reasoning { border-top-color: var(--trajectory-agent); }
 .context-composition-legend { display: flex; flex-wrap: wrap; gap: 7px 12px; margin-top: 12px; color: var(--muted); font-size: var(--font-caption); }
 .context-composition-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .context-composition-legend strong { color: var(--ink); font-variant-numeric: tabular-nums; }

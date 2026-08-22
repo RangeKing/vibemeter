@@ -612,6 +612,9 @@ impl LiveMonitor {
     }
 
     pub fn snapshot(&self) -> LiveSnapshot {
+        if let Ok(processes) = process_snapshot() {
+            reconcile_dead_cli_processes(&self.sessions, &processes, Utc::now());
+        }
         prune_sessions(&self.sessions);
         snapshot_from(
             &self.sessions,
@@ -3286,6 +3289,42 @@ fn prune_sessions(sessions: &Arc<RwLock<HashMap<String, LiveSession>>>) {
     }
 }
 
+fn reconcile_dead_cli_processes(
+    sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
+    processes: &HashMap<u32, ProcessRecord>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Ok(mut guard) = sessions.write() else {
+        return false;
+    };
+    let mut changed = false;
+    for session in guard.values_mut() {
+        if session.agent != "claude-code"
+            || session.origin.as_deref() != Some("cli")
+            || !matches!(session.status.as_str(), "idle" | "running")
+        {
+            continue;
+        }
+        let Some(process_id) = session.process_id else {
+            continue;
+        };
+        if processes.contains_key(&process_id) {
+            continue;
+        }
+        session.status = "paused".into();
+        session.phase = "paused".into();
+        session.activity_ended_at = Some(now.to_rfc3339());
+        session.waiting_reason = None;
+        session.actions = vec![LiveAction {
+            kind: "paused".into(),
+            label: "Stopped".into(),
+            occurred_at: now.to_rfc3339(),
+        }];
+        changed = true;
+    }
+    changed
+}
+
 fn priority(status: &str) -> u8 {
     match status {
         "waiting" => 4,
@@ -3991,6 +4030,43 @@ mod tests {
 
         assert!(!snapshot.attention_available);
         assert!(snapshot.attention_queue.is_empty());
+    }
+
+    #[test]
+    fn a_dead_claude_cli_process_cannot_remain_active_in_the_notch() {
+        let now = DateTime::parse_from_rfc3339("2026-08-22T12:00:00Z")
+            .expect("fixed clock")
+            .with_timezone(&Utc);
+        let mut session = jump_test_session("claude-code", "cli", None);
+        session.id = "claude-dead-process".into();
+        session.status = "running".into();
+        session.phase = "running-tool".into();
+        session.updated_at = "2026-08-22T11:59:30Z".into();
+        session.actions = vec![LiveAction {
+            kind: "tool".into(),
+            label: "Bash".into(),
+            occurred_at: session.updated_at.clone(),
+        }];
+        let sessions = Arc::new(RwLock::new(HashMap::from([(session.id.clone(), session)])));
+        let processes = parse_process_snapshot("100 1 ?? /bin/zsh\n");
+
+        assert!(reconcile_dead_cli_processes(&sessions, &processes, now));
+        let stopped = sessions
+            .read()
+            .expect("sessions should be readable")
+            .get("claude-dead-process")
+            .cloned()
+            .expect("stopped session should be retained for history");
+        assert_eq!(stopped.status, "paused");
+        assert_eq!(stopped.phase, "paused");
+        assert_eq!(
+            stopped.activity_ended_at.as_deref(),
+            Some("2026-08-22T12:00:00+00:00")
+        );
+        assert_eq!(
+            stopped.actions.last().map(|action| action.label.as_str()),
+            Some("Stopped")
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ type SessionContextProps = {
 };
 
 const structureKeys = ["system", "tools", "user", "injected", "assistant", "tool_use", "tool_result"];
+const usageKeys = ["input", "output", "cache", "reasoning"];
 
 function coverageClass(value: string) {
   return value === "observed" ? "is-observed" : value === "estimated" ? "is-estimated" : "is-missing";
@@ -63,6 +64,13 @@ export function SessionContext({ context, locale, isLoading, isError, onRetry }:
     tool_use: t("sessions.contextCategory.toolUse"),
     tool_result: t("sessions.contextCategory.toolResult"),
   };
+  const metricLabels: Record<string, string> = {
+    input: t("sessions.contextMetric.input"),
+    cache: t("sessions.contextMetric.cache"),
+    output: t("sessions.contextMetric.output"),
+    reasoning: t("sessions.contextMetric.reasoning"),
+  };
+  const compositionMetrics = new Map(context.composition.map((metric) => [metric.key, metric]));
   const categoryMetrics = new Map(context.composition.filter((metric) => structureKeys.includes(metric.key)).map((metric) => [metric.key, metric]));
   const structureMetrics = context.browser.categories.map((category) => {
     const metric = categoryMetrics.get(category.key);
@@ -74,10 +82,29 @@ export function SessionContext({ context, locale, isLoading, isError, onRetry }:
       coverage: metric?.tokens !== undefined ? metric.coverage : category.coverage,
     };
   });
-  const chartMetrics = structureMetrics.filter((metric) => metric.tokens !== undefined);
+  const hasStructureTokens = structureMetrics.some((metric) => metric.tokens !== undefined);
+  const summaryUsageTokens: Record<string, number | undefined> = {
+    input: context.summary.inputTokens,
+    output: context.summary.outputTokens,
+    cache: context.summary.cacheTokens,
+    reasoning: context.summary.reasoningTokens,
+  };
+  const usageMetrics = usageKeys.map((key) => {
+    const metric = compositionMetrics.get(key);
+    const tokens = metric?.tokens ?? summaryUsageTokens[key];
+    return {
+      key,
+      tokens,
+      coverage: metric?.tokens !== undefined ? metric.coverage : tokens !== undefined ? context.summary.coverage : "not-recorded",
+    };
+  });
+  const chartMetrics = (hasStructureTokens ? structureMetrics : usageMetrics)
+    .filter((metric) => metric.tokens !== undefined)
+    .map((metric) => ({
+      ...metric,
+      label: hasStructureTokens ? categoryLabels[metric.key] ?? metric.key : metricLabels[metric.key] ?? metric.key,
+    }));
   const chartTotal = chartMetrics.reduce((sum, metric) => sum + (metric.tokens ?? 0), 0);
-  const hasChartTokens = chartMetrics.length > 0;
-  const totalStructureItems = context.browser.categories.reduce((sum, category) => sum + category.items.reduce((count, item) => count + item.count, 0), 0);
   const summaryCards: Array<{ key: string; value?: number; label: string; coverage?: string }> = [
     { key: "total", value: context.summary.totalTokens, label: t("sessions.contextMetric.total"), coverage: context.summary.coverage },
     { key: "input", value: context.summary.inputTokens, label: t("sessions.contextMetric.input"), coverage: context.summary.coverage },
@@ -104,24 +131,29 @@ export function SessionContext({ context, locale, isLoading, isError, onRetry }:
       </div>
 
       <section className="context-card context-structure-card">
-        <header><div><h4>{t("sessions.contextComposition")}</h4><p>{t("sessions.contextCompositionBody")}</p></div><span>{hasChartTokens ? formatCompact(chartTotal, locale) : totalStructureItems ? t("sessions.contextItemCount", { count: totalStructureItems }) : t("metrics.notRecorded")}</span></header>
-        {hasChartTokens && chartTotal ? <div className="context-composition-bar" aria-label={t("sessions.contextComposition")}>
-          {chartMetrics.map((metric) => <i key={metric.key} className={`context-segment segment-${metric.key}`} style={{ width: `${((metric.tokens ?? 0) / chartTotal) * 100}%` }} title={`${categoryLabels[metric.key] ?? metric.key}: ${formatCompact(metric.tokens ?? 0, locale)}`} />)}
-        </div> : <div className="context-empty-inline"><CircleHelp size={15} />{t("sessions.contextCompositionMissing")}</div>}
+        <header><div><h4>{t("sessions.contextComposition")}</h4><p>{t("sessions.contextCompositionBody")}</p></div><span>{chartMetrics.length ? formatCompact(chartTotal, locale) : t("metrics.notRecorded")}</span></header>
+        {chartMetrics.length && chartTotal ? <div className="context-composition-bar" aria-label={t("sessions.contextComposition")}>
+          {chartMetrics.map((metric) => <i key={metric.key} className={`context-segment segment-${metric.key}`} style={{ width: `${((metric.tokens ?? 0) / chartTotal) * 100}%` }} title={`${metric.label}: ${formatCompact(metric.tokens ?? 0, locale)}`} />)}
+        </div> : chartMetrics.length ? null : <div className="context-empty-inline"><CircleHelp size={15} />{t("sessions.contextCompositionMissing")}</div>}
         <div className="context-composition-legend">
-          {chartMetrics.map((metric) => <span key={metric.key}><i className={`context-dot segment-${metric.key}`} />{categoryLabels[metric.key] ?? metric.key}<strong>{formatCompact(metric.tokens ?? 0, locale)}</strong></span>)}
+          {chartMetrics.map((metric) => <span key={metric.key}><i className={`context-dot segment-${metric.key}`} />{metric.label}<strong>{formatCompact(metric.tokens ?? 0, locale)}</strong></span>)}
         </div>
-        <div className="context-structure-grid">
+        {hasStructureTokens ? <div className="context-structure-grid">
           {context.browser.categories.map((category: ContextBrowserCategory) => {
             const metric = structureMetrics.find((entry) => entry.key === category.key);
-            const itemCount = category.items.reduce((sum, item) => sum + item.count, 0);
             return <article className={`context-structure-item segment-${category.key}`} key={category.key}>
               <div><i className="context-dot" /><strong>{categoryLabels[category.key] ?? category.key}</strong></div>
-              <b>{metric?.tokens !== undefined ? formatCompact(metric.tokens, locale) : itemCount ? t("sessions.contextItemCount", { count: itemCount }) : t("metrics.notRecorded")}</b>
-              <small className={coverageClass(metric?.tokens !== undefined ? metric.coverage : category.coverage)}>{t(`sessions.contextCoverage.${metric?.tokens !== undefined ? metric.coverage : category.coverage}`, { defaultValue: metric?.coverage ?? category.coverage })}</small>
+              <b>{metric?.tokens !== undefined ? formatCompact(metric.tokens, locale) : t("metrics.notRecorded")}</b>
+              <small className={coverageClass(metric?.coverage ?? category.coverage)}>{t(`sessions.contextCoverage.${metric?.coverage ?? category.coverage}`, { defaultValue: metric?.coverage ?? category.coverage })}</small>
             </article>;
           })}
-        </div>
+        </div> : <div className="context-structure-grid context-usage-grid">
+          {usageMetrics.map((metric) => <article className={`context-structure-item context-usage-item usage-${metric.key}`} key={metric.key}>
+            <div><i className={`context-dot segment-${metric.key}`} /><strong>{metricLabels[metric.key]}</strong></div>
+            <b>{metric.tokens !== undefined ? formatCompact(metric.tokens, locale) : t("metrics.notRecorded")}</b>
+            <small className={coverageClass(metric.coverage)}>{t(`sessions.contextCoverage.${metric.coverage}`, { defaultValue: metric.coverage })}</small>
+          </article>)}
+        </div>}
       </section>
 
       <section className="context-card context-browser-card">

@@ -93,8 +93,17 @@ describe("SessionContext", () => {
     expect(screen.getByRole("heading", { name: "会话上下文" })).toBeTruthy();
     expect(screen.getAllByText("已观测").length).toBeGreaterThan(0);
     expect(screen.getByText("上下文结构")).toBeTruthy();
-    expect(view.container.querySelector(".context-composition-bar")).toBeNull();
-    expect(view.container.querySelector('[title="输入: 100"]')).toBeNull();
+    expect(view.container.querySelector('[title="输入: 100"]')).toBeTruthy();
+    expect(view.container.querySelector('[title="用户消息: 100"]')).toBeNull();
+    expect(view.container.querySelector(".context-usage-grid")).toBeTruthy();
+    expect(view.container.querySelector(".context-usage-item.usage-input b")?.textContent).toBe("100");
+    expect(view.container.querySelector(".context-usage-item.usage-reasoning b")?.textContent).toBe("0");
+    expect([...view.container.querySelectorAll(".context-usage-item")].map((item) => [...item.classList].find((name) => name.startsWith("usage-")))).toEqual([
+      "usage-input",
+      "usage-output",
+      "usage-cache",
+      "usage-reasoning",
+    ]);
     expect(screen.getAllByText("系统提示词").length).toBeGreaterThan(0);
     expect(screen.getAllByText("工具定义").length).toBeGreaterThan(0);
     expect(screen.getAllByText("用户消息").length).toBeGreaterThan(0);
@@ -129,5 +138,6 @@ describe("SessionContext", () => {
     expect(view.container.querySelector(".context-structure-item.segment-user b")?.textContent).toBe("60");
     expect(view.container.querySelector(".context-structure-item.segment-tool_use b")?.textContent).toBe("40");
     expect(view.container.querySelector('[title="输入: 100"]')).toBeNull();
+    expect(view.container.querySelector(".context-usage-grid")).toBeNull();
   });
 });
