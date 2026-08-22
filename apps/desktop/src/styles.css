@@ -788,6 +788,16 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .search-field { display: flex; align-items: center; gap: 7px; width: min(310px, 100%); height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); color: var(--muted); }
 .search-field input { min-width: 0; height: 100%; flex: 1; padding: 0; border: 0; background: transparent; font-size: 10.5px; }
 .search-field button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.sessions-page .page-actions { display: flex; align-items: center; gap: 12px; }
+.sessions-page .session-view-switch,
+.sessions-page .range-picker { margin-right: 0; padding: 4px; border-radius: 12px; }
+.sessions-page .session-view-switch button,
+.sessions-page .range-picker button { height: calc(30px * 1.3); padding-inline: calc(10px * 1.3); gap: calc(5px * 1.3); border-radius: 8px; font-size: calc(var(--font-caption) * 1.3); }
+.sessions-page .session-view-switch button svg { width: 17px; height: 17px; }
+.sessions-page .session-toolbar { gap: 10px; }
+.sessions-page .session-toolbar > select { height: 36px; min-height: 36px; padding-inline: 13px; padding-right: 32px; font-size: calc(var(--font-caption) * 1.3); }
+.sessions-page .search-field input { font-size: calc(var(--font-caption) * 1.3); }
+.sessions-page .search-field > svg { width: 18px; height: 18px; }
 .filter-check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--font-caption); white-space: nowrap; }
 .filter-check input { min-height: 0; accent-color: var(--accent); }
 .result-count { margin-left: auto; color: var(--faint); font-size: var(--font-caption); }
