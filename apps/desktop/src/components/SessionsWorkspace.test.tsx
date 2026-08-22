@@ -109,9 +109,10 @@ const contextData: SessionContext = {
       { key: "system", items: [], coverage: "not-recorded" },
       { key: "tools", items: [], coverage: "not-recorded" },
       { key: "user", items: [], coverage: "not-recorded" },
-      { key: "inject", items: [], coverage: "not-recorded" },
+      { key: "injected", items: [], coverage: "not-recorded" },
       { key: "assistant", items: [], coverage: "not-recorded" },
-      { key: "tool", items: [], coverage: "not-recorded" },
+      { key: "tool_use", items: [], coverage: "not-recorded" },
+      { key: "tool_result", items: [], coverage: "not-recorded" },
     ],
   },
 };

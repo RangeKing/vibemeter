@@ -383,7 +383,7 @@ async fn get_session_context(
     tauri::async_runtime::spawn_blocking(move || {
         let mut context =
             database.session_context(&id, offset.unwrap_or(0), limit.unwrap_or(50))?;
-        context.browser = ingestion::session_context_browser(&database, &id, &context.events)?;
+        context.browser = ingestion::session_context_browser(&database, &id)?;
         Ok(context)
     })
     .await

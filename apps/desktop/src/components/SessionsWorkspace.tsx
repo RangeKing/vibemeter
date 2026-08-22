@@ -9,7 +9,7 @@ import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEv
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
-import type { Locale, ProjectSummary, SessionContext, SessionDetail, SessionSummary } from "../types";
+import type { Locale, ProjectSummary, SessionDetail, SessionSummary } from "../types";
 import { buildTrajectory, type TrajectoryLane } from "./sessionTrajectory";
 
 const PAGE_SIZE = 50;
@@ -45,8 +45,6 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
   const [activePhaseId, setActivePhaseId] = useState<string>();
   const [trajectoryTooltip, setTrajectoryTooltip] = useState<TrajectoryTooltip>();
   const [detailTab, setDetailTab] = useState<"process" | "context">("process");
-  const [contextOffset, setContextOffset] = useState(0);
-  const [contextData, setContextData] = useState<SessionContext>();
   const phaseRefs = useRef(new Map<string, HTMLElement>());
   const highlightTimer = useRef<number | undefined>(undefined);
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
@@ -73,38 +71,13 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
     setActivePhaseId(undefined);
     setTrajectoryTooltip(undefined);
     setDetailTab("process");
-    setContextOffset(0);
-    setContextData(undefined);
   }, [detail.id]);
 
   const contextQuery = useQuery({
-    queryKey: ["session-context", detail.id, contextOffset],
-    queryFn: () => api.sessionContext(detail.id, contextOffset, 50),
+    queryKey: ["session-context", detail.id],
+    queryFn: () => api.sessionContext(detail.id, 0, 50),
     enabled: detailTab === "context",
   });
-
-  useEffect(() => {
-    if (!contextQuery.data) return;
-    setContextData((current) => {
-      if (contextOffset === 0 || !current) return contextQuery.data;
-      const events = Array.from(new Map(
-        [...current.events, ...contextQuery.data.events].map((event) => [event.id, event]),
-      ).values());
-      const categories = contextQuery.data.browser.categories.map((category) => {
-        const previous = current.browser.categories.find((item) => item.key === category.key);
-        const items = Array.from(new Map(
-          [...(previous?.items ?? []), ...category.items].map((item) => [item.id, item]),
-        ).values());
-        const coverage = items.some((item) => item.coverage === "observed")
-          ? "observed"
-          : category.coverage === "estimated" || previous?.coverage === "estimated"
-            ? "estimated"
-            : category.coverage;
-        return { ...category, items, coverage };
-      });
-      return { ...contextQuery.data, events, browser: { categories } };
-    });
-  }, [contextOffset, contextQuery.data]);
 
   useEffect(() => () => {
     if (highlightTimer.current) window.clearTimeout(highlightTimer.current);
@@ -185,13 +158,11 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
 
       {detailTab === "context" ? (
         <SessionContextView
-          context={contextData}
+          context={contextQuery.data}
           locale={locale}
           isLoading={contextQuery.isLoading}
           isError={contextQuery.isError}
-          loadingMore={contextQuery.isFetching && contextOffset > 0}
           onRetry={() => void contextQuery.refetch()}
-          onLoadMore={() => setContextOffset(contextData?.nextOffset ?? contextData?.events.length ?? 0)}
         />
       ) : <>
       <section className="replay-section process-section">

@@ -6,10 +6,11 @@ use crate::database::Database;
 use crate::errors::AppResult;
 use crate::git_evidence;
 use crate::models::{
-    AgentKind, ContextBrowser, ContextBrowserCategory, ContextBrowserItem, ContextTimelineEvent,
-    IndexStatus, PARSER_VERSION, ParseState, SessionContentPreview,
+    AgentKind, ContextBrowser, ContextBrowserCategory, ContextBrowserItem, IndexStatus,
+    PARSER_VERSION, ParseState, SessionContentPreview,
 };
 use crate::privacy::stable_hash;
+use crate::providers::{claude_binary, codex_binary};
 use chrono::Utc;
 use chrono::{DateTime, SecondsFormat};
 use rusqlite::{Connection, params};
@@ -229,10 +230,9 @@ fn run_index(
             .map(|root| root.path.to_string_lossy().to_string())
             .collect::<Vec<_>>();
         let file_history_available = agent_roots.iter().any(|root| Path::new(root).is_dir());
-        let available = file_history_available
+        let available = agent_installation_available(agent, file_history_available)
             || (agent == AgentKind::Cursor && cursor_database_path().is_file())
-            || (agent == AgentKind::Hermes && hermes_database_path().is_file())
-            || (agent == AgentKind::ZCode && Path::new("/Applications/ZCode.app").is_dir());
+            || (agent == AgentKind::Hermes && hermes_database_path().is_file());
         let path_hash = stable_hash(&agent_roots.join("|"));
         database.upsert_source(
             agent,
@@ -810,6 +810,81 @@ fn source_roots() -> Vec<SourceRoot> {
     roots
 }
 
+fn agent_installation_available(agent: AgentKind, file_history_available: bool) -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return file_history_available;
+    };
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let zcode_base = std::env::var_os("ZCODE_DATA_BASE_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.clone());
+    let zcode_root = zcode_base.join(".zcode");
+    let claude_config_dir_available = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .into_iter()
+        .flat_map(|value| {
+            value
+                .to_string_lossy()
+                .split(',')
+                .map(|path| PathBuf::from(path.trim()))
+                .collect::<Vec<_>>()
+        })
+        .any(|path| path.is_dir());
+    let cli_available = match agent {
+        AgentKind::ClaudeCode => claude_binary().is_some(),
+        AgentKind::Codex => codex_binary().is_some(),
+        AgentKind::ZCode => zcode_binary_available(&home),
+        _ => false,
+    };
+    let app_available = agent == AgentKind::ZCode && Path::new("/Applications/ZCode.app").is_dir();
+    agent_installation_available_at(
+        agent,
+        file_history_available,
+        &home,
+        &codex_home,
+        &zcode_root,
+        claude_config_dir_available,
+        cli_available,
+        app_available,
+    )
+}
+
+fn agent_installation_available_at(
+    agent: AgentKind,
+    file_history_available: bool,
+    home: &Path,
+    codex_home: &Path,
+    zcode_root: &Path,
+    claude_config_dir_available: bool,
+    cli_available: bool,
+    app_available: bool,
+) -> bool {
+    file_history_available
+        || match agent {
+            AgentKind::ClaudeCode => {
+                claude_config_dir_available
+                    || home.join(".claude").is_dir()
+                    || home.join(".config/claude").is_dir()
+                    || cli_available
+            }
+            AgentKind::Codex => codex_home.is_dir() || cli_available,
+            AgentKind::ZCode => zcode_root.is_dir() || app_available || cli_available,
+            _ => false,
+        }
+}
+
+fn zcode_binary_available(home: &Path) -> bool {
+    [
+        home.join(".local/bin/zcode"),
+        PathBuf::from("/opt/homebrew/bin/zcode"),
+        PathBuf::from("/usr/local/bin/zcode"),
+    ]
+    .into_iter()
+    .any(|candidate| candidate.is_file())
+}
+
 pub(crate) fn session_content_preview(
     database: &Database,
     session_id: &str,
@@ -839,31 +914,32 @@ pub(crate) fn session_content_preview(
 pub(crate) fn session_context_browser(
     database: &Database,
     session_id: &str,
-    events: &[ContextTimelineEvent],
 ) -> AppResult<ContextBrowser> {
     let preview = session_content_preview(database, session_id)?;
-    let mut categories = ["system", "tools", "user", "inject", "assistant", "tool"]
-        .into_iter()
-        .map(|key| ContextBrowserCategory {
-            key: key.into(),
-            items: Vec::new(),
-            coverage: "not-recorded".into(),
-        })
-        .collect::<Vec<_>>();
+    let events = database.session_context_events(session_id)?;
+    let mut categories = [
+        "system",
+        "tools",
+        "user",
+        "injected",
+        "assistant",
+        "tool_use",
+        "tool_result",
+    ]
+    .into_iter()
+    .map(|key| ContextBrowserCategory {
+        key: key.into(),
+        items: Vec::new(),
+        coverage: "not-recorded".into(),
+    })
+    .collect::<Vec<_>>();
 
     if let Some(text) = preview.prompt {
         if let Some(category) = categories
             .iter_mut()
             .find(|category| category.key == "user")
         {
-            category.coverage = "observed".into();
-            category.items.push(ContextBrowserItem {
-                id: "context-user-preview".into(),
-                label: "Prompt preview".into(),
-                text: Some(text),
-                tokens: None,
-                coverage: "observed".into(),
-            });
+            push_context_browser_item(category, "Prompt preview", Some(text), "observed");
         }
     }
     if let Some(text) = preview.output {
@@ -871,32 +947,80 @@ pub(crate) fn session_context_browser(
             .iter_mut()
             .find(|category| category.key == "assistant")
         {
-            category.coverage = "observed".into();
-            category.items.push(ContextBrowserItem {
-                id: "context-assistant-preview".into(),
-                label: "Output preview".into(),
-                text: Some(text),
-                tokens: None,
-                coverage: "observed".into(),
-            });
+            push_context_browser_item(category, "Output preview", Some(text), "observed");
         }
     }
-    for event in events.iter().filter(|event| event.kind == "tool") {
+    for event in events.iter().filter(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "tool" | "tool.observed" | "tool.start" | "tool.finish" | "tool.error"
+        )
+    }) {
+        let category_key = match event.event_type.as_str() {
+            "tool.finish" | "tool.error" => "tool_result",
+            _ => "tool_use",
+        };
         if let Some(category) = categories
             .iter_mut()
-            .find(|category| category.key == "tool")
+            .find(|category| category.key == category_key)
         {
-            category.coverage = event.coverage.clone();
-            category.items.push(ContextBrowserItem {
-                id: event.id.clone(),
-                label: event.name.clone(),
-                text: Some(event.phase.clone()),
-                tokens: None,
-                coverage: event.coverage.clone(),
-            });
+            let coverage = context_browser_coverage(&event.provenance);
+            push_context_browser_item(category, &event.name, None, &coverage);
         }
     }
     Ok(ContextBrowser { categories })
+}
+
+fn push_context_browser_item(
+    category: &mut ContextBrowserCategory,
+    label: &str,
+    text: Option<String>,
+    coverage: &str,
+) {
+    category.coverage = merge_context_coverage(&category.coverage, coverage);
+    if let Some(item) = category
+        .items
+        .iter_mut()
+        .find(|item| item.label == label && item.text == text)
+    {
+        item.count = item.count.saturating_add(1);
+        item.coverage = merge_context_coverage(&item.coverage, coverage);
+        return;
+    }
+    let identity = format!(
+        "{}\u{1f}{}\u{1f}{}",
+        category.key,
+        label,
+        text.as_deref().unwrap_or("")
+    );
+    category.items.push(ContextBrowserItem {
+        id: format!("context-browser-{}", stable_hash(&identity)),
+        label: label.into(),
+        text,
+        count: 1,
+        tokens: None,
+        coverage: coverage.into(),
+    });
+}
+
+fn context_browser_coverage(provenance: &str) -> String {
+    if provenance == "observed" {
+        "observed".into()
+    } else {
+        "estimated".into()
+    }
+}
+
+fn merge_context_coverage(current: &str, next: &str) -> String {
+    if current == "observed" || next == "observed" {
+        "observed".into()
+    } else if current == "estimated" || next == "estimated" {
+        "estimated".into()
+    } else if current == "not-recorded" {
+        next.into()
+    } else {
+        current.into()
+    }
 }
 
 fn agent_kind_from_name(value: &str) -> Option<AgentKind> {
@@ -1356,6 +1480,64 @@ mod tests {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn installed_agents_are_available_before_their_first_history_file() {
+        let temporary = tempfile::tempdir().expect("temporary home");
+        let home = temporary.path();
+        fs::create_dir(home.join(".claude")).expect("Claude config directory");
+        fs::create_dir(home.join(".codex")).expect("Codex config directory");
+        fs::create_dir(home.join(".zcode")).expect("ZCode data directory");
+
+        assert!(agent_installation_available_at(
+            AgentKind::ClaudeCode,
+            false,
+            home,
+            &home.join(".codex"),
+            &home.join(".zcode"),
+            false,
+            false,
+            false,
+        ));
+        assert!(agent_installation_available_at(
+            AgentKind::Codex,
+            false,
+            home,
+            &home.join(".codex"),
+            &home.join(".zcode"),
+            false,
+            false,
+            false,
+        ));
+        assert!(agent_installation_available_at(
+            AgentKind::ZCode,
+            false,
+            home,
+            &home.join(".codex"),
+            &home.join(".zcode"),
+            false,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn context_browser_merges_identical_items_and_keeps_their_count() {
+        let mut category = ContextBrowserCategory {
+            key: "tool_use".into(),
+            items: Vec::new(),
+            coverage: "not-recorded".into(),
+        };
+
+        push_context_browser_item(&mut category, "Bash", None, "observed");
+        push_context_browser_item(&mut category, "Bash", None, "observed");
+        push_context_browser_item(&mut category, "Edit", None, "observed");
+
+        assert_eq!(category.items.len(), 2);
+        assert_eq!(category.items[0].label, "Bash");
+        assert_eq!(category.items[0].count, 2);
+        assert_eq!(category.items[1].count, 1);
+    }
 
     #[test]
     fn kimi_wire_uses_native_session_identity_and_state_project() {

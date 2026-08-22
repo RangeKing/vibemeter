@@ -1291,7 +1291,7 @@ fn strip_terminal_codes(value: &str) -> String {
         .collect()
 }
 
-fn claude_binary() -> Option<PathBuf> {
+pub(crate) fn claude_binary() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(home) = dirs::home_dir() {
         candidates.push(home.join(".local/bin/claude"));

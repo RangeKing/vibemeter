@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
@@ -61,11 +61,12 @@ const context: SessionContextData = {
       {
         key: "user",
         coverage: "observed",
-        items: [{ id: "prompt", label: "用户消息", text: "请完成这个改动", coverage: "observed" }],
+        items: [{ id: "prompt", label: "用户消息", text: "请完成这个改动", count: 1, coverage: "observed" }],
       },
-      { key: "inject", items: [], coverage: "not-recorded" },
+      { key: "injected", items: [], coverage: "not-recorded" },
       { key: "assistant", items: [], coverage: "not-recorded" },
-      { key: "tool", items: [], coverage: "not-recorded" },
+      { key: "tool_use", items: [{ id: "bash", label: "Bash", count: 3, coverage: "observed" }], coverage: "observed" },
+      { key: "tool_result", items: [], coverage: "not-recorded" },
     ],
   },
 };
@@ -78,9 +79,7 @@ function renderContext(overrides: Partial<Parameters<typeof SessionContext>[0]> 
         locale="zh-CN"
         isLoading={false}
         isError={false}
-        loadingMore={false}
         onRetry={vi.fn()}
-        onLoadMore={overrides.onLoadMore ?? vi.fn()}
         {...overrides}
       />
     </I18nextProvider>,
@@ -88,27 +87,47 @@ function renderContext(overrides: Partial<Parameters<typeof SessionContext>[0]> 
 }
 
 describe("SessionContext", () => {
-  it("shows coverage, all browser categories, and selects the newest event", () => {
-    renderContext();
+  it("shows coverage, the full horizontal structure, and merged browser counts", () => {
+    const view = renderContext();
 
     expect(screen.getByRole("heading", { name: "会话上下文" })).toBeTruthy();
     expect(screen.getAllByText("已观测").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("完成修改").length).toBeGreaterThan(0);
-    expect(screen.getByText("系统提示")).toBeTruthy();
-    expect(screen.getByText("工具定义")).toBeTruthy();
+    expect(screen.getByText("上下文结构")).toBeTruthy();
+    expect(view.container.querySelector(".context-composition-bar")).toBeNull();
+    expect(view.container.querySelector('[title="输入: 100"]')).toBeNull();
+    expect(screen.getAllByText("系统提示词").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("工具定义").length).toBeGreaterThan(0);
     expect(screen.getAllByText("用户消息").length).toBeGreaterThan(0);
-    expect(screen.getByText("注入上下文")).toBeTruthy();
-    expect(screen.getByText("Agent 回复")).toBeTruthy();
-    expect(screen.getByText("工具结果")).toBeTruthy();
+    expect(screen.getAllByText("注入内容").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("助手消息").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("工具调用").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("工具结果").length).toBeGreaterThan(0);
     expect(screen.getByText("请完成这个改动")).toBeTruthy();
+    expect(screen.getByText("×3")).toBeTruthy();
+    expect(screen.queryByText("上下文时间线")).toBeNull();
   });
 
-  it("requests an older page from the timeline footer", () => {
-    const onLoadMore = vi.fn();
-    renderContext({ onLoadMore });
+  it("uses the same structure token values for the chart and the category cards", () => {
+    const tokenContext: SessionContextData = {
+      ...context,
+      browser: {
+        categories: context.browser.categories.map((category) => {
+          if (category.key === "user") {
+            return { ...category, items: category.items.map((item) => ({ ...item, tokens: 60 })) };
+          }
+          if (category.key === "tool_use") {
+            return { ...category, items: category.items.map((item) => ({ ...item, tokens: 40 })) };
+          }
+          return category;
+        }),
+      },
+    };
+    const view = renderContext({ context: tokenContext });
 
-    fireEvent.click(screen.getByRole("button", { name: "加载更早的上下文事件" }));
-
-    expect(onLoadMore).toHaveBeenCalledOnce();
+    expect(view.container.querySelector('[title="用户消息: 60"]')).toBeTruthy();
+    expect(view.container.querySelector('[title="工具调用: 40"]')).toBeTruthy();
+    expect(view.container.querySelector(".context-structure-item.segment-user b")?.textContent).toBe("60");
+    expect(view.container.querySelector(".context-structure-item.segment-tool_use b")?.textContent).toBe("40");
+    expect(view.container.querySelector('[title="输入: 100"]')).toBeNull();
   });
 });

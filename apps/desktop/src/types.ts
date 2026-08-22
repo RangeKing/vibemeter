@@ -511,12 +511,13 @@ export interface ContextBrowserItem {
   id: string;
   label: string;
   text?: string;
+  count: number;
   tokens?: number;
   coverage: "observed" | "estimated" | "not-recorded" | string;
 }
 
 export interface ContextBrowserCategory {
-  key: "system" | "tools" | "user" | "inject" | "assistant" | "tool" | string;
+  key: "system" | "tools" | "user" | "injected" | "assistant" | "tool_use" | "tool_result" | string;
   items: ContextBrowserItem[];
   coverage: "observed" | "estimated" | "not-recorded" | string;
 }

@@ -39,6 +39,10 @@ function ScanFeed({ status, locale }: { status?: IndexStatus; locale: Locale }) 
     queryFn: api.sources,
     refetchInterval: status?.running ? 1_200 : false,
   });
+  useEffect(() => {
+    if (!status?.finishedAt) return;
+    void sources.refetch();
+  }, [sources.refetch, status?.finishedAt]);
   const available = (sources.data ?? []).filter((source) => source.available);
   const lines = [
     t(status?.messageKey ?? "index.idle"),

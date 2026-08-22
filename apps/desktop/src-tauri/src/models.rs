@@ -1019,6 +1019,7 @@ pub struct ContextBrowserItem {
     pub id: String,
     pub label: String,
     pub text: Option<String>,
+    pub count: u64,
     pub tokens: Option<u64>,
     pub coverage: String,
 }

@@ -6672,9 +6672,10 @@ impl Database {
             ("system", None),
             ("tools", None),
             ("user", None),
-            ("inject", None),
+            ("injected", None),
             ("assistant", None),
-            ("tool", None),
+            ("tool_use", None),
+            ("tool_result", None),
         ]
         .into_iter()
         .map(|(key, tokens)| ContextMetric {
@@ -6736,6 +6737,11 @@ impl Database {
                 categories: context_browser_categories(),
             },
         })
+    }
+
+    pub(crate) fn session_context_events(&self, id: &str) -> AppResult<Vec<CanonicalEvent>> {
+        let connection = self.connect()?;
+        query_session_events(&connection, id)
     }
 
     pub(crate) fn session_source_locator(&self, id: &str) -> AppResult<Option<(String, String)>> {
@@ -8351,14 +8357,22 @@ fn context_event_kind(event: &CanonicalEvent) -> String {
 }
 
 fn context_browser_categories() -> Vec<ContextBrowserCategory> {
-    ["system", "tools", "user", "inject", "assistant", "tool"]
-        .into_iter()
-        .map(|key| ContextBrowserCategory {
-            key: key.into(),
-            items: Vec::new(),
-            coverage: "not-recorded".into(),
-        })
-        .collect()
+    [
+        "system",
+        "tools",
+        "user",
+        "injected",
+        "assistant",
+        "tool_use",
+        "tool_result",
+    ]
+    .into_iter()
+    .map(|key| ContextBrowserCategory {
+        key: key.into(),
+        items: Vec::new(),
+        coverage: "not-recorded".into(),
+    })
+    .collect()
 }
 
 fn phase_for_event(event: &CanonicalEvent) -> &'static str {
