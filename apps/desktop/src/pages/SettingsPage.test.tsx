@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nextProvider } from "react-i18next";
 import i18n from "../i18n";
-import type { AppSettings, DiagnosticRetentionStatus } from "../types";
+import type { AppSettings, DiagnosticRetentionStatus, ProjectControl } from "../types";
 import { DiagnosticRetentionControl, SettingsPage } from "./SettingsPage";
 
 const { apiMocks, autostartMocks } = vi.hoisted(() => ({
@@ -155,5 +155,53 @@ describe("Data page Agent display settings", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "grok-build" }));
     expect(apiMocks.setSetting).toHaveBeenLastCalledWith("dataPageAgents", '["codex"]');
+  });
+
+  it("supports contiguous shift selection and non-contiguous command selection for projects", async () => {
+    const project = (projectHash: string, projectLabel: string): ProjectControl => ({
+      projectHash,
+      projectLabel,
+      sessionCount: 1,
+      excluded: false,
+      localPath: `/Users/test/${projectLabel.toLowerCase()}`,
+    });
+    apiMocks.projects.mockResolvedValue([
+      project("project-a", "Project A"),
+      project("project-b", "Project B"),
+      project("project-c", "Project C"),
+      project("project-d", "Project D"),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage locale="zh-CN" />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const first = await screen.findByRole("checkbox", { name: "Project A" });
+    const second = screen.getByRole("checkbox", { name: "Project B" });
+    const third = screen.getByRole("checkbox", { name: "Project C" });
+    const fourth = screen.getByRole("checkbox", { name: "Project D" });
+
+    fireEvent.click(first);
+    fireEvent.pointerDown(third, { shiftKey: true });
+    fireEvent.click(third);
+    expect((first as HTMLInputElement).checked).toBe(true);
+    expect((second as HTMLInputElement).checked).toBe(true);
+    expect((third as HTMLInputElement).checked).toBe(true);
+    expect((fourth as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.pointerDown(fourth, { metaKey: true });
+    fireEvent.click(fourth, { metaKey: true });
+    expect((fourth as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.pointerDown(second, { metaKey: true });
+    fireEvent.click(second, { metaKey: true });
+    expect((first as HTMLInputElement).checked).toBe(true);
+    expect((second as HTMLInputElement).checked).toBe(false);
+    expect((third as HTMLInputElement).checked).toBe(true);
+    expect((fourth as HTMLInputElement).checked).toBe(true);
   });
 });
