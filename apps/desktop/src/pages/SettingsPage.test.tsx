@@ -16,6 +16,7 @@ const { apiMocks, autostartMocks } = vi.hoisted(() => ({
     liveSnapshot: vi.fn(),
     diagnosticRetention: vi.fn(),
     setSetting: vi.fn(),
+    createProjectGroup: vi.fn(),
     refreshIndex: vi.fn(),
     indexStatus: vi.fn(),
   },
@@ -125,6 +126,7 @@ describe("Data page Agent display settings", () => {
     apiMocks.liveSnapshot.mockResolvedValue({ hookStatus: { state: "ready", providers: [] } });
     apiMocks.diagnosticRetention.mockResolvedValue({ state: "disabled", enabled: false, storageLocation: "", retainedEnvelopes: 0 });
     apiMocks.setSetting.mockResolvedValue(undefined);
+    apiMocks.createProjectGroup.mockResolvedValue("group-1");
     apiMocks.refreshIndex.mockResolvedValue(true);
     apiMocks.indexStatus.mockResolvedValue({ running: false, finishedAt: "forced-pass" });
     autostartMocks.isEnabled.mockResolvedValue(false);
@@ -155,6 +157,27 @@ describe("Data page Agent display settings", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "grok-build" }));
     expect(apiMocks.setSetting).toHaveBeenLastCalledWith("dataPageAgents", '["codex"]');
+  });
+
+  it("allows cancelling a detected Agent directly from automatic display mode", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage locale="zh-CN" />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const automatic = await screen.findByRole("switch", { name: "自动显示已检测的 Agent" });
+    expect(automatic.getAttribute("aria-checked")).toBe("true");
+    const codex = screen.getByRole("checkbox", { name: "codex" }) as HTMLInputElement;
+    expect(codex.disabled).toBe(false);
+
+    fireEvent.click(codex);
+
+    expect(apiMocks.setSetting).toHaveBeenCalledWith("dataPageAgents", '["grok-build"]');
+    expect(automatic.getAttribute("aria-checked")).toBe("false");
   });
 
   it("supports contiguous shift selection and non-contiguous command selection for projects", async () => {
@@ -203,5 +226,39 @@ describe("Data page Agent display settings", () => {
     expect((second as HTMLInputElement).checked).toBe(false);
     expect((third as HTMLInputElement).checked).toBe(true);
     expect((fourth as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("opens an in-app project group dialog and creates the group", async () => {
+    const project = (projectHash: string, projectLabel: string): ProjectControl => ({
+      projectHash,
+      projectLabel,
+      sessionCount: 1,
+      excluded: false,
+      localPath: `/Users/test/${projectLabel.toLowerCase()}`,
+    });
+    apiMocks.projects.mockResolvedValue([
+      project("project-a", "Project A"),
+      project("project-b", "Project B"),
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={queryClient}>
+          <SettingsPage locale="zh-CN" />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Project A" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Project B" }));
+    fireEvent.click(screen.getByRole("button", { name: "创建项目组（已选 2 个）" }));
+
+    const dialog = screen.getByRole("dialog", { name: "请输入项目组名称" });
+    const name = screen.getByRole("textbox", { name: "请输入项目组名称" });
+    fireEvent.change(name, { target: { value: "Shared workspace" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(apiMocks.createProjectGroup).toHaveBeenCalledWith("Shared workspace", ["project-a", "project-b"]));
+    expect(dialog.isConnected).toBe(false);
   });
 });

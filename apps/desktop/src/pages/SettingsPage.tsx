@@ -1,16 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowRight, BarChart3, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
+import { ArrowRight, BarChart3, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { FormEvent as ReactFormEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import desktopPackage from "../../package.json";
 import { AgentBadge, ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
 import { api } from "../lib/api";
 import { refreshHistoryIndex } from "../lib/indexRefresh";
 import { detectedDataAgents, parseDataPageAgents, serializeDataPageAgents, sourceCapabilityNameGroups } from "../lib/sourceStatus";
+import { useFocusTrap } from "../lib/useFocusTrap";
 import { useUiStore } from "../store";
 import type { AppSettings, DiagnosticRetentionStatus, Locale, ProjectControl, Theme } from "../types";
+
+type ProjectGroupDialog = { mode: "create" } | { mode: "rename"; groupId: string };
 
 export function DiagnosticRetentionControl({
   status,
@@ -86,6 +89,9 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const [selectedProjectHashes, setSelectedProjectHashes] = useState<string[]>([]);
   const projectSelectionAnchor = useRef<string | undefined>(undefined);
   const projectSelectionModifiers = useRef({ shiftKey: false, metaKey: false, ctrlKey: false });
+  const [projectGroupDialog, setProjectGroupDialog] = useState<ProjectGroupDialog>();
+  const [projectGroupName, setProjectGroupName] = useState("");
+  const projectGroupDialogRef = useFocusTrap(Boolean(projectGroupDialog));
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
   const setSetting = async (key: keyof AppSettings, value: string) => {
@@ -161,11 +167,20 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   };
   const createProjectGroup = useMutation({
     mutationFn: ({ name, hashes }: { name: string; hashes: string[] }) => api.createProjectGroup(name, hashes),
-    onSuccess: async () => { setSelectedProjectHashes([]); await invalidateProjectQueries(); },
+    onSuccess: async () => {
+      setSelectedProjectHashes([]);
+      setProjectGroupDialog(undefined);
+      setProjectGroupName("");
+      await invalidateProjectQueries();
+    },
   });
   const renameProjectGroup = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) => api.renameProjectGroup(id, name),
-    onSuccess: invalidateProjectQueries,
+    onSuccess: async () => {
+      setProjectGroupDialog(undefined);
+      setProjectGroupName("");
+      await invalidateProjectQueries();
+    },
   });
   const updateProjectGroupMembers = useMutation({
     mutationFn: ({ id, hashes }: { id: string; hashes: string[] }) => api.updateProjectGroupMembers(id, hashes),
@@ -206,6 +221,20 @@ export function SettingsPage({ locale }: { locale: Locale }) {
     },
     onError: () => { void diagnostics.refetch(); },
   });
+  useEffect(() => {
+    if (!projectGroupDialog) return;
+    document.body.classList.add("modal-open");
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || createProjectGroup.isPending || renameProjectGroup.isPending) return;
+      setProjectGroupDialog(undefined);
+      setProjectGroupName("");
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.classList.remove("modal-open");
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [createProjectGroup.isPending, projectGroupDialog, renameProjectGroup.isPending]);
 
   const projectGroups = useMemo(() => {
     const groups = new Map<string, { id: string; name: string; members: ProjectControl[] }>();
@@ -281,14 +310,30 @@ export function SettingsPage({ locale }: { locale: Locale }) {
 
     if (!hasRange) projectSelectionAnchor.current = projectHash;
   };
-  const promptCreateProjectGroup = () => {
+  const openCreateProjectGroup = () => {
     if (selectedProjectHashes.length < 2) return;
-    const name = window.prompt(t("settings.projectGroupNamePrompt"));
-    if (name?.trim()) createProjectGroup.mutate({ name: name.trim(), hashes: selectedProjectHashes });
+    setProjectGroupName("");
+    setProjectGroupDialog({ mode: "create" });
   };
-  const promptRenameProjectGroup = (group: { id: string; name: string }) => {
-    const name = window.prompt(t("settings.projectGroupRenamePrompt"), group.name);
-    if (name?.trim() && name.trim() !== group.name) renameProjectGroup.mutate({ id: group.id, name: name.trim() });
+  const openRenameProjectGroup = (group: { id: string; name: string }) => {
+    setProjectGroupName(group.name);
+    setProjectGroupDialog({ mode: "rename", groupId: group.id });
+  };
+  const closeProjectGroupDialog = () => {
+    if (createProjectGroup.isPending || renameProjectGroup.isPending) return;
+    setProjectGroupDialog(undefined);
+    setProjectGroupName("");
+  };
+  const submitProjectGroup = (event: ReactFormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const dialog = projectGroupDialog;
+    const name = projectGroupName.trim();
+    if (!dialog || !name) return;
+    if (dialog.mode === "create") {
+      createProjectGroup.mutate({ name, hashes: selectedProjectHashes });
+    } else {
+      renameProjectGroup.mutate({ id: dialog.groupId, name });
+    }
   };
   const updateGroupMembers = (group: { id: string; members: ProjectControl[] }, projectHash: string, checked: boolean) => {
     const current = group.members.map((member) => member.projectHash);
@@ -360,7 +405,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
                 <input
                   type="checkbox"
                   checked={selectedDataAgents.has(source.agent)}
-                  disabled={autoDataPageAgents || !source.available || dataPageAgentsPending}
+                  disabled={!source.available || dataPageAgentsPending}
                   aria-label={source.agent}
                   onChange={(event) => toggleDataPageAgent(source.agent, event.target.checked)}
                 />
@@ -423,13 +468,13 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <header><Database size={17} /><div><h2>{t("settings.projects")}</h2><p>{t("settings.projectsBody")}</p></div></header>
           <div className="project-group-controls">
             <p>{t("settings.projectGroupsBody")}</p>
-            <button className="button secondary" disabled={selectedProjectHashes.length < 2 || createProjectGroup.isPending} onClick={promptCreateProjectGroup}>{t("settings.createProjectGroup", { count: selectedProjectHashes.length })}</button>
+            <button className="button secondary" disabled={selectedProjectHashes.length < 2 || createProjectGroup.isPending} onClick={openCreateProjectGroup}>{t("settings.createProjectGroup", { count: selectedProjectHashes.length })}</button>
           </div>
           <div className="project-group-list">
             {projectGroups.map((group) => {
               const eligible = projects.data?.filter((project) => !project.excluded && (!project.groupId || project.groupId === group.id)) ?? [];
               return <article className="project-group-card" key={group.id}>
-                <header><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{group.name}</strong><small>{t("settings.projectGroupMembers", { count: group.members.length })}</small></span><button className="button secondary" onClick={() => promptRenameProjectGroup(group)}>{t("actions.edit")}</button><button className="button danger-button" onClick={() => { if (window.confirm(t("settings.removeProjectGroupConfirm"))) deleteProjectGroup.mutate(group.id); }}>{t("settings.removeProjectGroup")}</button></header>
+                <header><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{group.name}</strong><small>{t("settings.projectGroupMembers", { count: group.members.length })}</small></span><button className="button secondary" onClick={() => openRenameProjectGroup(group)}>{t("actions.edit")}</button><button className="button danger-button" onClick={() => { if (window.confirm(t("settings.removeProjectGroupConfirm"))) deleteProjectGroup.mutate(group.id); }}>{t("settings.removeProjectGroup")}</button></header>
                 <div className="project-group-member-list">{eligible.map((project) => <label key={project.projectHash}><input type="checkbox" checked={project.groupId === group.id} onChange={(event) => updateGroupMembers(group, project.projectHash, event.target.checked)} /><span><strong>{project.projectLabel}</strong><small>{t("settings.projectSessions", { count: project.sessionCount })} · {project.localPath ?? t("metrics.notRecorded")}</small></span><button className={project.excluded ? "button secondary" : "button danger-button"} onClick={(event) => { event.preventDefault(); if (project.excluded || window.confirm(t("settings.excludeConfirm"))) exclude.mutate({ hash: project.projectHash, excluded: project.excluded }); }}>{project.excluded ? t("settings.include") : t("settings.exclude")}</button></label>)}</div>
               </article>;
             })}
@@ -448,6 +493,50 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <button className="button danger-button" disabled={clearData.isPending} onClick={() => { if (window.confirm(t("settings.clearConfirm"))) clearData.mutate(); }}><Trash2 size={14} />{t("settings.clearData")}</button>
           <small>{t("settings.version", { version: appVersion })}</small>
         </section>
+
+        {projectGroupDialog ? (
+          <div
+            className="modal-backdrop project-group-dialog-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) closeProjectGroupDialog();
+            }}
+          >
+            <section
+              ref={projectGroupDialogRef}
+              className="project-group-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="project-group-dialog-title"
+            >
+              <header>
+                <div>
+                  <span className="project-group-dialog-kicker">{t("settings.projects")}</span>
+                  <h2 id="project-group-dialog-title">
+                    {t(projectGroupDialog.mode === "create" ? "settings.projectGroupNamePrompt" : "settings.projectGroupRenamePrompt")}
+                  </h2>
+                </div>
+                <button className="icon-button" type="button" aria-label={t("actions.close")} onClick={closeProjectGroupDialog} disabled={createProjectGroup.isPending || renameProjectGroup.isPending}>
+                  <X size={16} />
+                </button>
+              </header>
+              <form onSubmit={submitProjectGroup}>
+                <label htmlFor="project-group-name">{t(projectGroupDialog.mode === "create" ? "settings.projectGroupNamePrompt" : "settings.projectGroupRenamePrompt")}</label>
+                <input
+                  id="project-group-name"
+                  value={projectGroupName}
+                  onChange={(event) => setProjectGroupName(event.target.value)}
+                  disabled={createProjectGroup.isPending || renameProjectGroup.isPending}
+                  required
+                />
+                <footer>
+                  <button className="button secondary" type="button" onClick={closeProjectGroupDialog} disabled={createProjectGroup.isPending || renameProjectGroup.isPending}>{t("actions.cancel")}</button>
+                  <button className="button primary" type="submit" disabled={!projectGroupName.trim() || createProjectGroup.isPending || renameProjectGroup.isPending}>{t("actions.save")}</button>
+                </footer>
+              </form>
+            </section>
+          </div>
+        ) : null}
       </div>
     </div>
   );

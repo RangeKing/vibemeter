@@ -1496,6 +1496,16 @@ html[data-surface="menubar"], html[data-surface="menubar"] body, html[data-surfa
 .live-setting-status { display: flex; align-items: center; gap: 7px; }
 .settings-section > .live-setting-status { grid-column: 2; width: 100%; box-sizing: border-box; margin: 0; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 28px; background: color-mix(in srgb, var(--ink) 52%, transparent); backdrop-filter: blur(10px); }
+.project-group-dialog-backdrop { z-index: 110; }
+.project-group-dialog { width: min(460px, calc(100vw - 40px)); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 16px; background: var(--paper-solid); box-shadow: 0 28px 80px rgb(3 5 10 / 34%); animation: atlas-rise .18s ease-out both; }
+.project-group-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px 20px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 88%, var(--warm-soft)); }
+.project-group-dialog-kicker { display: block; margin-bottom: 6px; color: var(--accent-dark); font-size: var(--font-caption); font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.project-group-dialog h2 { margin: 0; color: var(--ink); font-family: var(--serif); font-size: 20px; letter-spacing: -.025em; }
+.project-group-dialog form { display: grid; gap: 9px; padding: 20px; }
+.project-group-dialog label { color: var(--muted); font-size: var(--font-caption); font-weight: 650; }
+.project-group-dialog input { width: 100%; box-sizing: border-box; min-height: 39px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; outline: none; }
+.project-group-dialog input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.project-group-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 9px; }
 
 .catchphrase-section { position: relative; margin: 24px 0; padding: 22px; overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: radial-gradient(circle at 92% -8%, color-mix(in srgb, #ff7a59 15%, transparent), transparent 35%), linear-gradient(145deg, color-mix(in srgb, var(--surface) 96%, #ff7a59 4%), var(--surface)); box-shadow: var(--shadow-soft); }
 .catchphrase-section::before { position: absolute; top: -26px; right: 18px; color: color-mix(in srgb, #ff7a59 8%, transparent); content: "VOICE"; font-family: var(--serif); font-size: 86px; font-style: italic; font-weight: 760; letter-spacing: -.08em; pointer-events: none; }
