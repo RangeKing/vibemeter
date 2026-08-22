@@ -395,7 +395,14 @@ export interface SessionsResponse {
   page: number;
   pageSize: number;
   models: string[];
-  projects: string[];
+  projects: ProjectFilterOption[];
+}
+
+export interface ProjectFilterOption {
+  id: string;
+  kind: "group" | "project" | string;
+  label: string;
+  memberCount: number;
 }
 
 export interface SessionListQuery {
@@ -656,6 +663,35 @@ export interface ProjectControl {
   projectLabel: string;
   sessionCount: number;
   excluded: boolean;
+  localPath?: string;
+  groupId?: string;
+  groupName?: string;
+}
+
+export interface ProjectMemberSummary {
+  projectHash: string;
+  projectLabel: string;
+  localPath?: string;
+  sessionCount: number;
+}
+
+export interface ProjectSummary {
+  id: string;
+  kind: "group" | "project" | string;
+  label: string;
+  memberCount: number;
+  sessionCount: number;
+  activeSeconds: number;
+  usage: TokenUsage;
+  estimatedCostUsd?: number;
+  costCoverage: number;
+  filesTouched: number;
+  linesAdded: number;
+  linesDeleted: number;
+  toolCalls: number;
+  errors: number;
+  latestActivity?: string;
+  members: ProjectMemberSummary[];
 }
 
 export interface SourceStatus {

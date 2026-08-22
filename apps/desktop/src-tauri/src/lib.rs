@@ -384,6 +384,20 @@ async fn get_comparison(
 }
 
 #[tauri::command]
+async fn get_project_summaries(
+    state: State<'_, AppState>,
+    range: String,
+    agent: Option<String>,
+) -> AppResult<Vec<crate::models::ProjectSummary>> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        database.project_summaries(&range, agent.as_deref())
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
 async fn render_share_preview(
     state: State<'_, AppState>,
     request: ShareRenderRequest,
@@ -479,6 +493,54 @@ async fn delete_playbook_item(state: State<'_, AppState>, id: String) -> AppResu
 async fn get_projects(state: State<'_, AppState>) -> AppResult<Vec<ProjectControl>> {
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || database.projects())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn create_project_group(
+    state: State<'_, AppState>,
+    name: String,
+    project_hashes: Vec<String>,
+) -> AppResult<String> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        database.create_project_group(&name, &project_hashes)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn rename_project_group(
+    state: State<'_, AppState>,
+    group_id: String,
+    name: String,
+) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.rename_project_group(&group_id, &name))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn update_project_group_members(
+    state: State<'_, AppState>,
+    group_id: String,
+    project_hashes: Vec<String>,
+) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        database.update_project_group_members(&group_id, &project_hashes)
+    })
+    .await
+    .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn delete_project_group(state: State<'_, AppState>, group_id: String) -> AppResult<()> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.delete_project_group(&group_id))
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
@@ -1045,6 +1107,7 @@ pub fn run() {
             get_sessions,
             get_session_detail,
             get_comparison,
+            get_project_summaries,
             render_share_preview,
             export_share,
             render_share_png,
@@ -1055,6 +1118,10 @@ pub fn run() {
             save_playbook_item,
             delete_playbook_item,
             get_projects,
+            create_project_group,
+            rename_project_group,
+            update_project_group_members,
+            delete_project_group,
             exclude_project,
             include_project,
             clear_local_data,

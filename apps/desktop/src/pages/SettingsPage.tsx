@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { ArrowRight, BarChart3, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import desktopPackage from "../../package.json";
 import { AgentBadge, ErrorState, LoadingState, PageHeader, Toggle } from "../components/ui";
@@ -9,7 +9,7 @@ import { api } from "../lib/api";
 import { refreshHistoryIndex } from "../lib/indexRefresh";
 import { detectedDataAgents, parseDataPageAgents, serializeDataPageAgents, sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
-import type { AppSettings, DiagnosticRetentionStatus, Locale, Theme } from "../types";
+import type { AppSettings, DiagnosticRetentionStatus, Locale, ProjectControl, Theme } from "../types";
 
 export function DiagnosticRetentionControl({
   status,
@@ -82,6 +82,7 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const [dataPageAgentsPending, setDataPageAgentsPending] = useState(false);
   const [agentDetectionPending, setAgentDetectionPending] = useState(false);
   const [diagnosticClearCount, setDiagnosticClearCount] = useState<number | null>(null);
+  const [selectedProjectHashes, setSelectedProjectHashes] = useState<string[]>([]);
   useEffect(() => { void isEnabled().then(setLoginEnabled).catch(() => setLoginEnabled(false)); }, []);
 
   const setSetting = async (key: keyof AppSettings, value: string) => {
@@ -148,6 +149,29 @@ export function SettingsPage({ locale }: { locale: Locale }) {
     mutationFn: async ({ hash, excluded }: { hash: string; excluded: boolean }) => excluded ? api.includeProject(hash) : api.excludeProject(hash),
     onSuccess: async () => { await Promise.all([client.invalidateQueries({ queryKey: ["projects"] }), client.invalidateQueries({ queryKey: ["sessions"] })]); },
   });
+  const invalidateProjectQueries = async () => {
+    await Promise.all([
+      client.invalidateQueries({ queryKey: ["projects"] }),
+      client.invalidateQueries({ queryKey: ["sessions"] }),
+      client.invalidateQueries({ queryKey: ["project-summaries"] }),
+    ]);
+  };
+  const createProjectGroup = useMutation({
+    mutationFn: ({ name, hashes }: { name: string; hashes: string[] }) => api.createProjectGroup(name, hashes),
+    onSuccess: async () => { setSelectedProjectHashes([]); await invalidateProjectQueries(); },
+  });
+  const renameProjectGroup = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => api.renameProjectGroup(id, name),
+    onSuccess: invalidateProjectQueries,
+  });
+  const updateProjectGroupMembers = useMutation({
+    mutationFn: ({ id, hashes }: { id: string; hashes: string[] }) => api.updateProjectGroupMembers(id, hashes),
+    onSuccess: invalidateProjectQueries,
+  });
+  const deleteProjectGroup = useMutation({
+    mutationFn: api.deleteProjectGroup,
+    onSuccess: invalidateProjectQueries,
+  });
   const clearData = useMutation({
     mutationFn: api.clearLocalData,
     onSuccess: async () => { await client.invalidateQueries(); },
@@ -180,9 +204,21 @@ export function SettingsPage({ locale }: { locale: Locale }) {
     onError: () => { void diagnostics.refetch(); },
   });
 
+  const projectGroups = useMemo(() => {
+    const groups = new Map<string, { id: string; name: string; members: ProjectControl[] }>();
+    for (const project of projects.data ?? []) {
+      if (!project.groupId || !project.groupName) continue;
+      const current = groups.get(project.groupId) ?? { id: project.groupId, name: project.groupName, members: [] };
+      current.members.push(project);
+      groups.set(project.groupId, current);
+    }
+    return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name));
+  }, [projects.data]);
+
   if (settings.isLoading || projects.isLoading || sources.isLoading) return <LoadingState />;
   if (settings.isError || !settings.data || projects.isError || sources.isError || !sources.data) return <ErrorState retry={() => void Promise.all([settings.refetch(), projects.refetch(), sources.refetch()])} />;
   const data = settings.data;
+  const ungroupedProjects = projects.data?.filter((project) => !project.groupId && !project.excluded) ?? [];
   const detectedAgents = detectedDataAgents(sources.data);
   const configuredDataAgents = parseDataPageAgents(dataPageAgentsDraft ?? data.dataPageAgents);
   const autoDataPageAgents = configuredDataAgents === undefined;
@@ -206,6 +242,25 @@ export function SettingsPage({ locale }: { locale: Locale }) {
     const base = autoDataPageAgents ? detectedAgents : [...selectedDataAgents];
     const next = checked ? [...base, agent] : base.filter((item) => item !== agent);
     void persistDataPageAgents(serializeDataPageAgents(next));
+  };
+  const toggleProjectSelection = (projectHash: string, checked: boolean) => {
+    setSelectedProjectHashes((current) => checked
+      ? [...new Set([...current, projectHash])]
+      : current.filter((hash) => hash !== projectHash));
+  };
+  const promptCreateProjectGroup = () => {
+    if (selectedProjectHashes.length < 2) return;
+    const name = window.prompt(t("settings.projectGroupNamePrompt"));
+    if (name?.trim()) createProjectGroup.mutate({ name: name.trim(), hashes: selectedProjectHashes });
+  };
+  const promptRenameProjectGroup = (group: { id: string; name: string }) => {
+    const name = window.prompt(t("settings.projectGroupRenamePrompt"), group.name);
+    if (name?.trim() && name.trim() !== group.name) renameProjectGroup.mutate({ id: group.id, name: name.trim() });
+  };
+  const updateGroupMembers = (group: { id: string; members: ProjectControl[] }, projectHash: string, checked: boolean) => {
+    const current = group.members.map((member) => member.projectHash);
+    const next = checked ? [...new Set([...current, projectHash])] : current.filter((hash) => hash !== projectHash);
+    updateProjectGroupMembers.mutate({ id: group.id, hashes: next });
   };
   const setDataPageAuto = (enabled: boolean) => {
     void persistDataPageAgents(enabled ? "auto" : serializeDataPageAgents(detectedAgents));
@@ -333,7 +388,21 @@ export function SettingsPage({ locale }: { locale: Locale }) {
 
         <section className="settings-section project-settings">
           <header><Database size={17} /><div><h2>{t("settings.projects")}</h2><p>{t("settings.projectsBody")}</p></div></header>
-          <div className="project-list">{projects.data?.map((project) => <div key={project.projectHash}><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{project.projectLabel}</strong><small>{t("settings.projectSessions", { count: project.sessionCount })}</small></span><button className={project.excluded ? "button secondary" : "button danger-button"} onClick={() => { if (project.excluded || window.confirm(t("settings.excludeConfirm"))) exclude.mutate({ hash: project.projectHash, excluded: project.excluded }); }}>{project.excluded ? t("settings.include") : t("settings.exclude")}</button></div>)}</div>
+          <div className="project-group-controls">
+            <p>{t("settings.projectGroupsBody")}</p>
+            <button className="button secondary" disabled={selectedProjectHashes.length < 2 || createProjectGroup.isPending} onClick={promptCreateProjectGroup}>{t("settings.createProjectGroup", { count: selectedProjectHashes.length })}</button>
+          </div>
+          <div className="project-group-list">
+            {projectGroups.map((group) => {
+              const eligible = projects.data?.filter((project) => !project.excluded && (!project.groupId || project.groupId === group.id)) ?? [];
+              return <article className="project-group-card" key={group.id}>
+                <header><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{group.name}</strong><small>{t("settings.projectGroupMembers", { count: group.members.length })}</small></span><button className="button secondary" onClick={() => promptRenameProjectGroup(group)}>{t("actions.edit")}</button><button className="button danger-button" onClick={() => { if (window.confirm(t("settings.removeProjectGroupConfirm"))) deleteProjectGroup.mutate(group.id); }}>{t("settings.removeProjectGroup")}</button></header>
+                <div className="project-group-member-list">{eligible.map((project) => <label key={project.projectHash}><input type="checkbox" checked={project.groupId === group.id} onChange={(event) => updateGroupMembers(group, project.projectHash, event.target.checked)} /><span><strong>{project.projectLabel}</strong><small>{t("settings.projectSessions", { count: project.sessionCount })} · {project.localPath ?? t("metrics.notRecorded")}</small></span><button className={project.excluded ? "button secondary" : "button danger-button"} onClick={(event) => { event.preventDefault(); if (project.excluded || window.confirm(t("settings.excludeConfirm"))) exclude.mutate({ hash: project.projectHash, excluded: project.excluded }); }}>{project.excluded ? t("settings.include") : t("settings.exclude")}</button></label>)}</div>
+              </article>;
+            })}
+            <div className="project-list">{ungroupedProjects.map((project) => <label className="project-list-row" key={project.projectHash}><input type="checkbox" checked={selectedProjectHashes.includes(project.projectHash)} onChange={(event) => toggleProjectSelection(project.projectHash, event.target.checked)} /><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{project.projectLabel}</strong><small>{t("settings.projectSessions", { count: project.sessionCount })} · {project.localPath ?? t("metrics.notRecorded")}</small></span><button className="button danger-button" onClick={(event) => { event.preventDefault(); if (window.confirm(t("settings.excludeConfirm"))) exclude.mutate({ hash: project.projectHash, excluded: false }); }}>{t("settings.exclude")}</button></label>)}</div>
+            {projects.data?.filter((project) => project.excluded).map((project) => <div className="project-list-row excluded-project-row" key={project.projectHash}><span className="project-glyph"><GitBranch size={15} /></span><span><strong>{project.projectLabel}</strong><small>{t("settings.projectSessions", { count: project.sessionCount })} · {project.localPath ?? t("metrics.notRecorded")}</small></span><button className="button secondary" onClick={() => exclude.mutate({ hash: project.projectHash, excluded: true })}>{t("settings.include")}</button></div>)}
+          </div>
         </section>
 
         <section className="settings-section">

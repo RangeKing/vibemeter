@@ -18,6 +18,7 @@ import type {
   OverviewResponse,
   PhraseCloudResponse,
   ProjectControl,
+  ProjectSummary,
   ProviderUsage,
   SessionDetail,
   SessionListQuery,
@@ -77,6 +78,8 @@ export const api = {
     }),
   sessionDetail: (id: string) => invoke<SessionDetail>("get_session_detail", { id }),
   comparison: (range: string) => invoke<ComparisonItem[]>("get_comparison", { range }),
+  projectSummaries: (range: string, agent?: string) =>
+    invoke<ProjectSummary[]>("get_project_summaries", { range, agent }),
   sources: () => invoke<SourceStatus[]>("get_sources"),
   setSourceSelected: (agent: string, selected: boolean) =>
     invoke<void>("set_source_selected", { agent, selected }),
@@ -96,6 +99,14 @@ export const api = {
   insights: (range: string) => invoke<InsightsResponse>("get_insights", { range }),
   vctiProfile: (range: string) => invoke<VctiProfile>("get_vcti_profile", { range }),
   projects: () => invoke<ProjectControl[]>("get_projects"),
+  createProjectGroup: (name: string, projectHashes: string[]) =>
+    invoke<string>("create_project_group", { name, projectHashes }),
+  renameProjectGroup: (groupId: string, name: string) =>
+    invoke<void>("rename_project_group", { groupId, name }),
+  updateProjectGroupMembers: (groupId: string, projectHashes: string[]) =>
+    invoke<void>("update_project_group_members", { groupId, projectHashes }),
+  deleteProjectGroup: (groupId: string) =>
+    invoke<void>("delete_project_group", { groupId }),
   excludeProject: (projectHash: string) => invoke<void>("exclude_project", { projectHash }),
   includeProject: (projectHash: string) => invoke<void>("include_project", { projectHash }),
   clearLocalData: () => invoke<void>("clear_local_data"),

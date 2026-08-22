@@ -898,7 +898,16 @@ pub struct SessionsResponse {
     pub page: u64,
     pub page_size: u64,
     pub models: Vec<String>,
-    pub projects: Vec<String>,
+    pub projects: Vec<ProjectFilterOption>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFilterOption {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub member_count: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1213,6 +1222,39 @@ pub struct ProjectControl {
     pub project_label: String,
     pub session_count: u64,
     pub excluded: bool,
+    pub local_path: Option<String>,
+    pub group_id: Option<String>,
+    pub group_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMemberSummary {
+    pub project_hash: String,
+    pub project_label: String,
+    pub local_path: Option<String>,
+    pub session_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    pub member_count: u64,
+    pub session_count: u64,
+    pub active_seconds: u64,
+    pub usage: TokenUsage,
+    pub estimated_cost_usd: Option<f64>,
+    pub cost_coverage: f64,
+    pub files_touched: u64,
+    pub lines_added: u64,
+    pub lines_deleted: u64,
+    pub tool_calls: u64,
+    pub errors: u64,
+    pub latest_activity: Option<String>,
+    pub members: Vec<ProjectMemberSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
