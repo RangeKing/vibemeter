@@ -1,47 +1,47 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-21T07:48:35Z",
+  "generatedAt": "2026-08-27T13:30:35Z",
   "sources": [
     {
       "provider": "openai",
       "url": "https://developers.openai.com/api/docs/pricing",
-      "sha256": "dfa208624c7cb3d8635a04e766ab420fbaf7b3f637ef145adb6f4bcd68bfaf65",
+      "sha256": "5fe01cd0a4a58dd05404c5e172ac56d1aa43a54893625407b6e7c5486e2605d7",
       "modelCount": 6
     },
     {
       "provider": "anthropic",
       "url": "https://platform.claude.com/docs/en/about-claude/pricing",
-      "sha256": "363a9878892f76b77f0b14909e7857469c1e9b9299c1e4d9e74708cb68c145fc",
+      "sha256": "a49ec022b2ddefd9aa03fcc87177255fe04792436d74e9047f41fdf0efe1e072",
       "modelCount": 15
     },
     {
       "provider": "deepseek",
       "url": "https://api-docs.deepseek.com/quick_start/pricing/",
-      "sha256": "1ccc6df3da4fea4df677f20538b6195f881e33786e227e478d09b3b6363c796d",
+      "sha256": "4fa4029c683129138a26d2521c1d306da8804d312d3cdfe4b8d9792cf1701a1f",
       "modelCount": 2
     },
     {
       "provider": "kimi",
       "url": "https://platform.kimi.com/docs/pricing/chat",
-      "sha256": "50c640d1c207323028c28dbe3904475ad811952e032073a47c859abcd831274a",
+      "sha256": "12c3e026b5dc15c6721547d0b92647c8490b3b23dd95925a7026186e81430508",
       "modelCount": 4
     },
     {
       "provider": "zai",
       "url": "https://docs.z.ai/guides/overview/pricing",
-      "sha256": "ad41e859a97dfca4965411e6b4a1ecff89ec6f8c62f6d514960a1152138635bb",
-      "modelCount": 19
+      "sha256": "39a02fbca90764f628d509c5c1a93b1dd2e97af00f9a688c192aaed31a4b31d3",
+      "modelCount": 20
     },
     {
       "provider": "xai",
       "url": "https://docs.x.ai/developers/models",
-      "sha256": "1a5f881287d12db37c8ddaad4f2c4619f66c88f981e96333bea647fdd83b6f08",
+      "sha256": "d7573870a3fba92657b7ce53d797b5b68c6b4dd4150bb714fb918522f2b1bd50",
       "modelCount": 7
     },
     {
       "provider": "cursor",
       "url": "https://cursor.com/docs/models-and-pricing",
-      "sha256": "2f14569130a49be716ead3ff7891d391a64920cf40974ec82714d81e63a9fd97",
+      "sha256": "c08885b94e6616a015ca78d23cc98d439d302c9a6fb066844f8a14b429e90b09",
       "modelCount": 2
     }
   ],
@@ -264,21 +264,21 @@
       "name": "deepseek-v4-flash",
       "aliases": [],
       "currency": "USD",
-      "input": 0.22,
-      "cacheRead": 0.007,
-      "cacheWrite": 0.22,
-      "cacheWrite1h": null,
-      "output": 0.66
-    },
-    {
-      "name": "deepseek-v4-pro",
-      "aliases": [],
-      "currency": "USD",
       "input": 0.66,
       "cacheRead": 0.022,
       "cacheWrite": 0.66,
       "cacheWrite1h": null,
       "output": 1.98
+    },
+    {
+      "name": "deepseek-v4-pro",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.22,
+      "cacheRead": 0.007,
+      "cacheWrite": 0.22,
+      "cacheWrite1h": null,
+      "output": 0.66
     },
     {
       "name": "glm-4-5",
@@ -451,6 +451,16 @@
       "output": 4.4
     },
     {
+      "name": "glm-5-3-flash",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.15,
+      "cacheRead": 0.03,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.5
+    },
+    {
       "name": "glm-5-turbo",
       "aliases": [],
       "currency": "USD",
@@ -496,11 +506,11 @@
         "gpt-5-6"
       ],
       "currency": "USD",
-      "input": 5.0,
-      "cacheRead": 0.5,
-      "cacheWrite": 6.25,
+      "input": 4.0,
+      "cacheRead": 0.4,
+      "cacheWrite": 5.0,
       "cacheWrite1h": null,
-      "output": 30.0
+      "output": 20.0
     },
     {
       "name": "gpt-5-6-terra",

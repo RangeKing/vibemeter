@@ -14108,8 +14108,8 @@ mod concurrency_tests {
             query_overview_totals(&connection, "1970-01-01T00:00:00Z", &ninety_day_start)
                 .expect("ninety-day totals");
 
-        assert_eq!(month.estimated_cost_usd, Some(5.0));
-        assert_eq!(ninety_days.estimated_cost_usd, Some(15.0));
+        assert_eq!(month.estimated_cost_usd, Some(4.0));
+        assert_eq!(ninety_days.estimated_cost_usd, Some(12.0));
         assert_eq!(month.cost_coverage, 1.0);
         assert_eq!(ninety_days.cost_coverage, 1.0);
 
@@ -14120,7 +14120,7 @@ mod concurrency_tests {
                 .iter()
                 .map(|point| point.estimated_cost_usd)
                 .collect::<Vec<_>>(),
-            vec![Some(10.0), Some(5.0)]
+            vec![Some(8.0), Some(4.0)]
         );
     }
 

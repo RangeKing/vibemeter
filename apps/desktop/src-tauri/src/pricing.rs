@@ -135,7 +135,7 @@ mod tests {
             ..TokenUsage::default()
         };
         let cost = estimate_cost(AgentKind::Codex, "gpt-5.6-sol", &usage).expect("price");
-        assert!((cost - 9.0).abs() < f64::EPSILON);
+        assert!((cost - 6.8).abs() < f64::EPSILON);
     }
 
     #[test]
