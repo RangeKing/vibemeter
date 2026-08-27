@@ -71,14 +71,20 @@ async fn get_phrase_cloud(
 }
 
 #[tauri::command]
-fn get_live_snapshot(state: State<'_, AppState>) -> LiveSnapshot {
-    state.live.snapshot()
+async fn get_live_snapshot(state: State<'_, AppState>) -> AppResult<LiveSnapshot> {
+    let live = state.live.clone();
+    tauri::async_runtime::spawn_blocking(move || live.snapshot())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
 #[tauri::command]
 async fn get_live_activity(state: State<'_, AppState>) -> AppResult<LiveActivityResponse> {
     let database = state.database.clone();
-    let snapshot = state.live.snapshot();
+    let live = state.live.clone();
+    let snapshot = tauri::async_runtime::spawn_blocking(move || live.snapshot())
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     let mut activity = tauri::async_runtime::spawn_blocking(move || database.live_activity())
         .await
         .map_err(|error| AppError::InvalidRequest(error.to_string()))??;
@@ -229,8 +235,11 @@ fn jump_to_attention(state: State<'_, AppState>, id: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-fn mark_notch_sessions_seen(state: State<'_, AppState>, ids: Vec<String>) -> AppResult<()> {
-    state.live.mark_notch_sessions_seen(&ids)
+async fn mark_notch_sessions_seen(state: State<'_, AppState>, ids: Vec<String>) -> AppResult<()> {
+    let live = state.live.clone();
+    tauri::async_runtime::spawn_blocking(move || live.mark_notch_sessions_seen(&ids))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
 
 #[tauri::command]

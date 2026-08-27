@@ -109,6 +109,7 @@ struct CodexHookProbeCache {
 
 static CODEX_HOOK_PROBE: Lazy<Mutex<CodexHookProbeCache>> =
     Lazy::new(|| Mutex::new(CodexHookProbeCache::default()));
+static CODEX_TITLE_DATABASE_READ: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug)]
 struct CodexTranscriptWatch {
@@ -3220,6 +3221,15 @@ fn codex_conversation_titles_from(
             }
         }
     }
+    if titles.len() == source_ids.len() {
+        return titles;
+    }
+    // SQLite's POSIX VFS can deadlock when separate threads open and close the
+    // same live WAL database concurrently. Keep this guard until every source
+    // connection below has been dropped.
+    let Ok(_database_read) = CODEX_TITLE_DATABASE_READ.lock() else {
+        return titles;
+    };
     for path in [
         codex_home.join("state_5.sqlite"),
         codex_home.join("sqlite/state_5.sqlite"),
@@ -3227,10 +3237,8 @@ fn codex_conversation_titles_from(
         if !path.is_file() {
             continue;
         }
-        let Ok(connection) = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) else {
+        let Ok(connection) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
             continue;
         };
         for (agent, source_session_id) in sources {
@@ -4821,6 +4829,60 @@ mod tests {
             Some("修复 Notch 弹出栏动态宽度")
         );
         assert!(!titles.contains_key(&("claude-code".into(), "another-thread".into())));
+    }
+
+    #[test]
+    fn concurrent_codex_title_database_reads_finish_without_hanging() {
+        const WORKERS: usize = 8;
+        const READS_PER_WORKER: usize = 100;
+
+        let directory = tempdir().expect("tempdir");
+        let source_session_id = "019fb361-9f23-7412-97c1-9218c487a191";
+        let database = Connection::open(directory.path().join("state_5.sqlite"))
+            .expect("Codex state database");
+        database
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE threads(id TEXT PRIMARY KEY, name TEXT, title TEXT NOT NULL);
+                 INSERT INTO threads(id, name, title) VALUES(
+                    '019fb361-9f23-7412-97c1-9218c487a191',
+                    NULL,
+                    '并发标题读取'
+                 );",
+            )
+            .expect("Codex state fixture");
+        drop(database);
+
+        let start = Arc::new(std::sync::Barrier::new(WORKERS));
+        let (finished_tx, finished_rx) = mpsc::channel();
+        for _ in 0..WORKERS {
+            let codex_home = directory.path().to_path_buf();
+            let start = start.clone();
+            let finished_tx = finished_tx.clone();
+            std::thread::spawn(move || {
+                start.wait();
+                for _ in 0..READS_PER_WORKER {
+                    let titles = codex_conversation_titles_from(
+                        &codex_home,
+                        &[("codex".into(), source_session_id.into())],
+                    );
+                    assert_eq!(
+                        titles
+                            .get(&("codex".into(), source_session_id.into()))
+                            .map(String::as_str),
+                        Some("并发标题读取")
+                    );
+                }
+                finished_tx.send(()).expect("completion signal");
+            });
+        }
+        drop(finished_tx);
+
+        for _ in 0..WORKERS {
+            finished_rx
+                .recv_timeout(StdDuration::from_secs(5))
+                .expect("concurrent title reads should not hang");
+        }
     }
 
     #[test]
