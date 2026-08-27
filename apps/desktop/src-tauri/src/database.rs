@@ -34,6 +34,20 @@ type RangeUsageActivity = (
     Vec<HourlyUsagePoint>,
 );
 
+type ProjectSummaryAggregate = (
+    u64,
+    u64,
+    TokenUsage,
+    u64,
+    u64,
+    u64,
+    u64,
+    u64,
+    Option<f64>,
+    u64,
+    Option<String>,
+);
+
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sources (
     id TEXT PRIMARY KEY,
@@ -4455,8 +4469,7 @@ impl Database {
         for project in &projects {
             let (session_count, active_seconds, usage, files_touched, lines_added, lines_deleted,
                 tool_calls, errors, estimated_cost_usd, covered_tokens, latest_activity):
-                (u64, u64, TokenUsage, u64, u64, u64, u64, u64, Option<f64>, u64, Option<String>) =
-                connection.query_row(
+                ProjectSummaryAggregate = connection.query_row(
                     "SELECT COUNT(*), COALESCE(SUM(active_seconds),0),
                             COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                             COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0),

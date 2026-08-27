@@ -53,6 +53,17 @@ struct SourceRoot {
     adapter: SourceAdapter,
 }
 
+struct AgentInstallationContext<'a> {
+    agent: AgentKind,
+    file_history_available: bool,
+    home: &'a Path,
+    codex_home: &'a Path,
+    zcode_root: &'a Path,
+    claude_config_dir_available: bool,
+    cli_available: bool,
+    app_available: bool,
+}
+
 #[derive(Debug)]
 struct PreparedDatabaseHistorySession {
     source_file_hash: String,
@@ -839,38 +850,31 @@ fn agent_installation_available(agent: AgentKind, file_history_available: bool) 
         _ => false,
     };
     let app_available = agent == AgentKind::ZCode && Path::new("/Applications/ZCode.app").is_dir();
-    agent_installation_available_at(
+    agent_installation_available_at(AgentInstallationContext {
         agent,
         file_history_available,
-        &home,
-        &codex_home,
-        &zcode_root,
+        home: &home,
+        codex_home: &codex_home,
+        zcode_root: &zcode_root,
         claude_config_dir_available,
         cli_available,
         app_available,
-    )
+    })
 }
 
-fn agent_installation_available_at(
-    agent: AgentKind,
-    file_history_available: bool,
-    home: &Path,
-    codex_home: &Path,
-    zcode_root: &Path,
-    claude_config_dir_available: bool,
-    cli_available: bool,
-    app_available: bool,
-) -> bool {
-    file_history_available
-        || match agent {
+fn agent_installation_available_at(context: AgentInstallationContext<'_>) -> bool {
+    context.file_history_available
+        || match context.agent {
             AgentKind::ClaudeCode => {
-                claude_config_dir_available
-                    || home.join(".claude").is_dir()
-                    || home.join(".config/claude").is_dir()
-                    || cli_available
+                context.claude_config_dir_available
+                    || context.home.join(".claude").is_dir()
+                    || context.home.join(".config/claude").is_dir()
+                    || context.cli_available
             }
-            AgentKind::Codex => codex_home.is_dir() || cli_available,
-            AgentKind::ZCode => zcode_root.is_dir() || app_available || cli_available,
+            AgentKind::Codex => context.codex_home.is_dir() || context.cli_available,
+            AgentKind::ZCode => {
+                context.zcode_root.is_dir() || context.app_available || context.cli_available
+            }
             _ => false,
         }
 }
@@ -934,21 +938,19 @@ pub(crate) fn session_context_browser(
     })
     .collect::<Vec<_>>();
 
-    if let Some(text) = preview.prompt {
-        if let Some(category) = categories
+    if let Some(text) = preview.prompt
+        && let Some(category) = categories
             .iter_mut()
             .find(|category| category.key == "user")
-        {
-            push_context_browser_item(category, "Prompt preview", Some(text), "observed");
-        }
+    {
+        push_context_browser_item(category, "Prompt preview", Some(text), "observed");
     }
-    if let Some(text) = preview.output {
-        if let Some(category) = categories
+    if let Some(text) = preview.output
+        && let Some(category) = categories
             .iter_mut()
             .find(|category| category.key == "assistant")
-        {
-            push_context_browser_item(category, "Output preview", Some(text), "observed");
-        }
+    {
+        push_context_browser_item(category, "Output preview", Some(text), "observed");
     }
     for event in events.iter().filter(|event| {
         matches!(
@@ -1489,36 +1491,36 @@ mod tests {
         fs::create_dir(home.join(".codex")).expect("Codex config directory");
         fs::create_dir(home.join(".zcode")).expect("ZCode data directory");
 
-        assert!(agent_installation_available_at(
-            AgentKind::ClaudeCode,
-            false,
+        assert!(agent_installation_available_at(AgentInstallationContext {
+            agent: AgentKind::ClaudeCode,
+            file_history_available: false,
             home,
-            &home.join(".codex"),
-            &home.join(".zcode"),
-            false,
-            false,
-            false,
-        ));
-        assert!(agent_installation_available_at(
-            AgentKind::Codex,
-            false,
+            codex_home: &home.join(".codex"),
+            zcode_root: &home.join(".zcode"),
+            claude_config_dir_available: false,
+            cli_available: false,
+            app_available: false,
+        }));
+        assert!(agent_installation_available_at(AgentInstallationContext {
+            agent: AgentKind::Codex,
+            file_history_available: false,
             home,
-            &home.join(".codex"),
-            &home.join(".zcode"),
-            false,
-            false,
-            false,
-        ));
-        assert!(agent_installation_available_at(
-            AgentKind::ZCode,
-            false,
+            codex_home: &home.join(".codex"),
+            zcode_root: &home.join(".zcode"),
+            claude_config_dir_available: false,
+            cli_available: false,
+            app_available: false,
+        }));
+        assert!(agent_installation_available_at(AgentInstallationContext {
+            agent: AgentKind::ZCode,
+            file_history_available: false,
             home,
-            &home.join(".codex"),
-            &home.join(".zcode"),
-            false,
-            false,
-            false,
-        ));
+            codex_home: &home.join(".codex"),
+            zcode_root: &home.join(".zcode"),
+            claude_config_dir_available: false,
+            cli_available: false,
+            app_available: false,
+        }));
     }
 
     #[test]
