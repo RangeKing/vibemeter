@@ -222,6 +222,47 @@ describe("Notch session selection", () => {
     expect(onRemove).toHaveBeenCalledWith(attention.id);
   });
 
+  it("renders a short delegation anomaly summary with fixed feedback", () => {
+    const attention: AttentionEvent = {
+      id: "delegation-blocked",
+      kind: "waiting",
+      state: "open",
+      reasonKey: "attention.delegation.blocked-branch",
+      agent: "codex",
+      sourceSessionId: "private-child-id",
+      projectLabel: "vibemeter",
+      conversationTitle: "/Users/private/project raw prompt must not appear",
+      openedAt: "2026-08-30T08:00:00Z",
+      latestEvidenceAt: "2026-08-30T08:01:00Z",
+      expiresAt: "9999-12-31T23:59:59Z",
+      evidenceLevel: "observed",
+      sourceCoverage: "exact-delegation",
+      ruleVersion: "delegation-anomaly-1.0.0",
+      evidenceCount: 2,
+      interventionCount: 0,
+      affectedBranchCount: 3,
+    };
+    const onFeedback = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <NotchAttentionQueue
+          items={[attention]}
+          onFeedback={onFeedback}
+          onJump={vi.fn()}
+          onRemove={vi.fn()}
+        />
+      </I18nextProvider>,
+    );
+
+    expect(screen.getByText("分支正在等待或被阻塞")).toBeTruthy();
+    expect(screen.getByText("Codex")).toBeTruthy();
+    expect(screen.getByText("vibemeter")).toBeTruthy();
+    expect(screen.getByText("影响 3 个分支")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("/Users/private/project");
+    fireEvent.pointerDown(screen.getByRole("button", { name: "与我无关" }), { button: 0 });
+    expect(onFeedback).toHaveBeenCalledWith(attention.id, "not-relevant");
+  });
+
   it("does not render completion-review items in the Notch", () => {
     const attention: AttentionEvent = {
       id: "attention-completion-review",

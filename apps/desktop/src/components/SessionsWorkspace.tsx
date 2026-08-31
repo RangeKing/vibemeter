@@ -5,16 +5,19 @@ import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent } fro
 import { useTranslation } from "react-i18next";
 import { RangePicker } from "./RangePicker";
 import { SessionContext as SessionContextView } from "./SessionContext";
+import { DelegationTraceView } from "./delegation/DelegationTraceView";
+import { MemoryLedgerView } from "./memory/MemoryLedgerView";
 import { AgentBadge, EmptyState, ErrorState, LoadingState, PageHeader, SessionEvidence, SessionTitle, VerificationPill } from "./ui";
 import { api } from "../lib/api";
 import { formatCompact, formatCurrency, formatDateTime, formatDuration, tokenTotal } from "../lib/format";
 import { useUiStore } from "../store";
-import type { Locale, ProjectSummary, SessionDetail, SessionSummary } from "../types";
+import type { DelegationEvidenceReference, Locale, MemoryLedgerEvidenceReference, ProjectSummary, SessionDetail, SessionSummary } from "../types";
 import { buildTrajectory, type TrajectoryLane } from "./sessionTrajectory";
 
 const PAGE_SIZE = 50;
 const phaseKeys = new Set(["understand", "inspect", "edit", "verify", "fix", "plan", "execute"]);
 type TrajectoryTooltip = { text: string; x: number; y: number };
+type GovernanceEvidenceReference = DelegationEvidenceReference | MemoryLedgerEvidenceReference;
 
 function formatPhaseTime(value: string | undefined, locale: Locale): string | undefined {
   if (!value) return undefined;
@@ -37,14 +40,29 @@ function formatTrajectoryOffset(milliseconds: number, totalMilliseconds: number)
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function SessionReplay({ detail, locale, onClose }: { detail: SessionDetail; locale: Locale; onClose: () => void }) {
+export function SessionReplay({
+  detail,
+  locale,
+  onClose,
+  processEvidence,
+  onOpenCrossSessionEvidence,
+  onProcessEvidenceFocused,
+}: {
+  detail: SessionDetail;
+  locale: Locale;
+  onClose: () => void;
+  processEvidence?: GovernanceEvidenceReference;
+  onOpenCrossSessionEvidence?: (evidence: GovernanceEvidenceReference) => void;
+  onProcessEvidenceFocused?: () => void;
+}) {
   const { t } = useTranslation();
   const client = useQueryClient();
+  const selectSession = useUiStore((state) => state.selectSession);
   const [showAllPhases, setShowAllPhases] = useState(false);
   const [expandedPhaseIds, setExpandedPhaseIds] = useState<Set<string>>(() => new Set());
   const [activePhaseId, setActivePhaseId] = useState<string>();
   const [trajectoryTooltip, setTrajectoryTooltip] = useState<TrajectoryTooltip>();
-  const [detailTab, setDetailTab] = useState<"process" | "context">("process");
+  const [detailTab, setDetailTab] = useState<"process" | "context" | "delegation" | "memory">("process");
   const phaseRefs = useRef(new Map<string, HTMLElement>());
   const highlightTimer = useRef<number | undefined>(undefined);
   const visiblePhases = showAllPhases ? detail.phases : detail.phases.slice(0, 24);
@@ -104,8 +122,46 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
     });
   }
 
+  function phaseForEvidence(evidence: GovernanceEvidenceReference) {
+    return detail.phases.find((candidate) => candidate.events.some((event) =>
+      event.eventType === evidence.eventType
+      && (!evidence.occurredAt || !event.occurredAt || event.occurredAt === evidence.occurredAt),
+    )) ?? detail.phases.find((candidate) => candidate.events.some((event) => event.eventType === evidence.eventType));
+  }
+
+  useEffect(() => {
+    if (!processEvidence || processEvidence.sessionId !== detail.id) return;
+    setDetailTab("process");
+    const phase = phaseForEvidence(processEvidence);
+    const frame = window.requestAnimationFrame(() => {
+      if (phase) focusPhase(phase.id, true);
+      onProcessEvidenceFocused?.();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [detail.id, processEvidence?.canonicalEventId]);
+
   function phaseLabel(phaseKey: string) {
     return t(`sessions.phase.${phaseKeys.has(phaseKey) ? phaseKey : "other"}`);
+  }
+
+  function processEventName(name: string, eventType: string) {
+    if (eventType === "memory.read" || eventType === "memory.write") {
+      return t(`memory.eventType.${eventType}`);
+    }
+    if (eventType.startsWith("delegation.")) {
+      return t(`delegation.eventType.${eventType}`);
+    }
+    return name;
+  }
+
+  function processEventType(eventType: string) {
+    if (eventType === "memory.read" || eventType === "memory.write") {
+      return t("memory.evidence.access");
+    }
+    if (eventType.startsWith("delegation.")) {
+      return t("delegation.signal.delegation");
+    }
+    return eventType;
   }
 
   function showTrajectoryTooltip(text: string, x: number, y: number) {
@@ -132,6 +188,17 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
     return "unknown";
   }
 
+  function focusProcessEvidence(evidence: GovernanceEvidenceReference) {
+    if (evidence.sessionId && evidence.sessionId !== detail.id) {
+      if (onOpenCrossSessionEvidence) onOpenCrossSessionEvidence(evidence);
+      else selectSession(evidence.sessionId);
+      return;
+    }
+    const phase = phaseForEvidence(evidence);
+    setDetailTab("process");
+    if (phase) window.requestAnimationFrame(() => focusPhase(phase.id, true));
+  }
+
   const split = useMutation({
     mutationFn: () => api.splitSession(detail.id),
     onSuccess: async () => {
@@ -154,9 +221,25 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
       <nav className="replay-tabs" aria-label={t("sessions.detailTabs")}>
         <button className={detailTab === "process" ? "active" : ""} aria-selected={detailTab === "process"} onClick={() => setDetailTab("process")}>{t("sessions.process")}</button>
         <button className={detailTab === "context" ? "active" : ""} aria-selected={detailTab === "context"} onClick={() => setDetailTab("context")}>{t("sessions.contextTab")}</button>
+        <button className={detailTab === "delegation" ? "active" : ""} aria-selected={detailTab === "delegation"} onClick={() => setDetailTab("delegation")}>{t("sessions.delegationTab")}</button>
+        <button className={detailTab === "memory" ? "active" : ""} aria-selected={detailTab === "memory"} onClick={() => setDetailTab("memory")}>{t("sessions.memoryTab")}</button>
       </nav>
 
-      {detailTab === "context" ? (
+      {detailTab === "memory" ? (
+        <MemoryLedgerView
+          sessionId={detail.id}
+          locale={locale}
+          onOpenSession={selectSession}
+          onOpenProcessEvidence={focusProcessEvidence}
+        />
+      ) : detailTab === "delegation" ? (
+        <DelegationTraceView
+          sessionId={detail.id}
+          locale={locale}
+          onOpenSession={selectSession}
+          onOpenProcessEvidence={focusProcessEvidence}
+        />
+      ) : detailTab === "context" ? (
         <SessionContextView
           context={contextQuery.data}
           locale={locale}
@@ -211,7 +294,7 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
                       const duration = span.durationMs && span.durationMs > 0
                         ? formatTrajectoryOffset(span.durationMs, trajectory.durationMs ?? span.durationMs)
                         : undefined;
-                      const title = [span.event.name, time, duration].filter(Boolean).join(" · ");
+                      const title = [processEventName(span.event.name, span.event.eventType), time, duration].filter(Boolean).join(" · ");
                       return (
                         <button
                           key={`${lane}-${span.phaseId}-${span.event.sequence}-${index}`}
@@ -289,7 +372,7 @@ export function SessionReplay({ detail, locale, onClose }: { detail: SessionDeta
                     return (
                       <div className={`phase-event-row status-${status}`} key={`${event.sequence}-${event.name}-${eventIndex}`}>
                         <i aria-hidden="true" />
-                        <span className="phase-event-copy"><strong>{event.name}</strong><small>{event.eventType}</small></span>
+                        <span className="phase-event-copy"><strong>{processEventName(event.name, event.eventType)}</strong><small>{processEventType(event.eventType)}</small></span>
                         {contentPreview?.text ? (
                           <details className="phase-event-content">
                             <summary><small>{contentPreview.label}</small><span>{contentPreview.text}</span></summary>
@@ -363,6 +446,7 @@ export function SessionsWorkspace({
   const [items, setItems] = useState<SessionSummary[]>([]);
   const [view, setView] = useState<"projects" | "sessions">("projects");
   const [projectSort, setProjectSort] = useState("recent");
+  const [pendingProcessEvidence, setPendingProcessEvidence] = useState<GovernanceEvidenceReference>();
 
   useEffect(() => {
     const handle = window.setTimeout(() => setSearch(searchInput.trim()), 250);
@@ -395,6 +479,12 @@ export function SessionsWorkspace({
     queryFn: () => api.projectSummaries(range, agent || undefined),
   });
   const detail = useQuery({ queryKey: ["session", selectedId], queryFn: () => api.sessionDetail(selectedId ?? ""), enabled: Boolean(selectedId) });
+
+  function openCrossSessionEvidence(evidence: GovernanceEvidenceReference) {
+    if (!evidence.sessionId) return;
+    setPendingProcessEvidence(evidence);
+    selectSession(evidence.sessionId);
+  }
 
   useEffect(() => {
     void api.refreshIndex(false);
@@ -482,7 +572,19 @@ export function SessionsWorkspace({
           </section>
           {hasMore ? <div className="session-pagination"><button className="button secondary" disabled={loadingMore} onClick={() => setPage((current) => current + 1)}>{loadingMore ? t("actions.refreshing") : t("sessions.loadMore")}</button></div> : null}
         </>}
-      </> : detail.isLoading ? <LoadingState /> : detail.isError || !detail.data ? <ErrorState retry={() => void detail.refetch()} /> : <SessionReplay detail={detail.data} locale={locale} onClose={() => selectSession(undefined)} />}
+      </> : detail.isLoading ? <LoadingState /> : detail.isError || !detail.data ? <ErrorState retry={() => void detail.refetch()} /> : (
+        <SessionReplay
+          detail={detail.data}
+          locale={locale}
+          onClose={() => {
+            setPendingProcessEvidence(undefined);
+            selectSession(undefined);
+          }}
+          processEvidence={pendingProcessEvidence?.sessionId === detail.data.id ? pendingProcessEvidence : undefined}
+          onOpenCrossSessionEvidence={openCrossSessionEvidence}
+          onProcessEvidenceFocused={() => setPendingProcessEvidence(undefined)}
+        />
+      )}
     </div>
   );
 }

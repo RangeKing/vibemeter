@@ -1,12 +1,12 @@
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
+use crate::governance::capabilities::{SignalCapability, source_capabilities};
 use crate::live_sources;
 use crate::models::{
     AttentionEvent, HookProviderStatus, HookStatus, LiveAction, LiveJumpContext, LiveSession,
     LiveSnapshot, NotchCompletedSession, ObservedLiveEvent, WorkPulse, WorkPulseDimension,
 };
 use crate::providers::{codex_binary, write_json_line};
-use crate::source_capabilities::{SourceLiveCapability, source_capabilities};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -328,6 +328,13 @@ impl LiveMonitor {
         app: AppHandle,
         diagnostics: crate::diagnostics::DiagnosticRetention,
     ) -> AppResult<Self> {
+        if crate::qa_indexing_disabled() {
+            return Ok(Self {
+                sessions: Arc::new(RwLock::new(HashMap::new())),
+                socket_ready: Arc::new(AtomicBool::new(false)),
+                database,
+            });
+        }
         let sessions = Arc::new(RwLock::new(HashMap::new()));
         let auxiliary_sessions = Arc::new(RwLock::new(HashMap::new()));
         let socket_ready = Arc::new(AtomicBool::new(false));
@@ -551,6 +558,7 @@ impl LiveMonitor {
                 };
                 if let Some((session, raw, event_name)) = session_from_envelope(&envelope) {
                     let auxiliary_memory_activity = is_codex_memory_activity(&envelope);
+                    let auxiliary_source_session_id = session.source_session_id.clone();
                     let Some(session) = fold_codex_memory_activity(
                         &sessions,
                         &listener_auxiliary_sessions,
@@ -563,15 +571,26 @@ impl LiveMonitor {
                         register_codex_transcript(&listener_watches, &envelope, &session);
                     }
                     let transitioned_session_id = session.id.clone();
-                    let observed = observed_live_event_from_envelope(
-                        &envelope,
-                        &session,
-                        raw,
-                        event_name,
-                        Utc::now().to_rfc3339(),
-                    );
+                    let observed_at = Utc::now().to_rfc3339();
+                    let observed = if auxiliary_memory_activity {
+                        observed_memory_read_event(
+                            &envelope,
+                            &session,
+                            &auxiliary_source_session_id,
+                            &event_name,
+                            observed_at,
+                        )
+                    } else {
+                        observed_live_event_from_envelope(
+                            &envelope,
+                            &session,
+                            raw.clone(),
+                            event_name,
+                            observed_at,
+                        )
+                    };
                     if database.record_observed_live_event(&observed).is_ok()
-                        && diagnostics.retain(&observed.payload_json).is_err()
+                        && diagnostics.retain(&raw).is_err()
                     {
                         eprintln!("VibeMeter diagnostic retention is unavailable");
                     }
@@ -1937,6 +1956,37 @@ fn observed_live_event_from_codex_metadata(
     }
 }
 
+fn observed_memory_read_event(
+    envelope: &Value,
+    session: &LiveSession,
+    auxiliary_source_session_id: &str,
+    provider_event_name: &str,
+    observed_at: String,
+) -> ObservedLiveEvent {
+    let mut observed = observed_live_event_from_envelope(
+        envelope,
+        session,
+        json!({"source":"codex-hook","event":"MemoryAccess"}).to_string(),
+        "MemoryRead".into(),
+        observed_at,
+    );
+    let identity = crate::privacy::stable_hash(&format!(
+        "memory-read|{}|{}|{}|{}|{}|{}",
+        session.agent,
+        auxiliary_source_session_id,
+        provider_event_name,
+        observed.occurred_at,
+        observed.source_event_id.as_deref().unwrap_or_default(),
+        observed
+            .source_sequence
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+    ));
+    observed.source_event_id = Some(format!("memory-{identity}"));
+    observed.source_event_fingerprint = Some(identity);
+    observed
+}
+
 fn fold_codex_memory_activity(
     sessions: &Arc<RwLock<HashMap<String, LiveSession>>>,
     auxiliary_sessions: &Arc<RwLock<HashMap<String, String>>>,
@@ -3055,9 +3105,9 @@ fn work_pulse_at(session: &LiveSession, now: DateTime<Utc>) -> WorkPulse {
     let live_capability = source_capabilities()
         .iter()
         .find(|capability| capability.agent == session.agent)
-        .map(|capability| capability.live_capability)
-        .unwrap_or(SourceLiveCapability::None);
-    let source_coverage = live_capability.as_str();
+        .map(|capability| capability.live_lifecycle)
+        .unwrap_or(SignalCapability::Unavailable);
+    let source_coverage = live_capability.live_level();
     let available = |value: &str, evidence_level: &str| WorkPulseDimension {
         availability: "available".into(),
         value: Some(value.into()),
@@ -3097,7 +3147,7 @@ fn work_pulse_at(session: &LiveSession, now: DateTime<Utc>) -> WorkPulse {
     };
 
     match live_capability {
-        SourceLiveCapability::Exact => WorkPulse {
+        SignalCapability::Exact => WorkPulse {
             lifecycle: available(&session.status, "observed"),
             work_phase: if session.phase.trim().is_empty() {
                 unknown()
@@ -3115,13 +3165,13 @@ fn work_pulse_at(session: &LiveSession, now: DateTime<Utc>) -> WorkPulse {
             ),
             freshness,
         },
-        SourceLiveCapability::Experimental => WorkPulse {
+        SignalCapability::Derived | SignalCapability::Partial => WorkPulse {
             lifecycle: unknown(),
             work_phase: available("recent-activity", "observed"),
             attention_signal: unknown(),
             freshness,
         },
-        SourceLiveCapability::None => WorkPulse {
+        SignalCapability::Unavailable => WorkPulse {
             lifecycle: unknown(),
             work_phase: unknown(),
             attention_signal: unknown(),
@@ -4149,6 +4199,7 @@ mod tests {
             rule_version: "test".into(),
             evidence_count: 1,
             intervention_count: 0,
+            affected_branch_count: 1,
         }];
 
         hydrate_attention_titles(&database, &mut attention);
@@ -4182,6 +4233,7 @@ mod tests {
             rule_version: "stuck-detector-1.0.0".into(),
             evidence_count: 3,
             intervention_count: 0,
+            affected_branch_count: 1,
         };
 
         overlay_attention_pulses(std::slice::from_mut(&mut session), &[attention]);
@@ -4681,6 +4733,32 @@ mod tests {
         assert_eq!(folded.status, "running");
         assert_eq!(folded.phase, "reading");
         assert_eq!(folded.actions[0].kind, "memory");
+        let observed = observed_memory_read_event(
+            &started,
+            &folded,
+            "memory-child",
+            "SessionStart",
+            now.to_rfc3339(),
+        );
+        let replayed = observed_memory_read_event(
+            &started,
+            &folded,
+            "memory-child",
+            "SessionStart",
+            now.to_rfc3339(),
+        );
+        assert_eq!(observed.event_name, "MemoryRead");
+        assert_eq!(observed.source_event_id, replayed.source_event_id);
+        assert_eq!(
+            observed.source_event_fingerprint,
+            replayed.source_event_fingerprint
+        );
+        assert_eq!(
+            observed.payload_json,
+            r#"{"event":"MemoryAccess","source":"codex-hook"}"#
+        );
+        assert!(!observed.payload_json.contains(".codex"));
+        assert!(!observed.payload_json.contains("memory-child"));
 
         let ended = json!({
             "provider":"codex",

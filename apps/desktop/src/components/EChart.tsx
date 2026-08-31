@@ -7,9 +7,11 @@ interface EChartProps {
   ariaLabel: string;
   style?: CSSProperties;
   animated?: boolean;
+  onClick?: (event: echarts.ECElementEvent) => void;
+  onReady?: (chart: echarts.ECharts) => void;
 }
 
-export function EChart({ option, ariaLabel, style, animated = true }: EChartProps) {
+export function EChart({ option, ariaLabel, style, animated = true, onClick, onReady }: EChartProps) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
@@ -17,6 +19,7 @@ export function EChart({ option, ariaLabel, style, animated = true }: EChartProp
     if (!ref.current) return;
     const chart = echarts.init(ref.current, undefined, { renderer: "canvas" });
     chartRef.current = chart;
+    onReady?.(chart);
     let resizeFrame = 0;
     const observer = new ResizeObserver(() => {
       cancelAnimationFrame(resizeFrame);
@@ -29,7 +32,16 @@ export function EChart({ option, ariaLabel, style, animated = true }: EChartProp
       chartRef.current = null;
       chart.dispose();
     };
-  }, []);
+  }, [onReady]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !onClick) return;
+    chart.on("click", onClick);
+    return () => {
+      chart.off("click", onClick);
+    };
+  }, [onClick]);
 
   useEffect(() => {
     const chart = chartRef.current;

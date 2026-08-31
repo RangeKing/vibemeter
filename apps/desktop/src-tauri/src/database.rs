@@ -1,4 +1,5 @@
 use crate::errors::{AppError, AppResult};
+use crate::governance::capabilities::{SignalCapability, source_capabilities, source_capability};
 use crate::models::{
     AgentKind, AttentionEvent, AttentionQualityReport, BehaviorSignals, BehaviorSummary,
     CanonicalEvent, ComparisonItem, ContextBrowser, ContextBrowserCategory, ContextMetric,
@@ -11,10 +12,9 @@ use crate::models::{
     PhraseCloudResponse, PhraseLegendItem, PhraseModelCount, PlaybookItem, ProcessPhase,
     ProjectControl, ProjectFilterOption, ProjectMemberSummary, ProjectSummary, Provenance,
     SavePlaybookRequest, SessionContext, SessionDetail, SessionListFilters, SessionSummary,
-    SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceStatus, TaskSummary, TokenUsage,
-    VctiProfile,
+    SessionsResponse, SkillUsageItem, SkillUsageSummary, SourceCapabilitiesDto, SourceStatus,
+    TaskSummary, TokenUsage, VctiProfile,
 };
-use crate::source_capabilities::{SourceLiveCapability, source_capabilities, source_capability};
 use chrono::{DateTime, Duration, Local, SecondsFormat, Utc};
 use rusqlite::{
     Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, params, params_from_iter,
@@ -475,7 +475,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 29;
+const DATABASE_SCHEMA_VERSION: i64 = 31;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 pub(crate) const ATTENTION_NOTIFICATION_LEASE_SECONDS: i64 = 5 * 60;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
@@ -934,6 +934,107 @@ CREATE INDEX IF NOT EXISTS project_group_members_group_idx
 PRAGMA user_version = 29;
 "#;
 
+const MIGRATION_V30: &str = r#"
+ALTER TABLE attention_events
+    ADD COLUMN affected_branch_count INTEGER NOT NULL DEFAULT 1
+    CHECK(affected_branch_count >= 1);
+CREATE TABLE execution_relations (
+    id TEXT PRIMARY KEY,
+    root_session_id TEXT NOT NULL,
+    parent_session_id TEXT,
+    child_session_id TEXT NOT NULL,
+    parent_work_unit_id TEXT,
+    child_work_unit_id TEXT,
+    relation_type TEXT NOT NULL CHECK(relation_type IN(
+        'delegate','spawn','handoff','resume','join'
+    )),
+    status TEXT NOT NULL CHECK(status IN(
+        'started','running','waiting','failed','completed','unknown'
+    )),
+    started_at TEXT,
+    ended_at TEXT,
+    outcome TEXT,
+    confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+    evidence_level TEXT NOT NULL CHECK(evidence_level IN(
+        'observed','derived','inferred','user-confirmed','unavailable'
+    )),
+    source_coverage TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    deleted_at TEXT
+);
+CREATE TABLE execution_relation_evidence (
+    relation_id TEXT NOT NULL,
+    canonical_event_id TEXT NOT NULL,
+    evidence_role TEXT NOT NULL CHECK(evidence_role IN(
+        'start','lifecycle','outcome','verification','supporting'
+    )),
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(relation_id, canonical_event_id),
+    FOREIGN KEY(relation_id)
+      REFERENCES execution_relations(id)
+      ON DELETE CASCADE,
+    FOREIGN KEY(canonical_event_id)
+      REFERENCES canonical_events(id)
+      ON DELETE CASCADE
+);
+CREATE INDEX execution_relations_root_idx
+    ON execution_relations(root_session_id, deleted_at, started_at);
+CREATE INDEX execution_relations_parent_idx
+    ON execution_relations(parent_session_id, deleted_at, started_at);
+CREATE INDEX execution_relations_child_idx
+    ON execution_relations(child_session_id, deleted_at, started_at);
+CREATE INDEX execution_relations_active_status_idx
+    ON execution_relations(status, root_session_id, started_at)
+    WHERE deleted_at IS NULL;
+CREATE INDEX execution_relation_evidence_canonical_idx
+    ON execution_relation_evidence(canonical_event_id, relation_id);
+PRAGMA user_version = 30;
+"#;
+
+const MIGRATION_V31: &str = r#"
+CREATE TABLE memory_accesses (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    work_unit_id TEXT,
+    operation TEXT NOT NULL CHECK(operation IN('read','write')),
+    occurred_at TEXT,
+    status TEXT NOT NULL CHECK(status IN('recorded')),
+    confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+    evidence_level TEXT NOT NULL CHECK(evidence_level IN(
+        'observed','derived','inferred','user-confirmed','unavailable'
+    )),
+    source_coverage TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL,
+    deleted_at TEXT
+);
+CREATE TABLE memory_access_evidence (
+    memory_access_id TEXT NOT NULL,
+    canonical_event_id TEXT NOT NULL,
+    evidence_role TEXT NOT NULL CHECK(evidence_role IN('access','supporting')),
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY(memory_access_id, canonical_event_id),
+    FOREIGN KEY(memory_access_id)
+      REFERENCES memory_accesses(id)
+      ON DELETE CASCADE,
+    FOREIGN KEY(canonical_event_id)
+      REFERENCES canonical_events(id)
+      ON DELETE CASCADE
+);
+CREATE INDEX memory_accesses_session_idx
+    ON memory_accesses(session_id, occurred_at, id);
+CREATE INDEX memory_accesses_source_session_idx
+    ON memory_accesses(source_session_id, occurred_at, id);
+CREATE INDEX memory_accesses_operation_idx
+    ON memory_accesses(operation, occurred_at, id);
+CREATE INDEX memory_accesses_active_idx
+    ON memory_accesses(session_id, operation, occurred_at)
+    WHERE deleted_at IS NULL;
+CREATE INDEX memory_access_evidence_canonical_idx
+    ON memory_access_evidence(canonical_event_id, memory_access_id);
+PRAGMA user_version = 31;
+"#;
+
 #[derive(Clone)]
 pub struct Database {
     connection: Arc<Mutex<Connection>>,
@@ -960,6 +1061,9 @@ struct CanonicalLiveEvent {
     observed_at: String,
     agent: String,
     source_session_id: String,
+    parent_session_id: Option<String>,
+    work_unit_id: Option<String>,
+    relation_type: Option<String>,
     lifecycle_status: String,
     live_phase: String,
     event_type: String,
@@ -967,8 +1071,70 @@ struct CanonicalLiveEvent {
     source_event_name: String,
     project_label: String,
     source: &'static str,
-    source_coverage: &'static str,
+    evidence_level: String,
+    source_coverage: String,
     exact_lifecycle: bool,
+}
+
+struct LiveDelegationFields {
+    child_session_id: String,
+    parent_session_id: String,
+    work_unit_id: Option<String>,
+    event_type: &'static str,
+    lifecycle_status: &'static str,
+}
+
+fn live_delegation_fields(event: &ObservedLiveEvent) -> Option<LiveDelegationFields> {
+    if !matches!(event.event_name.as_str(), "SubagentStart" | "SubagentStop") {
+        return None;
+    }
+    let payload = serde_json::from_str::<serde_json::Value>(&event.payload_json).ok()?;
+    let payload = payload
+        .get("payload")
+        .and_then(serde_json::Value::as_object)
+        .or_else(|| payload.as_object())?;
+    let child_session_id = [
+        "agent_id",
+        "agentId",
+        "subagent_id",
+        "subagentId",
+        "child_session_id",
+        "childSessionId",
+        "agent_thread_id",
+        "agentThreadId",
+    ]
+    .iter()
+    .find_map(|key| payload.get(*key).and_then(serde_json::Value::as_str))
+    .filter(|value| !value.is_empty())?;
+    let status = payload
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(event.status.as_str());
+    let (event_type, lifecycle_status) = if event.event_name == "SubagentStart" {
+        if matches!(status, "error" | "failed") {
+            ("delegation.spawn.failed", "error")
+        } else {
+            ("delegation.spawn.started", "running")
+        }
+    } else if matches!(status, "error" | "failed") {
+        ("delegation.child.error", "error")
+    } else if matches!(status, "waiting" | "blocked") {
+        ("delegation.child.waiting", "waiting")
+    } else {
+        ("delegation.spawn.completed", "completed")
+    };
+    let work_unit_id = ["work_unit_id", "workUnitId", "task_id", "taskId"]
+        .iter()
+        .find_map(|key| payload.get(*key).and_then(serde_json::Value::as_str))
+        .filter(|value| !value.is_empty())
+        .map(crate::privacy::safe_opaque_identifier);
+    Some(LiveDelegationFields {
+        child_session_id: crate::privacy::safe_opaque_identifier(child_session_id),
+        parent_session_id: crate::privacy::safe_opaque_identifier(&event.source_session_id),
+        work_unit_id,
+        event_type,
+        lifecycle_status,
+    })
 }
 
 fn canonical_event_kind(event: &ObservedLiveEvent) -> (&'static str, &'static str, &'static str) {
@@ -1095,10 +1261,12 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
     let capability = source_capabilities()
         .iter()
         .find(|capability| capability.agent == event.agent)?;
-    let (source, source_coverage, exact_lifecycle) = match capability.live_capability {
-        SourceLiveCapability::Exact => ("live-hook", "exact-lifecycle", true),
-        SourceLiveCapability::Experimental => ("live-observer", "recent-activity", false),
-        SourceLiveCapability::None => return None,
+    let (source, source_coverage, provider_exact_lifecycle) = match capability.live_lifecycle {
+        SignalCapability::Exact => ("live-hook", "exact-lifecycle", true),
+        SignalCapability::Derived | SignalCapability::Partial => {
+            ("live-observer", "recent-activity", false)
+        }
+        SignalCapability::Unavailable => return None,
     };
     let occurred_at = DateTime::parse_from_rfc3339(&event.occurred_at)
         .ok()?
@@ -1109,7 +1277,15 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         .with_timezone(&Utc)
         .to_rfc3339_opts(SecondsFormat::AutoSi, true);
 
-    let (event_type, source_event_name, lifecycle_status) = if exact_lifecycle {
+    let delegation = live_delegation_fields(event);
+    let memory_read = event.agent == "codex"
+        && event.event_name == "MemoryRead"
+        && capability.memory_read != SignalCapability::Unavailable;
+    let (event_type, source_event_name, lifecycle_status) = if memory_read {
+        ("memory.read", "MemoryAccess", "running")
+    } else if let Some(fields) = &delegation {
+        (fields.event_type, "Delegation", fields.lifecycle_status)
+    } else if provider_exact_lifecycle {
         canonical_event_kind(event)
     } else {
         ("activity.observed", "Activity", "running")
@@ -1135,9 +1311,21 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
             live_phase,
         ))
     });
+    let canonical_source_session_id = delegation
+        .as_ref()
+        .map(|fields| fields.child_session_id.as_str())
+        .unwrap_or(event.source_session_id.as_str());
     let event_fingerprint = crate::privacy::stable_hash(&format!(
-        "{}|{}|{}|{}",
-        event.agent, event.source_session_id, event_type, source_fingerprint,
+        "{}|{}|{}|{}|{}|{}",
+        event.agent,
+        canonical_source_session_id,
+        event_type,
+        source_fingerprint,
+        delegation
+            .as_ref()
+            .map(|fields| fields.parent_session_id.as_str())
+            .unwrap_or_default(),
+        delegation.is_some(),
     ));
     let dedup_identity = event
         .source_event_id
@@ -1145,7 +1333,7 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         .map(|source_event_id| {
             format!(
                 "source|{}|{}|{}|{}",
-                event.agent, event.source_session_id, event_type, source_event_id
+                event.agent, canonical_source_session_id, event_type, source_event_id
             )
         })
         .unwrap_or_else(|| format!("episode|{event_fingerprint}|{observed_at}"));
@@ -1163,7 +1351,14 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         occurred_at,
         observed_at,
         agent: event.agent.clone(),
-        source_session_id: crate::privacy::safe_opaque_identifier(&event.source_session_id),
+        source_session_id: crate::privacy::safe_opaque_identifier(canonical_source_session_id),
+        parent_session_id: delegation
+            .as_ref()
+            .map(|fields| fields.parent_session_id.clone()),
+        work_unit_id: delegation
+            .as_ref()
+            .and_then(|fields| fields.work_unit_id.clone()),
+        relation_type: delegation.as_ref().map(|_| "spawn".into()),
         lifecycle_status: lifecycle_status.into(),
         live_phase,
         event_type: event_type.into(),
@@ -1171,8 +1366,15 @@ fn canonical_live_event(event: &ObservedLiveEvent) -> Option<CanonicalLiveEvent>
         source_event_name: source_event_name.into(),
         project_label,
         source,
-        source_coverage,
-        exact_lifecycle,
+        evidence_level: if memory_read { "derived" } else { "observed" }.into(),
+        source_coverage: if memory_read {
+            "partial-memory-read".into()
+        } else if delegation.is_some() {
+            "exact-delegation-live".into()
+        } else {
+            source_coverage.into()
+        },
+        exact_lifecycle: provider_exact_lifecycle && !memory_read,
     })
 }
 
@@ -1207,7 +1409,10 @@ fn persist_history_record_ids(
     Ok(())
 }
 
-fn history_event_type(event: &CanonicalEvent) -> &'static str {
+fn history_event_type(event: &CanonicalEvent) -> &str {
+    if event.event_type.starts_with("delegation.") {
+        return &event.event_type;
+    }
     match event.event_type.as_str() {
         "prompt" => "prompt.observed",
         "task-start" => "lifecycle.start",
@@ -1232,12 +1437,30 @@ fn history_event_type(event: &CanonicalEvent) -> &'static str {
 }
 
 fn history_lifecycle_status(event: &CanonicalEvent) -> &'static str {
+    if event.event_type.ends_with(".failed") || event.event_type.ends_with(".error") {
+        return "error";
+    }
+    if event.event_type.ends_with(".waiting") {
+        return "waiting";
+    }
+    if event.event_type.ends_with(".completed") || event.event_type.ends_with(".stopped") {
+        return "completed";
+    }
     match event.event_type.as_str() {
         "task-complete" => "completed",
         "task-abort" | "error" => "error",
         _ if event.success == Some(false) => "error",
         _ => "running",
     }
+}
+
+struct HistoryCanonicalFields<'a> {
+    source_session_id: &'a str,
+    work_unit_id: Option<&'a str>,
+    parent_session_id: Option<&'a str>,
+    relation_type: Option<&'a str>,
+    evidence_level: &'a str,
+    source_coverage: &'a str,
 }
 
 fn history_process_phase(category: &str) -> &'static str {
@@ -1277,9 +1500,8 @@ fn insert_history_canonical_event(
     session_id: &str,
     file_hash: &str,
     agent: &str,
-    source_session_id: &str,
+    fields: HistoryCanonicalFields<'_>,
     project_label: &str,
-    source_coverage: &str,
     algorithm_version: &str,
     observed_at: &str,
     source_identity: &str,
@@ -1305,6 +1527,7 @@ fn insert_history_canonical_event(
             id, source_event_id, source_sequence, event_fingerprint, dedup_key,
             protocol_version, schema_version, algorithm_version,
             occurred_at, observed_at, source, agent, source_session_id,
+            work_unit_id, parent_session_id, relation_type,
             history_session_id, history_source_file_hash,
             lifecycle_status, live_phase, event_type, source_event_name,
             process_phase, evidence_level, source_coverage, privacy_level,
@@ -1312,8 +1535,8 @@ fn insert_history_canonical_event(
             source_event_fingerprint, deleted_at
          ) VALUES(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'history-index',
-            ?11, ?12, ?13, ?14, ?15, NULL, ?16, ?17, ?18,
-            'observed', ?19, 'normalized-local', ?20, ?21, ?22, ?23, NULL
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20, ?21,
+            ?22, ?23, 'normalized-local', ?24, ?25, ?26, ?27, NULL
          )
          ON CONFLICT(dedup_key) DO UPDATE SET
             source_event_id=excluded.source_event_id,
@@ -1325,6 +1548,9 @@ fn insert_history_canonical_event(
             observed_at=excluded.observed_at,
             agent=excluded.agent,
             source_session_id=excluded.source_session_id,
+            work_unit_id=excluded.work_unit_id,
+            parent_session_id=excluded.parent_session_id,
+            relation_type=excluded.relation_type,
             history_session_id=excluded.history_session_id,
             history_source_file_hash=excluded.history_source_file_hash,
             lifecycle_status=excluded.lifecycle_status,
@@ -1351,14 +1577,22 @@ fn insert_history_canonical_event(
             occurred_at,
             observed_at,
             agent,
-            crate::privacy::safe_opaque_identifier(source_session_id),
+            crate::privacy::safe_opaque_identifier(fields.source_session_id),
+            fields
+                .work_unit_id
+                .map(crate::privacy::safe_opaque_identifier),
+            fields
+                .parent_session_id
+                .map(crate::privacy::safe_opaque_identifier),
+            fields.relation_type,
             session_id,
             file_hash,
             lifecycle_status,
             event_type,
             crate::privacy::sanitize_tool_name(source_event_name),
             process_phase,
-            source_coverage,
+            fields.evidence_level,
+            fields.source_coverage,
             project_label,
             event_result,
             event_duration_ms.map(sql_i64),
@@ -1415,7 +1649,18 @@ fn sync_history_evidence(
             .source_event_fingerprint
             .as_deref()
             .unwrap_or(&fallback_fingerprint);
-        let source_identity = format!("event|fingerprint|{source_fingerprint}");
+        let canonical_source_session_id = event
+            .delegation_child_session_id
+            .as_deref()
+            .unwrap_or(source_session_id);
+        let relation_type = event.relation_type.as_deref();
+        let source_identity = format!(
+            "event|fingerprint|{}|{}|{}|{}",
+            source_fingerprint,
+            canonical_source_session_id,
+            event.parent_session_id.as_deref().unwrap_or_default(),
+            relation_type.unwrap_or_default(),
+        );
         let source_event_reference = event
             .source_event_id
             .as_deref()
@@ -1428,9 +1673,15 @@ fn sync_history_evidence(
             session_id,
             file_hash,
             agent,
-            source_session_id,
+            HistoryCanonicalFields {
+                source_session_id: canonical_source_session_id,
+                work_unit_id: None,
+                parent_session_id: event.parent_session_id.as_deref(),
+                relation_type,
+                evidence_level: event.evidence_level.as_deref().unwrap_or("observed"),
+                source_coverage: event.source_coverage.as_deref().unwrap_or(source_coverage),
+            },
             &project_label,
-            source_coverage,
             algorithm_version,
             observed_at,
             &source_identity,
@@ -1445,7 +1696,7 @@ fn sync_history_evidence(
             event.duration_ms,
             source_fingerprint,
             &format!(
-                "{}|{}|{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 event.event_type,
                 event.category,
                 event.name,
@@ -1453,6 +1704,9 @@ fn sync_history_evidence(
                 event.duration_ms.unwrap_or_default(),
                 occurred_at.as_deref().unwrap_or("time-unavailable"),
                 event.provenance,
+                canonical_source_session_id,
+                event.parent_session_id.as_deref().unwrap_or_default(),
+                relation_type.unwrap_or_default(),
             ),
         )?;
     }
@@ -1472,9 +1726,15 @@ fn sync_history_evidence(
             session_id,
             file_hash,
             agent,
-            source_session_id,
+            HistoryCanonicalFields {
+                source_session_id,
+                work_unit_id: None,
+                parent_session_id: None,
+                relation_type: None,
+                evidence_level: "observed",
+                source_coverage,
+            },
             &project_label,
-            source_coverage,
             algorithm_version,
             observed_at,
             &source_identity,
@@ -1783,13 +2043,14 @@ fn insert_canonical_live_event(
             id, source_event_id, event_fingerprint, dedup_key,
             protocol_version, schema_version, algorithm_version,
             occurred_at, observed_at, source, agent, source_session_id,
-            source_sequence,
+            source_sequence, work_unit_id, parent_session_id, relation_type,
             lifecycle_status, live_phase, event_type, source_event_name,
             process_phase, evidence_level, source_coverage, privacy_level, project_label,
             event_duration_ms, operation_key
          ) VALUES(
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, NULL, ?23
+            ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+            ?22, ?23, ?24, ?25, NULL, ?26
          ) ON CONFLICT(dedup_key) DO NOTHING",
         params![
             canonical.id,
@@ -1805,12 +2066,15 @@ fn insert_canonical_live_event(
             canonical.agent,
             canonical.source_session_id,
             canonical.source_sequence,
+            canonical.work_unit_id,
+            canonical.parent_session_id,
+            canonical.relation_type,
             canonical.lifecycle_status,
             canonical.live_phase,
             canonical.event_type,
             canonical.source_event_name,
             canonical.live_phase,
-            "observed",
+            canonical.evidence_level,
             canonical.source_coverage,
             "normalized-local",
             canonical.project_label,
@@ -2759,11 +3023,13 @@ fn replay_session_attention(
     let events = {
         let mut statement = transaction.prepare(
             "SELECT id, source_event_id, source_sequence, event_fingerprint, dedup_key,
-                    occurred_at, observed_at, agent, source_session_id, lifecycle_status,
+                    occurred_at, observed_at, agent, source_session_id,
+                    parent_session_id, work_unit_id, relation_type, lifecycle_status,
                     COALESCE(live_phase, ''), event_type, source_event_name,
-                    project_label, operation_key
+                    project_label, source_coverage, operation_key
              FROM canonical_events
              WHERE source='live-hook' AND deleted_at IS NULL
+               AND event_type NOT LIKE 'memory.%'
                AND agent=?1 AND source_session_id=?2
              ORDER BY occurred_at,
                       CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END,
@@ -2783,15 +3049,19 @@ fn replay_session_attention(
                         observed_at: row.get(6)?,
                         agent: row.get(7)?,
                         source_session_id: row.get(8)?,
-                        lifecycle_status: row.get(9)?,
-                        live_phase: row.get(10)?,
-                        event_type: row.get(11)?,
-                        source_event_name: row.get(12)?,
-                        project_label: row.get(13)?,
+                        parent_session_id: row.get(9)?,
+                        work_unit_id: row.get(10)?,
+                        relation_type: row.get(11)?,
+                        lifecycle_status: row.get(12)?,
+                        live_phase: row.get(13)?,
+                        event_type: row.get(14)?,
+                        source_event_name: row.get(15)?,
+                        project_label: row.get(16)?,
                         source: "live-hook",
-                        source_coverage: "exact-lifecycle",
+                        evidence_level: "observed".into(),
+                        source_coverage: row.get(17)?,
                         exact_lifecycle: true,
-                        operation_key: row.get(14)?,
+                        operation_key: row.get(18)?,
                     })
                 },
             )?
@@ -2895,6 +3165,12 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 29 {
         connection.execute_batch(MIGRATION_V29)?;
+    }
+    if version < 30 {
+        connection.execute_batch(MIGRATION_V30)?;
+    }
+    if version < 31 {
+        connection.execute_batch(MIGRATION_V31)?;
     }
     Ok(())
 }
@@ -3062,6 +3338,12 @@ fn database_header_version(path: &Path) -> AppResult<i64> {
 
 fn validate_current_connection(connection: &Connection) -> AppResult<()> {
     let quick_check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    let integrity_check: String =
+        connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    let foreign_key_violations: i64 =
+        connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let canonical_columns: i64 = connection.query_row(
         "SELECT COUNT(*) FROM pragma_table_info('canonical_events')
@@ -3129,7 +3411,8 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
             'id','kind','state','reason_key','agent','source_session_id',
             'opened_at','latest_evidence_at','expires_at','resolved_at',
             'evidence_level','source_coverage','rule_version','updated_at',
-            'notification_claim_token','notification_claimed_at'
+            'notification_claim_token','notification_claimed_at',
+            'affected_branch_count'
          )",
         [],
         |row| row.get(0),
@@ -3176,7 +3459,46 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         [],
         |row| row.get(0),
     )?;
+    let execution_relation_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('execution_relations')
+         WHERE name IN(
+            'id','root_session_id','parent_session_id','child_session_id',
+            'parent_work_unit_id','child_work_unit_id','relation_type','status',
+            'started_at','ended_at','outcome','confidence','evidence_level',
+            'source_coverage','algorithm_version','deleted_at'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let execution_relation_evidence_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('execution_relation_evidence')
+         WHERE name IN(
+            'relation_id','canonical_event_id','evidence_role','observed_at'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let memory_access_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memory_accesses')
+         WHERE name IN(
+            'id','session_id','source_session_id','work_unit_id','operation',
+            'occurred_at','status','confidence','evidence_level','source_coverage',
+            'algorithm_version','deleted_at'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    let memory_access_evidence_columns: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memory_access_evidence')
+         WHERE name IN(
+            'memory_access_id','canonical_event_id','evidence_role','observed_at'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
     if quick_check != "ok"
+        || integrity_check != "ok"
+        || foreign_key_violations != 0
         || version != DATABASE_SCHEMA_VERSION
         || canonical_columns != 16
         || legacy_evidence_tables != 0
@@ -3186,7 +3508,7 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || history_record_columns != 2
         || diagnostic_envelope_columns != 5
         || attention_feedback_columns != 4
-        || attention_event_columns != 16
+        || attention_event_columns != 17
         || attention_evidence_columns != 4
         || attention_intervention_columns != 6
         || attention_review_columns != 6
@@ -3194,6 +3516,10 @@ fn validate_current_connection(connection: &Connection) -> AppResult<()> {
         || project_metadata_columns != 3
         || project_group_columns != 4
         || project_group_member_columns != 3
+        || execution_relation_columns != 16
+        || execution_relation_evidence_columns != 4
+        || memory_access_columns != 12
+        || memory_access_evidence_columns != 4
     {
         return Err(AppError::InvalidRequest(
             "database migration did not pass version and schema verification".into(),
@@ -3652,6 +3978,8 @@ impl Database {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         let result = operation(&transaction)?;
+        crate::delegation_store::rebuild(&transaction, &Utc::now().to_rfc3339())?;
+        crate::memory_ledger_store::rebuild(&transaction, &Utc::now().to_rfc3339())?;
         transaction.commit()?;
         Ok(result)
     }
@@ -3954,7 +4282,7 @@ impl Database {
     ) -> AppResult<()> {
         let connection = self.connect()?;
         let now = Utc::now().to_rfc3339();
-        let capability_level = source_capability(agent).history_capability.as_str();
+        let capability_level = source_capability(agent).history.history_level();
         connection.execute(
             "INSERT INTO sources (
                 id, agent, path_hash, capability_level, available,
@@ -4721,6 +5049,8 @@ impl Database {
                 "DELETE FROM reviews;
                  DELETE FROM playbook_items;
                  DELETE FROM tasks;
+                 DELETE FROM memory_access_evidence;
+                 DELETE FROM memory_accesses;
                  DELETE FROM sessions;
                  DELETE FROM ingestion_cursors;
                  DELETE FROM history_record_ids;
@@ -4926,6 +5256,8 @@ impl Database {
                     i64::from(lifecycle_status == "completed"),
                 ],
             )?;
+            crate::delegation_store::rebuild(&transaction, &event.observed_at)?;
+            crate::memory_ledger_store::rebuild(&transaction, &event.observed_at)?;
         }
         transaction.commit()?;
         Ok(())
@@ -5181,7 +5513,8 @@ impl Database {
                     (SELECT COUNT(*) FROM attention_event_evidence evidence
                      WHERE evidence.attention_event_id=ae.id),
                     (SELECT COUNT(*) FROM attention_interventions intervention
-                     WHERE intervention.attention_event_id=ae.id)
+                     WHERE intervention.attention_event_id=ae.id),
+                    ae.affected_branch_count
              FROM attention_events ae
              WHERE ae.expires_at>?1
                AND (
@@ -5224,6 +5557,7 @@ impl Database {
                     rule_version: row.get(13)?,
                     evidence_count: read_u64(row, 14)?,
                     intervention_count: read_u64(row, 15)?,
+                    affected_branch_count: read_u64(row, 16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?)
@@ -5241,7 +5575,8 @@ impl Database {
                     (SELECT COUNT(*) FROM attention_event_evidence evidence
                      WHERE evidence.attention_event_id=ae.id),
                     (SELECT COUNT(*) FROM attention_interventions intervention
-                     WHERE intervention.attention_event_id=ae.id)
+                     WHERE intervention.attention_event_id=ae.id),
+                    ae.affected_branch_count
              FROM attention_events ae INDEXED BY attention_events_terminal_history_idx
              WHERE (ae.state IN('resolved','ignored','expired'))=1
              ORDER BY ae.updated_at DESC, ae.id ASC
@@ -5267,6 +5602,7 @@ impl Database {
                     rule_version: row.get(13)?,
                     evidence_count: read_u64(row, 14)?,
                     intervention_count: read_u64(row, 15)?,
+                    affected_branch_count: read_u64(row, 16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?)
@@ -5283,7 +5619,8 @@ impl Database {
                         (SELECT COUNT(*) FROM attention_event_evidence evidence
                          WHERE evidence.attention_event_id=ae.id),
                         (SELECT COUNT(*) FROM attention_interventions intervention
-                         WHERE intervention.attention_event_id=ae.id)
+                         WHERE intervention.attention_event_id=ae.id),
+                        ae.affected_branch_count
                  FROM attention_events ae WHERE ae.id=?1",
                 params![id],
                 |row| {
@@ -5305,6 +5642,7 @@ impl Database {
                         rule_version: row.get(13)?,
                         evidence_count: read_u64(row, 14)?,
                         intervention_count: read_u64(row, 15)?,
+                        affected_branch_count: read_u64(row, 16)?,
                     })
                 },
             )
@@ -5707,7 +6045,8 @@ impl Database {
                         (SELECT COUNT(*) FROM attention_event_evidence evidence
                          WHERE evidence.attention_event_id=ae.id),
                         (SELECT COUNT(*) FROM attention_interventions intervention
-                         WHERE intervention.attention_event_id=ae.id)
+                         WHERE intervention.attention_event_id=ae.id),
+                        ae.affected_branch_count
                  FROM attention_events ae
                  ORDER BY
                     CASE ae.kind
@@ -5735,6 +6074,7 @@ impl Database {
                         rule_version: row.get(13)?,
                         evidence_count: read_u64(row, 14)?,
                         intervention_count: read_u64(row, 15)?,
+                        affected_branch_count: read_u64(row, 16)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?
@@ -6588,7 +6928,7 @@ impl Database {
                 value: Some(summary.cost_coverage),
             });
         }
-        let events = query_session_events(&connection, id)?;
+        let events = crate::governance_evidence_store::query_session_events(&connection, id)?;
         let phases = derive_process_phases(events);
         let file_changes = query_file_changes(&connection, id)?;
         let git_evidence = query_git_evidence(&connection, id)?;
@@ -6608,7 +6948,8 @@ impl Database {
                         (SELECT COUNT(*) FROM attention_event_evidence evidence
                          WHERE evidence.attention_event_id=ae.id),
                         (SELECT COUNT(*) FROM attention_interventions intervention
-                         WHERE intervention.attention_event_id=ae.id)
+                         WHERE intervention.attention_event_id=ae.id),
+                        ae.affected_branch_count
                  FROM attention_events ae INDEXED BY attention_events_session_idx
                  WHERE ae.agent=?1 AND ae.source_session_id=?2
                  ORDER BY ae.opened_at DESC, ae.id",
@@ -6633,6 +6974,7 @@ impl Database {
                         rule_version: row.get(13)?,
                         evidence_count: read_u64(row, 14)?,
                         intervention_count: read_u64(row, 15)?,
+                        affected_branch_count: read_u64(row, 16)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?
@@ -6652,10 +6994,26 @@ impl Database {
         })
     }
 
+    pub fn delegation_trace(
+        &self,
+        session_id: &str,
+    ) -> AppResult<crate::models::DelegationTraceResponse> {
+        let connection = self.connect()?;
+        crate::delegation_store::query_trace(&connection, session_id)
+    }
+
+    pub fn memory_ledger(
+        &self,
+        session_id: &str,
+    ) -> AppResult<crate::models::MemoryLedgerResponse> {
+        let connection = self.connect()?;
+        crate::memory_ledger_store::query_ledger(&connection, session_id)
+    }
+
     pub fn session_context(&self, id: &str, offset: u64, limit: u64) -> AppResult<SessionContext> {
         let detail = self.session_detail(id)?;
         let connection = self.connect()?;
-        let all_events = query_session_events(&connection, id)?;
+        let all_events = crate::governance_evidence_store::query_session_events(&connection, id)?;
         let event_count = all_events.len() as u64;
         let usage = detail.summary.usage.clone();
         let total_tokens = usage.total();
@@ -6754,7 +7112,7 @@ impl Database {
 
     pub(crate) fn session_context_events(&self, id: &str) -> AppResult<Vec<CanonicalEvent>> {
         let connection = self.connect()?;
-        query_session_events(&connection, id)
+        crate::governance_evidence_store::query_session_events(&connection, id)
     }
 
     pub(crate) fn session_source_locator(&self, id: &str) -> AppResult<Option<(String, String)>> {
@@ -6798,6 +7156,7 @@ impl Database {
                     warning_count: read_u64(row, 6)?,
                     selected: row.get::<_, i64>(7)? != 0,
                     path_label: path_hash.chars().take(6).collect(),
+                    signal_capabilities: SourceCapabilitiesDto::unavailable(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -6814,17 +7173,19 @@ impl Database {
                         agent: capability.agent.clone(),
                         available: false,
                         selected: false,
-                        capability_level: capability.history_capability.as_str().into(),
-                        live_capability: capability.live_capability.as_str().into(),
+                        capability_level: capability.history.history_level().into(),
+                        live_capability: capability.live_lifecycle.live_level().into(),
                         parser_version: PARSER_VERSION.into(),
                         session_count: 0,
                         last_indexed_at: None,
                         status: "not-found".into(),
                         warning_count: 0,
                         path_label: String::new(),
+                        signal_capabilities: capability.to_dto(),
                     });
-                item.capability_level = capability.history_capability.as_str().into();
-                item.live_capability = capability.live_capability.as_str().into();
+                item.capability_level = capability.history.history_level().into();
+                item.live_capability = capability.live_lifecycle.live_level().into();
+                item.signal_capabilities = capability.to_dto();
                 item.parser_version = PARSER_VERSION.into();
                 item
             })
@@ -8302,47 +8663,7 @@ fn query_legacy_events(
                     .get::<_, Option<i64>>(6)?
                     .map(|value| value.max(0) as u64),
                 provenance: row.get(7)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?)
-}
-
-fn query_session_events(
-    connection: &Connection,
-    session_id: &str,
-) -> AppResult<Vec<CanonicalEvent>> {
-    let mut statement = connection.prepare(
-        "SELECT COALESCE(source_sequence, 0), occurred_at, event_type,
-                COALESCE(process_phase, 'execute'), source_event_name,
-                CASE event_result
-                    WHEN 'succeeded' THEN 1
-                    WHEN 'failed' THEN 0
-                    ELSE NULL
-                END,
-                event_duration_ms, evidence_level
-         FROM canonical_events
-         WHERE source='history-index' AND history_session_id=?1
-           AND deleted_at IS NULL AND event_type<>'file.change'
-         ORDER BY CASE WHEN occurred_at IS NULL THEN 1 ELSE 0 END,
-                  occurred_at,
-                  CASE WHEN source_sequence IS NULL THEN 1 ELSE 0 END,
-                  source_sequence, id",
-    )?;
-    Ok(statement
-        .query_map(params![session_id], |row| {
-            Ok(CanonicalEvent {
-                sequence: read_u64(row, 0)?,
-                source_event_id: None,
-                source_event_fingerprint: None,
-                occurred_at: row.get(1)?,
-                event_type: row.get(2)?,
-                category: row.get(3)?,
-                name: row.get(4)?,
-                success: row.get::<_, Option<i64>>(5)?.map(|value| value != 0),
-                duration_ms: row
-                    .get::<_, Option<i64>>(6)?
-                    .map(|value| value.max(0) as u64),
-                provenance: row.get(7)?,
+                ..CanonicalEvent::default()
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
@@ -9500,6 +9821,10 @@ mod concurrency_tests {
             .execute_batch(
                 "DROP INDEX canonical_events_operation_idx;
                  DROP INDEX canonical_events_live_project_idx;
+                 DROP TABLE IF EXISTS memory_access_evidence;
+                 DROP TABLE IF EXISTS memory_accesses;
+                 DROP TABLE IF EXISTS execution_relation_evidence;
+                 DROP TABLE IF EXISTS execution_relations;
                  DROP TABLE IF EXISTS attention_quality_checks;
                  DROP TABLE IF EXISTS attention_review_samples;
                  DROP TABLE IF EXISTS attention_interventions;
@@ -9574,6 +9899,10 @@ mod concurrency_tests {
                     event_name, project_label, payload_json, status
                    FROM live_events_v14;
                  DROP TABLE live_events_v14;
+                 DROP TABLE memory_access_evidence;
+                 DROP TABLE memory_accesses;
+                 DROP TABLE execution_relation_evidence;
+                 DROP TABLE execution_relations;
                  DROP TABLE attention_quality_checks;
                  DROP TABLE attention_review_samples;
                  DROP TABLE attention_interventions;
@@ -9582,6 +9911,9 @@ mod concurrency_tests {
                  DROP TABLE activity_cycles;
                  DROP TABLE attention_feedback;
                  DROP TABLE canonical_events;
+                 DROP TABLE project_group_members;
+                 DROP TABLE project_groups;
+                 DROP TABLE project_metadata;
                  ALTER TABLE file_changes DROP COLUMN agent;
                  ALTER TABLE file_changes DROP COLUMN evidence_level;
                  ALTER TABLE file_changes DROP COLUMN source_coverage;
@@ -9826,6 +10158,7 @@ mod concurrency_tests {
             success: None,
             duration_ms: None,
             provenance: "observed".into(),
+            ..CanonicalEvent::default()
         });
         state
     }
@@ -10301,6 +10634,7 @@ mod concurrency_tests {
                     success: Some(true),
                     duration_ms: None,
                     provenance: "observed".into(),
+                    ..CanonicalEvent::default()
                 },
             );
             for (index, event) in upgraded_state.events.iter_mut().enumerate() {
@@ -10365,9 +10699,15 @@ mod concurrency_tests {
                 &session_id,
                 "history-order-file",
                 "codex",
-                "history-order-session",
+                HistoryCanonicalFields {
+                    source_session_id: "history-order-session",
+                    work_unit_id: None,
+                    parent_session_id: None,
+                    relation_type: None,
+                    evidence_level: "observed",
+                    source_coverage: "full-history",
+                },
                 "history-order-project",
-                "full-history",
                 "history-order-test",
                 "2026-08-10T04:00:04Z",
                 name,
@@ -10474,6 +10814,7 @@ mod concurrency_tests {
                 success: Some(true),
                 duration_ms: Some(250),
                 provenance: "observed".into(),
+                ..CanonicalEvent::default()
             });
             state.event_count = 1;
             state
@@ -10641,6 +10982,7 @@ mod concurrency_tests {
             success: Some(true),
             duration_ms: Some(1),
             provenance: "observed".into(),
+            ..CanonicalEvent::default()
         });
         failing.event_count = 2;
         assert!(
@@ -10712,6 +11054,7 @@ mod concurrency_tests {
             success: None,
             duration_ms: None,
             provenance: "observed".into(),
+            ..CanonicalEvent::default()
         });
         state.file_changes.insert(
             "src/lib.rs".into(),
@@ -10818,6 +11161,7 @@ mod concurrency_tests {
                 success: Some(true),
                 duration_ms: None,
                 provenance: "observed".into(),
+                ..CanonicalEvent::default()
             });
             database
                 .persist_parse_state(&format!("untimed-task-file-{index}"), 10, index, 10, &state)
@@ -11069,6 +11413,7 @@ mod concurrency_tests {
                     success: Some(true),
                     duration_ms: None,
                     provenance: "observed".into(),
+                    ..CanonicalEvent::default()
                 },
             );
             for (index, event) in upgraded_state.events.iter_mut().enumerate() {
@@ -11243,8 +11588,9 @@ mod concurrency_tests {
         assert_eq!(quick_check, "ok");
         assert_eq!(version, DATABASE_SCHEMA_VERSION);
         assert_eq!(foreign_key_violations, 0);
-        assert!(text_facts.iter().all(|(_, coverage, count, unique)| {
-            coverage == "partial-history" && count == unique
+        assert!(text_facts.iter().all(|(agent, coverage, count, unique)| {
+            history_evidence_coverage(agent).is_some_and(|expected| expected == coverage)
+                && count == unique
         }));
         drop(connection);
         let profile = database
@@ -13073,9 +13419,15 @@ mod concurrency_tests {
                 "history-session",
                 "history-file",
                 "claude-code",
-                "same-time-session",
+                HistoryCanonicalFields {
+                    source_session_id: "same-time-session",
+                    work_unit_id: None,
+                    parent_session_id: None,
+                    relation_type: None,
+                    evidence_level: "observed",
+                    source_coverage: "full-history",
+                },
                 "project",
-                "full-history",
                 "history-normalizer-test",
                 "2026-08-10T00:03:02Z",
                 "history-error",
@@ -14792,6 +15144,1188 @@ mod concurrency_tests {
         assert_eq!(completed[0].session.id, "recent-0");
         assert!(completed.iter().all(|item| item.session.id != "recent-10"));
         assert!(completed.iter().all(|item| item.session.id != "expired"));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn delegation_fixture_event(
+        sequence: u64,
+        id: &str,
+        child: &str,
+        parent: Option<&str>,
+        relation_type: &str,
+        event_type: &str,
+        occurred_at: &str,
+        evidence_level: &str,
+        source_coverage: &str,
+    ) -> CanonicalEvent {
+        CanonicalEvent {
+            sequence,
+            source_event_id: Some(crate::privacy::stable_hash(&format!("source-{id}"))),
+            source_event_fingerprint: Some(crate::privacy::stable_hash(&format!(
+                "fingerprint-{id}"
+            ))),
+            occurred_at: Some(occurred_at.into()),
+            event_type: event_type.into(),
+            category: "subagent".into(),
+            name: "DelegationSignal".into(),
+            success: Some(!event_type.ends_with("failed") && !event_type.ends_with("error")),
+            duration_ms: None,
+            provenance: evidence_level.into(),
+            delegation_child_session_id: Some(child.into()),
+            parent_session_id: parent.map(str::to_string),
+            relation_type: Some(relation_type.into()),
+            evidence_level: Some(evidence_level.into()),
+            source_coverage: Some(source_coverage.into()),
+        }
+    }
+
+    fn delegation_fixture_state(
+        agent: AgentKind,
+        source_session_id: &str,
+        events: Vec<CanonicalEvent>,
+    ) -> ParseState {
+        let mut state = ParseState::new(agent, source_session_id.into());
+        state.source_session_observed = true;
+        state.project_hash = Some(crate::privacy::stable_hash(
+            "/Users/private/delegation-project",
+        ));
+        state.project_label = Some("/Users/private/delegation-project".into());
+        state.prompt_excerpt = Some("PRIVATE_DELEGATION_PROMPT".into());
+        state.result_excerpt = Some("PRIVATE_DELEGATION_RESPONSE".into());
+        state.started_at = Some("2026-08-30T10:00:00Z".into());
+        state.ended_at = Some("2026-08-30T10:10:00Z".into());
+        state.event_count = events.len() as u64;
+        state.events = events;
+        state
+    }
+
+    #[test]
+    fn delegation_trace_vertical_slice_is_stable_evidence_bound_and_attention_aware() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("delegation-slice.sqlite"))
+            .expect("database should open");
+        let events = vec![
+            // A completion record arriving before its start record must remain deterministic.
+            delegation_fixture_event(
+                1,
+                "a-stop",
+                "child-a",
+                Some("root"),
+                "spawn",
+                "delegation.spawn.completed",
+                "2026-08-30T10:05:00Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                2,
+                "a-start",
+                "child-a",
+                Some("root"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:00Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                3,
+                "a-duplicate",
+                "child-a",
+                Some("root"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:01Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                4,
+                "a-duplicate-again",
+                "child-a",
+                Some("root"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:02Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                5,
+                "a-join",
+                "child-a",
+                Some("root"),
+                "join",
+                "delegation.join.completed",
+                "2026-08-30T10:05:01Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                6,
+                "b-start",
+                "child-b",
+                Some("root"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:03Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                7,
+                "b-error",
+                "child-b",
+                Some("root"),
+                "spawn",
+                "delegation.child.error",
+                "2026-08-30T10:04:00Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                8,
+                "c-start",
+                "child-c",
+                Some("root"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:04Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                9,
+                "c-waiting",
+                "child-c",
+                Some("root"),
+                "spawn",
+                "delegation.child.waiting",
+                "2026-08-30T10:04:01Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                10,
+                "handoff",
+                "handoff-child",
+                Some("root"),
+                "handoff",
+                "delegation.handoff.started",
+                "2026-08-30T10:02:00Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+            delegation_fixture_event(
+                11,
+                "resume",
+                "handoff-child",
+                Some("root"),
+                "resume",
+                "delegation.resume.completed",
+                "2026-08-30T10:06:00Z",
+                "observed",
+                "exact-delegation-fixture",
+            ),
+        ];
+        let state = delegation_fixture_state(AgentKind::Codex, "root", events.clone());
+        let session_id = database
+            .persist_parse_state("delegation-slice-source", 100, 1, 100, &state)
+            .expect("delegation fixture should persist");
+        let first = database
+            .delegation_trace(&session_id)
+            .expect("delegation trace should load");
+
+        assert_eq!(first.status, "ready");
+        assert_eq!(first.edges.len(), 6);
+        assert!(first.edges.iter().all(|edge| {
+            !edge.evidence_ids.is_empty()
+                && edge.evidence_ids.iter().all(|id| {
+                    first
+                        .evidence
+                        .iter()
+                        .any(|reference| reference.canonical_event_id == *id)
+                })
+        }));
+        assert!(
+            first
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.kind == "spawn-failed")
+        );
+        assert!(
+            first
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.kind == "blocked-branch")
+        );
+        assert!(
+            first
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.kind == "duplicate-delegation")
+        );
+        assert!(
+            !first
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.kind == "handoff-unfinished")
+        );
+        assert_eq!(
+            first
+                .edges
+                .iter()
+                .find(|edge| edge.relation_type == "handoff")
+                .map(|edge| edge.status.as_str()),
+            Some("completed")
+        );
+        let public_json = serde_json::to_string(&first).expect("trace should serialize");
+        for private in [
+            "/Users/private/delegation-project",
+            "PRIVATE_DELEGATION_PROMPT",
+            "PRIVATE_DELEGATION_RESPONSE",
+            "child-a",
+            "handoff-child",
+        ] {
+            assert!(!public_json.contains(private));
+        }
+        let attention = database.attention_events().expect("attention should load");
+        assert!(attention.iter().any(|item| {
+            item.reason_key == "attention.delegation.spawn-failed"
+                && item.kind == "error"
+                && item.affected_branch_count == 1
+        }));
+        assert!(attention.iter().any(|item| {
+            item.reason_key == "attention.delegation.blocked-branch" && item.kind == "waiting"
+        }));
+        assert!(
+            attention
+                .iter()
+                .filter(|item| item.reason_key.starts_with("attention.delegation."))
+                .all(|item| {
+                    item.project_label.starts_with("private-")
+                        && !item.project_label.contains('/')
+                        && item.evidence_count > 0
+                })
+        );
+
+        let first_ids = first
+            .edges
+            .iter()
+            .map(|edge| edge.id.clone())
+            .collect::<Vec<_>>();
+        let mut reordered = state.clone();
+        reordered.events.reverse();
+        database
+            .persist_parse_state("delegation-slice-source", 110, 2, 110, &reordered)
+            .expect("reordered source should reindex");
+        let second = database
+            .delegation_trace(&session_id)
+            .expect("reordered trace should load");
+        assert_eq!(
+            first_ids,
+            second
+                .edges
+                .iter()
+                .map(|edge| edge.id.clone())
+                .collect::<Vec<_>>()
+        );
+        let integrity: (String, String, i64) = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT (SELECT quick_check FROM pragma_quick_check),
+                        (SELECT integrity_check FROM pragma_integrity_check),
+                        (SELECT COUNT(*) FROM pragma_foreign_key_check)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("integrity checks should run");
+        assert_eq!(integrity, ("ok".into(), "ok".into(), 0));
+    }
+
+    #[test]
+    fn repeated_exact_spawn_failures_report_all_affected_branches() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("delegation-spawn-failures.sqlite"))
+            .expect("database should open");
+        let events = (0..3)
+            .map(|index| {
+                delegation_fixture_event(
+                    index + 1,
+                    &format!("spawn-failure-{index}"),
+                    &format!("failed-child-{index}"),
+                    Some("root"),
+                    "spawn",
+                    "delegation.spawn.failed",
+                    &format!("2026-08-30T10:01:{index:02}Z"),
+                    "observed",
+                    "exact-delegation-fixture",
+                )
+            })
+            .collect();
+        database
+            .persist_parse_state(
+                "delegation-repeated-spawn-failure-source",
+                10,
+                1,
+                10,
+                &delegation_fixture_state(AgentKind::Codex, "root", events),
+            )
+            .expect("spawn-failure fixture should persist");
+
+        let attention = database.attention_events().expect("attention should load");
+        let repeated_failures = attention
+            .iter()
+            .filter(|item| item.reason_key == "attention.delegation.spawn-failed")
+            .collect::<Vec<_>>();
+        assert_eq!(repeated_failures.len(), 3);
+        assert!(
+            repeated_failures
+                .iter()
+                .all(|item| item.affected_branch_count == 3)
+        );
+    }
+
+    #[test]
+    fn delegation_orphan_unsupported_and_parent_completion_states_are_truthful() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("delegation-coverage.sqlite"))
+            .expect("database should open");
+        let orphan_state = delegation_fixture_state(
+            AgentKind::Codex,
+            "orphan-child",
+            vec![delegation_fixture_event(
+                1,
+                "orphan",
+                "orphan-child",
+                None,
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:00Z",
+                "derived",
+                "partial-delegation-fixture",
+            )],
+        );
+        let orphan_session = database
+            .persist_parse_state("orphan-source", 10, 1, 10, &orphan_state)
+            .expect("orphan should persist");
+        let orphan = database
+            .delegation_trace(&orphan_session)
+            .expect("orphan should load");
+        assert_eq!(orphan.status, "partial");
+        assert_eq!(orphan.edges[0].evidence_level, "inferred");
+        assert!(orphan.edges[0].confidence < 0.6);
+        assert!(
+            orphan
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.kind == "orphan-child")
+        );
+
+        let unsupported_state = delegation_fixture_state(
+            AgentKind::Cursor,
+            "cursor-root",
+            vec![delegation_fixture_event(
+                1,
+                "cursor-child",
+                "cursor-child",
+                Some("cursor-root"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:00Z",
+                "derived",
+                "partial-history",
+            )],
+        );
+        let unsupported_session = database
+            .persist_parse_state("cursor-delegation-source", 10, 1, 10, &unsupported_state)
+            .expect("unsupported source should persist");
+        let unsupported = database
+            .delegation_trace(&unsupported_session)
+            .expect("unsupported trace should respond");
+        assert_eq!(unsupported.status, "not-recorded");
+        assert!(unsupported.edges.is_empty());
+        assert_eq!(unsupported.coverage.capability, "unavailable");
+
+        let running_state = delegation_fixture_state(
+            AgentKind::Codex,
+            "completed-parent",
+            vec![delegation_fixture_event(
+                1,
+                "async-child",
+                "async-child",
+                Some("completed-parent"),
+                "spawn",
+                "delegation.spawn.started",
+                "2026-08-30T10:01:00Z",
+                "observed",
+                "exact-delegation-fixture",
+            )],
+        );
+        let running_session = database
+            .persist_parse_state("parent-complete-source", 10, 1, 10, &running_state)
+            .expect("parent-complete fixture should persist");
+        let running = database
+            .delegation_trace(&running_session)
+            .expect("parent-complete trace should load");
+        assert_eq!(
+            running
+                .nodes
+                .iter()
+                .find(|node| node.kind == "root-agent")
+                .map(|node| node.status.as_str()),
+            Some("completed")
+        );
+        assert_eq!(
+            running
+                .nodes
+                .iter()
+                .find(|node| node.kind == "subagent")
+                .map(|node| node.status.as_str()),
+            Some("started")
+        );
+        assert!(
+            !running
+                .anomalies
+                .iter()
+                .any(|anomaly| anomaly.kind == "blocked-branch")
+        );
+    }
+
+    #[test]
+    fn delegation_reindex_tombstones_derived_relations_preserves_confirmed_and_rolls_back_failures()
+    {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("delegation-reindex.sqlite"))
+            .expect("database should open");
+        let state = delegation_fixture_state(
+            AgentKind::Codex,
+            "root",
+            vec![
+                delegation_fixture_event(
+                    1,
+                    "auto",
+                    "auto-child",
+                    Some("root"),
+                    "spawn",
+                    "delegation.spawn.started",
+                    "2026-08-30T10:01:00Z",
+                    "observed",
+                    "exact-delegation-fixture",
+                ),
+                delegation_fixture_event(
+                    2,
+                    "confirmed",
+                    "confirmed-child",
+                    Some("root"),
+                    "spawn",
+                    "delegation.spawn.started",
+                    "2026-08-30T10:01:01Z",
+                    "observed",
+                    "exact-delegation-fixture",
+                ),
+            ],
+        );
+        let session_id = database
+            .persist_parse_state("delegation-reindex-source", 20, 1, 20, &state)
+            .expect("initial relations should persist");
+        let before = database
+            .delegation_trace(&session_id)
+            .expect("trace should load");
+        let confirmed_id: String = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT id FROM execution_relations WHERE child_session_id='confirmed-child'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("confirmed relation should exist");
+        database
+            .connect()
+            .expect("database should connect")
+            .execute(
+                "UPDATE execution_relations SET evidence_level='user-confirmed' WHERE id=?1",
+                params![confirmed_id],
+            )
+            .expect("manual confirmation should persist");
+
+        database
+            .connect()
+            .expect("database should connect")
+            .execute_batch(
+                "CREATE TRIGGER fail_delegation_rebuild
+                 BEFORE UPDATE ON execution_relations
+                 BEGIN SELECT RAISE(ABORT, 'delegation rebuild failure'); END;",
+            )
+            .expect("failure trigger should install");
+        let mut changed = state.clone();
+        changed.events.push(delegation_fixture_event(
+            3,
+            "new",
+            "new-child",
+            Some("root"),
+            "spawn",
+            "delegation.spawn.started",
+            "2026-08-30T10:01:02Z",
+            "observed",
+            "exact-delegation-fixture",
+        ));
+        assert!(
+            database
+                .persist_parse_state("delegation-reindex-source", 30, 2, 30, &changed)
+                .is_err()
+        );
+        let after_failure = database
+            .delegation_trace(&session_id)
+            .expect("previous trace should survive");
+        assert_eq!(after_failure.edges.len(), before.edges.len());
+        database
+            .connect()
+            .expect("database should connect")
+            .execute_batch("DROP TRIGGER fail_delegation_rebuild;")
+            .expect("failure trigger should drop");
+
+        let empty = delegation_fixture_state(AgentKind::Codex, "root", Vec::new());
+        database
+            .persist_parse_state("delegation-reindex-source", 40, 3, 40, &empty)
+            .expect("empty reindex should publish atomically");
+        let state_counts: (i64, i64, i64) = database
+            .connect()
+            .expect("database should connect")
+            .query_row(
+                "SELECT
+                    SUM(evidence_level='user-confirmed' AND deleted_at IS NULL),
+                    SUM(evidence_level<>'user-confirmed' AND deleted_at IS NOT NULL),
+                    (SELECT COUNT(*) FROM execution_relation_evidence evidence
+                     JOIN execution_relations relation ON relation.id=evidence.relation_id
+                     WHERE relation.evidence_level='user-confirmed')
+                 FROM execution_relations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("relation lifecycle should load");
+        assert_eq!(state_counts, (1, 1, 1));
+        let after = database
+            .delegation_trace(&session_id)
+            .expect("confirmed trace should remain readable");
+        assert_eq!(after.edges.len(), 1);
+        assert_eq!(after.edges[0].evidence_level, "user-confirmed");
+        assert!(!after.edges[0].evidence_ids.is_empty());
+    }
+
+    #[test]
+    fn schema_29_migrates_to_delegation_schema_30_with_integrity_and_indexes() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("schema-29-to-30.sqlite");
+        let database = Database::open(path.clone()).expect("current database should open");
+        let session_id = database
+            .persist_parse_state(
+                "schema-29-session",
+                1,
+                1,
+                1,
+                &delegation_fixture_state(AgentKind::Codex, "schema-root", Vec::new()),
+            )
+            .expect("legacy-visible session should persist");
+        drop(database);
+        let connection = Connection::open(&path).expect("fixture should reopen");
+        connection
+            .execute_batch(
+                "DROP TABLE memory_access_evidence;
+                 DROP TABLE memory_accesses;
+                 DROP TABLE execution_relation_evidence;
+                 DROP TABLE execution_relations;
+                 ALTER TABLE attention_events DROP COLUMN affected_branch_count;
+                 PRAGMA user_version = 29;",
+            )
+            .expect("schema 29 fixture should be restored");
+        drop(connection);
+
+        let migrated = Database::open(path.clone()).expect("schema 29 should migrate");
+        let connection = migrated
+            .connect()
+            .expect("migrated database should connect");
+        let checks: (i64, String, String, i64, i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT user_version FROM pragma_user_version),
+                    (SELECT quick_check FROM pragma_quick_check),
+                    (SELECT integrity_check FROM pragma_integrity_check),
+                    (SELECT COUNT(*) FROM pragma_foreign_key_check),
+                    (SELECT COUNT(*) FROM pragma_table_info('attention_events')
+                     WHERE name='affected_branch_count'),
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='index' AND name IN(
+                        'execution_relations_root_idx',
+                        'execution_relations_parent_idx',
+                        'execution_relations_child_idx',
+                        'execution_relations_active_status_idx',
+                        'execution_relation_evidence_canonical_idx'
+                     ))",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("migration checks should load");
+        assert_eq!(
+            checks,
+            (DATABASE_SCHEMA_VERSION, "ok".into(), "ok".into(), 0, 1, 5)
+        );
+        let preserved: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("legacy session should remain");
+        assert_eq!(preserved, 1);
+        drop(connection);
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn delegation_query_indexes_cover_root_and_reverse_evidence_lookup() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("delegation-query-plan.sqlite"))
+            .expect("database should open");
+        database
+            .persist_parse_state(
+                "delegation-query-plan-source",
+                10,
+                1,
+                10,
+                &delegation_fixture_state(
+                    AgentKind::Codex,
+                    "root",
+                    vec![delegation_fixture_event(
+                        1,
+                        "query-plan",
+                        "query-plan-child",
+                        Some("root"),
+                        "spawn",
+                        "delegation.spawn.started",
+                        "2026-08-30T10:01:00Z",
+                        "observed",
+                        "exact-delegation-fixture",
+                    )],
+                ),
+            )
+            .expect("query-plan fixture should persist");
+        let connection = database.connect().expect("database should connect");
+        let root_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM execution_relations INDEXED BY execution_relations_root_idx
+                 WHERE root_session_id='root' AND deleted_at IS NULL
+                 ORDER BY started_at, id",
+            )
+            .expect("root query plan should prepare")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("root query plan should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("root query plan should collect");
+        let evidence_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT relation_id FROM execution_relation_evidence
+                 INDEXED BY execution_relation_evidence_canonical_idx
+                 WHERE canonical_event_id='fixture'",
+            )
+            .expect("evidence query plan should prepare")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("evidence query plan should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("evidence query plan should collect");
+
+        assert!(
+            root_plan
+                .iter()
+                .any(|detail| detail.contains("execution_relations_root_idx")),
+            "unexpected root query plan: {root_plan:?}"
+        );
+        assert!(
+            evidence_plan
+                .iter()
+                .any(|detail| { detail.contains("execution_relation_evidence_canonical_idx") }),
+            "unexpected evidence query plan: {evidence_plan:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_delegation_reads_finish_without_duplicate_projection() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Arc::new(
+            Database::open(temporary.path().join("delegation-concurrent.sqlite"))
+                .expect("database should open"),
+        );
+        let session_id = database
+            .persist_parse_state(
+                "delegation-concurrent-source",
+                10,
+                1,
+                10,
+                &delegation_fixture_state(
+                    AgentKind::Codex,
+                    "concurrent-root",
+                    vec![delegation_fixture_event(
+                        1,
+                        "concurrent",
+                        "concurrent-child",
+                        Some("concurrent-root"),
+                        "spawn",
+                        "delegation.spawn.started",
+                        "2026-08-30T10:01:00Z",
+                        "observed",
+                        "exact-delegation-fixture",
+                    )],
+                ),
+            )
+            .expect("concurrent fixture should persist");
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let database = database.clone();
+                let session_id = session_id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..20 {
+                        let trace = database
+                            .delegation_trace(&session_id)
+                            .expect("read should finish");
+                        assert_eq!(trace.edges.len(), 1);
+                        assert_eq!(trace.coverage.relation_count, 1);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("reader should not panic");
+        }
+    }
+
+    fn memory_fixture_session(
+        database: &Database,
+        agent: AgentKind,
+        source_session_id: &str,
+    ) -> String {
+        let mut state = ParseState::new(agent, source_session_id.into());
+        state.started_at = Some("2026-08-31T10:00:00Z".into());
+        state.ended_at = Some("2026-08-31T10:10:00Z".into());
+        state.title = Some("Memory fixture".into());
+        state.project_hash = Some("memory-project-hash".into());
+        state.project_label = Some("memory-project".into());
+        state.usage.input_tokens = 1;
+        database
+            .persist_parse_state(
+                &format!("memory-source-{source_session_id}"),
+                1,
+                1,
+                1,
+                &state,
+            )
+            .expect("memory fixture session should persist")
+    }
+
+    fn memory_read_event(
+        source_session_id: &str,
+        source_event_id: &str,
+        occurred_at: &str,
+    ) -> ObservedLiveEvent {
+        ObservedLiveEvent {
+            occurred_at: occurred_at.into(),
+            observed_at: occurred_at.into(),
+            agent: "codex".into(),
+            source_session_id: source_session_id.into(),
+            source_event_id: Some(source_event_id.into()),
+            source_sequence: None,
+            source_event_fingerprint: Some(crate::privacy::stable_hash(source_event_id)),
+            event_name: "MemoryRead".into(),
+            project_label: "/Users/private/work/memory-project".into(),
+            payload_json: r#"{"prompt":"private prompt","command":"cat secret","cwd":"/Users/private/.codex/memories","tool_input":{"token":"secret"}}"#.into(),
+            status: "running".into(),
+            phase: Some("reading".into()),
+        }
+    }
+
+    #[test]
+    fn memory_query_indexes_cover_session_and_reverse_evidence_lookup() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("memory-query-plan.sqlite"))
+            .expect("database should open");
+        let session_id = memory_fixture_session(&database, AgentKind::Codex, "memory-query-plan");
+        database
+            .record_observed_live_event(&memory_read_event(
+                "memory-query-plan",
+                "memory-query-plan-read",
+                "2026-08-31T10:01:00Z",
+            ))
+            .expect("memory query-plan fixture should persist");
+        let connection = database.connect().expect("database should connect");
+        let access_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM memory_accesses INDEXED BY memory_accesses_session_idx
+                 WHERE session_id=?1 AND deleted_at IS NULL
+                 ORDER BY occurred_at, id",
+            )
+            .expect("memory access query plan should prepare")
+            .query_map(params![session_id], |row| row.get::<_, String>(3))
+            .expect("memory access query plan should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("memory access query plan should collect");
+        let evidence_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT memory_access_id FROM memory_access_evidence
+                 INDEXED BY memory_access_evidence_canonical_idx
+                 WHERE canonical_event_id='fixture'",
+            )
+            .expect("memory evidence query plan should prepare")
+            .query_map([], |row| row.get::<_, String>(3))
+            .expect("memory evidence query plan should load")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("memory evidence query plan should collect");
+
+        assert!(
+            access_plan
+                .iter()
+                .any(|detail| detail.contains("memory_accesses_session_idx")),
+            "unexpected memory access query plan: {access_plan:?}"
+        );
+        assert!(
+            evidence_plan
+                .iter()
+                .any(|detail| detail.contains("memory_access_evidence_canonical_idx")),
+            "unexpected memory evidence query plan: {evidence_plan:?}"
+        );
+    }
+
+    #[test]
+    fn memory_ledger_vertical_slice_is_partial_private_stable_and_evidence_bound() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("memory-ledger.sqlite"))
+            .expect("database should open");
+        let session_id = memory_fixture_session(&database, AgentKind::Codex, "memory-parent");
+        let later = memory_read_event("memory-parent", "memory-read-later", "2026-08-31T10:03:00Z");
+        let earlier = memory_read_event(
+            "memory-parent",
+            "memory-read-earlier",
+            "2026-08-31T10:01:00Z",
+        );
+        database
+            .record_observed_live_event(&later)
+            .expect("later memory read should persist");
+        database
+            .record_observed_live_event(&earlier)
+            .expect("out-of-order memory read should persist");
+        database
+            .record_observed_live_event(&earlier)
+            .expect("duplicate memory read should converge");
+
+        let ledger = database
+            .memory_ledger(&session_id)
+            .expect("memory ledger should load");
+        assert_eq!(ledger.status, "partial");
+        assert_eq!(ledger.algorithm_version, "memory-ledger-1.0.0");
+        assert_eq!(ledger.accesses.len(), 2);
+        assert_eq!(ledger.coverage.read_count, 2);
+        assert_eq!(ledger.coverage.write_count, 0);
+        assert_eq!(ledger.coverage.derived_count, 2);
+        assert_eq!(ledger.coverage.capability, "partial");
+        assert_eq!(ledger.coverage.unavailable_operations, ["write"]);
+        assert!(
+            ledger.accesses[0].occurred_at < ledger.accesses[1].occurred_at,
+            "out-of-order input should return a deterministic timeline"
+        );
+        assert!(ledger.accesses.iter().all(|access| {
+            access.operation == "read"
+                && access.evidence_level == "derived"
+                && access.source_coverage == "partial-memory-read"
+                && access.confidence == 0.72
+                && access.evidence_ids.len() == 1
+        }));
+        assert_eq!(ledger.evidence.len(), 2);
+        assert!(ledger.evidence.iter().all(|evidence| {
+            evidence.event_type == "memory.read"
+                && evidence.evidence_level == "derived"
+                && evidence.source_coverage == "partial-memory-read"
+        }));
+
+        let output = serde_json::to_string(&ledger).expect("ledger should serialize");
+        let connection = database.connect().expect("database should connect");
+        let canonical: Vec<(String, String, String, String)> = connection
+            .prepare(
+                "SELECT event_type, source_event_name, evidence_level, source_coverage
+                 FROM canonical_events WHERE event_type='memory.read' ORDER BY occurred_at",
+            )
+            .expect("canonical query should prepare")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("canonical query should run")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("canonical rows should load");
+        assert_eq!(canonical.len(), 2);
+        assert!(canonical.iter().all(|row| {
+            row == &(
+                "memory.read".into(),
+                "MemoryAccess".into(),
+                "derived".into(),
+                "partial-memory-read".into(),
+            )
+        }));
+        let attention_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM attention_events", [], |row| {
+                row.get(0)
+            })
+            .expect("attention count should load");
+        assert_eq!(
+            attention_count, 0,
+            "memory must not enter Attention or Notch"
+        );
+        for private in [
+            "private prompt",
+            "cat secret",
+            "/Users/private",
+            "tool_input",
+            "token",
+        ] {
+            assert!(!output.contains(private));
+        }
+    }
+
+    #[test]
+    fn memory_ledger_is_not_recorded_for_an_unsupported_provider() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("memory-unsupported.sqlite"))
+            .expect("database should open");
+        let session_id =
+            memory_fixture_session(&database, AgentKind::ClaudeCode, "claude-memory-session");
+        let ledger = database
+            .memory_ledger(&session_id)
+            .expect("unsupported ledger should load");
+        assert_eq!(ledger.status, "not-recorded");
+        assert_eq!(ledger.coverage.capability, "unavailable");
+        assert_eq!(ledger.coverage.unavailable_operations, ["read", "write"]);
+        assert!(ledger.accesses.is_empty());
+        assert!(ledger.evidence.is_empty());
+    }
+
+    #[test]
+    fn memory_reindex_tombstones_derived_accesses_preserves_confirmed_and_rolls_back_failures() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Database::open(temporary.path().join("memory-reindex.sqlite"))
+            .expect("database should open");
+        let session_id = memory_fixture_session(&database, AgentKind::Codex, "memory-reindex");
+        for (id, time) in [
+            ("memory-auto", "2026-08-31T10:01:00Z"),
+            ("memory-confirmed", "2026-08-31T10:02:00Z"),
+        ] {
+            database
+                .record_observed_live_event(&memory_read_event("memory-reindex", id, time))
+                .expect("memory access should persist");
+        }
+        let connection = database.connect().expect("database should connect");
+        let (auto_access_id, auto_event_id): (String, String) = connection
+            .query_row(
+                "SELECT access.id, evidence.canonical_event_id
+                 FROM memory_accesses access
+                 JOIN memory_access_evidence evidence ON evidence.memory_access_id=access.id
+                 JOIN canonical_events canonical ON canonical.id=evidence.canonical_event_id
+                 WHERE canonical.occurred_at='2026-08-31T10:01:00Z'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("automatic access should load");
+        let confirmed_access_id: String = connection
+            .query_row(
+                "SELECT access.id
+                 FROM memory_accesses access
+                 JOIN memory_access_evidence evidence ON evidence.memory_access_id=access.id
+                 JOIN canonical_events canonical ON canonical.id=evidence.canonical_event_id
+                 WHERE canonical.occurred_at='2026-08-31T10:02:00Z'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("confirmed access should load");
+        connection
+            .execute(
+                "UPDATE memory_accesses SET evidence_level='user-confirmed' WHERE id=?1",
+                params![confirmed_access_id],
+            )
+            .expect("confirmation should persist");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_memory_rebuild
+                 BEFORE UPDATE ON memory_accesses
+                 BEGIN SELECT RAISE(ABORT, 'memory rebuild failure'); END;",
+            )
+            .expect("failure trigger should install");
+        drop(connection);
+
+        {
+            let mut connection = database.connect().expect("database should connect");
+            let transaction = connection.transaction().expect("transaction should start");
+            assert!(
+                crate::memory_ledger_store::rebuild(&transaction, "2026-08-31T10:03:00Z").is_err()
+            );
+        }
+        let connection = database.connect().expect("database should connect");
+        let visible_after_failure: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_accesses WHERE deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("visible count should load");
+        assert_eq!(visible_after_failure, 2);
+        connection
+            .execute_batch("DROP TRIGGER fail_memory_rebuild;")
+            .expect("failure trigger should drop");
+        connection
+            .execute(
+                "UPDATE canonical_events SET deleted_at='2026-08-31T10:04:00Z' WHERE id=?1",
+                params![auto_event_id],
+            )
+            .expect("canonical evidence should tombstone");
+        drop(connection);
+        {
+            let mut connection = database.connect().expect("database should connect");
+            let transaction = connection.transaction().expect("transaction should start");
+            crate::memory_ledger_store::rebuild(&transaction, "2026-08-31T10:04:00Z")
+                .expect("memory projection should rebuild");
+            transaction.commit().expect("rebuild should commit");
+        }
+        let connection = database.connect().expect("database should connect");
+        let states: (bool, bool, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT deleted_at IS NOT NULL FROM memory_accesses WHERE id=?1),
+                    (SELECT deleted_at IS NULL AND evidence_level='user-confirmed'
+                     FROM memory_accesses WHERE id=?2),
+                    (SELECT COUNT(*) FROM memory_access_evidence WHERE memory_access_id=?2)",
+                params![auto_access_id, confirmed_access_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("projection states should load");
+        assert_eq!(states, (true, true, 1));
+        drop(connection);
+        let ledger = database
+            .memory_ledger(&session_id)
+            .expect("surviving ledger should load");
+        assert_eq!(ledger.accesses.len(), 1);
+        assert_eq!(ledger.accesses[0].evidence_level, "user-confirmed");
+    }
+
+    #[test]
+    fn schema_30_migrates_to_memory_schema_31_with_integrity_and_indexes() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("schema-30.sqlite");
+        let database = Database::open(path.clone()).expect("fixture database should open");
+        let session_id = memory_fixture_session(&database, AgentKind::Codex, "schema-30-session");
+        drop(database);
+        let connection = Connection::open(&path).expect("fixture should reopen");
+        connection
+            .execute_batch(
+                "DROP TABLE memory_access_evidence;
+                 DROP TABLE memory_accesses;
+                 PRAGMA user_version = 30;",
+            )
+            .expect("schema 30 fixture should be restored");
+        drop(connection);
+
+        let migrated = Database::open(path.clone()).expect("schema 30 should migrate");
+        let connection = migrated.connect().expect("database should connect");
+        let checks: (i64, String, String, i64, i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT user_version FROM pragma_user_version),
+                    (SELECT quick_check FROM pragma_quick_check),
+                    (SELECT integrity_check FROM pragma_integrity_check),
+                    (SELECT COUNT(*) FROM pragma_foreign_key_check),
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name IN('memory_accesses','memory_access_evidence')),
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='index' AND name IN(
+                        'memory_accesses_session_idx',
+                        'memory_accesses_source_session_idx',
+                        'memory_accesses_operation_idx',
+                        'memory_accesses_active_idx',
+                        'memory_access_evidence_canonical_idx'
+                     ))",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("migration checks should load");
+        assert_eq!(checks, (31, "ok".into(), "ok".into(), 0, 2, 5));
+        let preserved: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .expect("schema 30 session should remain");
+        assert_eq!(preserved, 1);
+        drop(connection);
+        assert_no_schema_migration_artifacts(&path);
+    }
+
+    #[test]
+    fn concurrent_memory_reads_finish_without_duplicate_projection() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let database = Arc::new(
+            Database::open(temporary.path().join("memory-concurrent.sqlite"))
+                .expect("database should open"),
+        );
+        let session_id = memory_fixture_session(&database, AgentKind::Codex, "memory-concurrent");
+        database
+            .record_observed_live_event(&memory_read_event(
+                "memory-concurrent",
+                "memory-concurrent-read",
+                "2026-08-31T10:01:00Z",
+            ))
+            .expect("memory access should persist");
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let database = database.clone();
+                let session_id = session_id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..20 {
+                        let ledger = database
+                            .memory_ledger(&session_id)
+                            .expect("memory read should finish");
+                        assert_eq!(ledger.accesses.len(), 1);
+                        assert_eq!(ledger.coverage.evidence_count, 1);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().expect("reader should not panic");
+        }
     }
 
     #[test]

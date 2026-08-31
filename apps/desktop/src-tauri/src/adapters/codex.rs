@@ -34,6 +34,32 @@ pub fn parse_record(state: &mut ParseState, record: &Value) {
                 }
             }
             common::set_project(state, payload.get("cwd").and_then(Value::as_str));
+            let parent_session_id = payload
+                .get("parent_thread_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    payload
+                        .pointer("/source/subagent/thread_spawn/parent_thread_id")
+                        .and_then(Value::as_str)
+                })
+                .filter(|value| !value.is_empty());
+            if let Some(parent_session_id) = parent_session_id {
+                state.delegation_parent_session_id = Some(parent_session_id.to_string());
+                let child_session_id = state.source_session_id.clone();
+                common::record_delegation_signal(
+                    state,
+                    &child_session_id,
+                    Some(parent_session_id),
+                    "spawn",
+                    "delegation.spawn.started",
+                    None,
+                    timestamp.or_else(|| payload.get("timestamp").and_then(Value::as_str)),
+                    "observed",
+                    "exact-delegation",
+                    None,
+                );
+                state.seen_delegation_children.insert(child_session_id);
+            }
         }
         "turn_context" => {
             common::set_model(state, payload.get("model").and_then(Value::as_str));
@@ -88,21 +114,58 @@ fn parse_event_message(state: &mut ParseState, payload: &Value, timestamp: Optio
             common::consider_result(state, text.as_deref());
         }
         "context_compacted" => common::record_context_compaction(state, timestamp),
-        "task_started" => common::record_task_start(state, timestamp),
-        "task_complete" => {
-            common::record_task_complete(state, number_option(payload, "duration_ms"), timestamp)
+        "task_started" => {
+            common::record_task_start(state, timestamp);
+            record_child_lifecycle(state, "delegation.child.running", None, timestamp);
         }
-        "turn_aborted" => common::record_task_abort(state, timestamp),
+        "task_complete" => {
+            common::record_task_complete(state, number_option(payload, "duration_ms"), timestamp);
+            record_child_lifecycle(state, "delegation.spawn.completed", Some(true), timestamp);
+        }
+        "turn_aborted" => {
+            common::record_task_abort(state, timestamp);
+            record_child_lifecycle(state, "delegation.spawn.failed", Some(false), timestamp);
+        }
         "thread_rolled_back" => common::record_rollback(state, timestamp),
         "thread_goal_updated" => common::record_goal_change(state, timestamp),
-        "sub_agent_activity" => common::record_subagent_activity(
-            state,
-            payload
+        "sub_agent_activity" => {
+            let kind = payload
                 .get("kind")
                 .and_then(Value::as_str)
-                .unwrap_or("unknown"),
-            timestamp,
-        ),
+                .unwrap_or("unknown");
+            common::record_subagent_activity(state, kind, timestamp);
+            if let Some(child_session_id) = payload
+                .get("agent_thread_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                let parent_session_id = state.source_session_id.clone();
+                let (relation_type, event_type, success) = match kind {
+                    "started" => ("spawn", "delegation.spawn.started", None),
+                    "interacted" | "completed" => ("join", "delegation.join.completed", Some(true)),
+                    "waiting" => ("spawn", "delegation.child.waiting", None),
+                    "interrupted" | "failed" | "errored" => {
+                        ("spawn", "delegation.spawn.failed", Some(false))
+                    }
+                    _ => return,
+                };
+                common::record_delegation_signal(
+                    state,
+                    child_session_id,
+                    Some(&parent_session_id),
+                    relation_type,
+                    event_type,
+                    success,
+                    timestamp,
+                    "observed",
+                    "exact-delegation",
+                    payload.get("event_id").and_then(Value::as_str),
+                );
+                state
+                    .seen_delegation_children
+                    .insert(child_session_id.to_string());
+            }
+        }
         "mcp_tool_call_end" => {
             let success = payload
                 .get("result")
@@ -121,7 +184,10 @@ fn parse_event_message(state: &mut ParseState, payload: &Value, timestamp: Optio
         | "thread_settings_applied"
         | "item_completed"
         | "image_generation_end" => {}
-        "error" => common::record_error(state, timestamp),
+        "error" => {
+            common::record_error(state, timestamp);
+            record_child_lifecycle(state, "delegation.child.error", Some(false), timestamp);
+        }
         "retry" => common::increment_retry(state),
         "patch_apply_end" => common::record_codex_patch_result(state, payload, timestamp),
         _ => common::mark_unknown(state),
@@ -150,6 +216,7 @@ fn parse_response_item(state: &mut ParseState, payload: &Value, timestamp: Optio
             let input = raw_input
                 .map(common::parsed_object_from_string)
                 .unwrap_or(Value::Null);
+            record_collaboration_tool_signal(state, name, &input, timestamp, tool_id.as_deref());
             if name.contains("apply_patch") {
                 if let Some(patch) = input
                     .as_str()
@@ -218,6 +285,7 @@ fn parse_response_item(state: &mut ParseState, payload: &Value, timestamp: Optio
                 .and_then(Value::as_str)
                 .map(common::parsed_object_from_string)
                 .unwrap_or(Value::Null);
+            record_collaboration_tool_signal(state, name, &input, timestamp, tool_id.as_deref());
             if name.contains("apply_patch") {
                 if let Some(patch) = input
                     .as_str()
@@ -257,6 +325,103 @@ fn parse_response_item(state: &mut ParseState, payload: &Value, timestamp: Optio
         }
         "reasoning" | "web_search_call" => {}
         _ => common::mark_unknown(state),
+    }
+}
+
+fn record_child_lifecycle(
+    state: &mut ParseState,
+    event_type: &str,
+    success: Option<bool>,
+    timestamp: Option<&str>,
+) {
+    let Some(parent_session_id) = state.delegation_parent_session_id.clone() else {
+        return;
+    };
+    let child_session_id = state.source_session_id.clone();
+    common::record_delegation_signal(
+        state,
+        &child_session_id,
+        Some(&parent_session_id),
+        "spawn",
+        event_type,
+        success,
+        timestamp,
+        "observed",
+        "exact-delegation",
+        None,
+    );
+}
+
+fn record_collaboration_tool_signal(
+    state: &mut ParseState,
+    name: &str,
+    input: &Value,
+    timestamp: Option<&str>,
+    source_event_id: Option<&str>,
+) {
+    let parent_session_id = state.source_session_id.clone();
+    let target = input
+        .get("threadId")
+        .or_else(|| input.get("thread_id"))
+        .or_else(|| input.get("target"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    if name.ends_with("handoff_thread") {
+        if let Some(target) = target {
+            common::record_delegation_signal(
+                state,
+                target,
+                Some(&parent_session_id),
+                "handoff",
+                "delegation.handoff.started",
+                None,
+                timestamp,
+                "observed",
+                "partial-handoff",
+                source_event_id,
+            );
+        }
+    } else if name.ends_with("resume_agent") || name.ends_with("followup_task") {
+        if let Some(target) = target {
+            common::record_delegation_signal(
+                state,
+                target,
+                Some(&parent_session_id),
+                "resume",
+                "delegation.resume.started",
+                None,
+                timestamp,
+                "observed",
+                "partial-handoff",
+                source_event_id,
+            );
+        }
+    } else if name.ends_with("wait_agent") || name.ends_with("wait_threads") {
+        let targets = input
+            .get("targets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|target| {
+                target
+                    .get("threadId")
+                    .or_else(|| target.get("thread_id"))
+                    .and_then(Value::as_str)
+            });
+        for target in targets {
+            common::record_delegation_signal(
+                state,
+                target,
+                Some(&parent_session_id),
+                "join",
+                "delegation.join.started",
+                None,
+                timestamp,
+                "observed",
+                "partial-handoff",
+                source_event_id,
+            );
+        }
     }
 }
 
@@ -499,5 +664,105 @@ mod tests {
         assert_eq!(state.tool_counts.get("shell"), Some(&1));
         assert_eq!(state.tool_counts.get("build"), Some(&1));
         assert_eq!(state.verification_events, 2);
+    }
+
+    #[test]
+    fn extracts_exact_delegation_and_partial_handoff_without_raw_tool_input() {
+        let mut state = ParseState::new(AgentKind::Codex, "fallback".into());
+        parse_record(
+            &mut state,
+            &json!({
+                "type": "session_meta",
+                "timestamp": "2026-08-30T10:00:00Z",
+                "payload": {"id": "parent-thread", "cwd": "/Users/private/project"}
+            }),
+        );
+        for (kind, timestamp) in [
+            ("started", "2026-08-30T10:00:01Z"),
+            ("waiting", "2026-08-30T10:00:02Z"),
+            ("completed", "2026-08-30T10:00:03Z"),
+        ] {
+            parse_record(
+                &mut state,
+                &json!({
+                    "type": "event_msg",
+                    "timestamp": timestamp,
+                    "payload": {
+                        "type": "sub_agent_activity",
+                        "kind": kind,
+                        "agent_thread_id": "child-thread",
+                        "event_id": format!("child-{kind}")
+                    }
+                }),
+            );
+        }
+        for (name, input, call_id) in [
+            (
+                "mcp__codex_app__handoff_thread",
+                r#"{"threadId":"handoff-child","prompt":"PRIVATE_HANDOFF_PROMPT"}"#,
+                "handoff",
+            ),
+            (
+                "collaboration__followup_task",
+                r#"{"target":"handoff-child","message":"PRIVATE_FOLLOWUP"}"#,
+                "resume",
+            ),
+            (
+                "mcp__codex_app__wait_threads",
+                r#"{"targets":[{"threadId":"handoff-child"}]}"#,
+                "join",
+            ),
+        ] {
+            parse_record(
+                &mut state,
+                &json!({
+                    "type": "response_item",
+                    "timestamp": "2026-08-30T10:00:04Z",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "input": input
+                    }
+                }),
+            );
+        }
+
+        let delegation = state
+            .events
+            .iter()
+            .filter(|event| event.relation_type.is_some())
+            .collect::<Vec<_>>();
+        assert!(delegation.iter().any(|event| {
+            event.event_type == "delegation.spawn.started"
+                && event.delegation_child_session_id.as_deref() == Some("child-thread")
+                && event.evidence_level.as_deref() == Some("observed")
+                && event.source_coverage.as_deref() == Some("exact-delegation")
+        }));
+        assert!(
+            delegation
+                .iter()
+                .any(|event| event.event_type == "delegation.child.waiting")
+        );
+        assert!(
+            delegation
+                .iter()
+                .any(|event| event.relation_type.as_deref() == Some("join"))
+        );
+        assert!(delegation.iter().any(|event| {
+            event.relation_type.as_deref() == Some("handoff")
+                && event.source_coverage.as_deref() == Some("partial-handoff")
+        }));
+        assert!(
+            delegation
+                .iter()
+                .any(|event| event.relation_type.as_deref() == Some("resume"))
+        );
+        let serialized = serde_json::to_string(&delegation).expect("signals should serialize");
+        assert!(!serialized.contains("PRIVATE_HANDOFF_PROMPT"));
+        assert!(!serialized.contains("PRIVATE_FOLLOWUP"));
+        assert!(delegation.iter().all(|event| {
+            matches!(event.name.as_str(), "spawn" | "join" | "handoff" | "resume")
+        }));
     }
 }

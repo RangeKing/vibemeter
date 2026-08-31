@@ -356,6 +356,7 @@ export interface AttentionEvent {
   ruleVersion: string;
   evidenceCount: number;
   interventionCount: number;
+  affectedBranchCount?: number;
 }
 
 export interface AttentionQualityReport {
@@ -570,6 +571,141 @@ export interface SessionDetail extends SessionSummary {
   attention: AttentionEvent[];
 }
 
+export type DelegationTraceStatus = "ready" | "partial" | "not-recorded";
+export type DelegationEvidenceLevel =
+  | "observed"
+  | "derived"
+  | "inferred"
+  | "user-confirmed"
+  | "unavailable";
+export type DelegationRelationType = "delegate" | "spawn" | "handoff" | "resume" | "join";
+export type DelegationStatus = "started" | "running" | "waiting" | "failed" | "completed" | "unknown";
+
+export interface DelegationEvidenceReference {
+  id: string;
+  canonicalEventId: string;
+  sessionId?: string;
+  role: string;
+  occurredAt?: string;
+  eventType: string;
+  evidenceLevel: DelegationEvidenceLevel | string;
+  sourceCoverage: string;
+}
+
+export interface DelegationNode {
+  id: string;
+  kind: string;
+  agent: string;
+  safeLabel: string;
+  sessionId?: string;
+  workUnitId?: string;
+  status: DelegationStatus | string;
+  startedAt?: string;
+  endedAt?: string;
+  outcome?: string;
+  evidenceLevel: DelegationEvidenceLevel | string;
+  sourceCoverage: string;
+  confidence: number;
+}
+
+export interface DelegationEdge {
+  id: string;
+  from: string;
+  to: string;
+  relationType: DelegationRelationType | string;
+  status: DelegationStatus | string;
+  confidence: number;
+  evidenceLevel: DelegationEvidenceLevel | string;
+  sourceCoverage: string;
+  algorithmVersion: string;
+  evidenceIds: string[];
+}
+
+export interface DelegationAnomaly {
+  id: string;
+  kind: string;
+  severity: string;
+  nodeIds: string[];
+  edgeIds: string[];
+  reasonKey: string;
+  evidenceIds: string[];
+  ruleVersion: string;
+  confidence: number;
+}
+
+export interface DelegationCoverage {
+  capability: SignalCapability | string;
+  sourceCoverage: string;
+  relationCount: number;
+  evidenceCount: number;
+  observedCount: number;
+  derivedCount: number;
+  inferredCount: number;
+  unavailableSignals: string[];
+}
+
+export interface DelegationTraceResponse {
+  status: DelegationTraceStatus | string;
+  rootSessionId?: string;
+  algorithmVersion: string;
+  nodes: DelegationNode[];
+  edges: DelegationEdge[];
+  anomalies: DelegationAnomaly[];
+  coverage: DelegationCoverage;
+  evidence: DelegationEvidenceReference[];
+}
+
+export type MemoryLedgerStatus = "ready" | "partial" | "not-recorded";
+export type MemoryOperation = "read" | "write";
+
+export interface MemoryLedgerEvidenceReference {
+  id: string;
+  canonicalEventId: string;
+  sessionId?: string;
+  role: string;
+  occurredAt?: string;
+  eventType: string;
+  evidenceLevel: DelegationEvidenceLevel | string;
+  sourceCoverage: string;
+}
+
+export interface MemoryAccess {
+  id: string;
+  agent: string;
+  sessionId?: string;
+  workUnitId?: string;
+  operation: MemoryOperation | string;
+  status: string;
+  occurredAt?: string;
+  confidence: number;
+  evidenceLevel: DelegationEvidenceLevel | string;
+  sourceCoverage: string;
+  algorithmVersion: string;
+  evidenceIds: string[];
+}
+
+export interface MemoryLedgerCoverage {
+  capability: SignalCapability | string;
+  sourceCoverage: string;
+  accessCount: number;
+  readCount: number;
+  writeCount: number;
+  evidenceCount: number;
+  observedCount: number;
+  derivedCount: number;
+  inferredCount: number;
+  unavailableOperations: string[];
+}
+
+export interface MemoryLedgerResponse {
+  status: MemoryLedgerStatus | string;
+  sessionId?: string;
+  algorithmVersion: string;
+  accesses: MemoryAccess[];
+  coverage: MemoryLedgerCoverage;
+  evidence: MemoryLedgerEvidenceReference[];
+}
+
 export interface ComparisonItem {
   id: string;
   groupKind: "agent" | "model";
@@ -763,6 +899,20 @@ export interface SourceStatus {
 }
 
 export type SourceLiveCapability = "exact" | "experimental" | "none";
+export type SignalCapability = "exact" | "derived" | "partial" | "unavailable";
+
+export interface SourceCapabilitiesV2 {
+  history: SignalCapability;
+  liveLifecycle: SignalCapability;
+  jump: SignalCapability;
+  delegation: SignalCapability;
+  handoff: SignalCapability;
+  subagent: SignalCapability;
+  memoryRead: SignalCapability;
+  memoryWrite: SignalCapability;
+  skillUse: SignalCapability;
+  evaluation: SignalCapability;
+}
 
 export interface RateWindow {
   id: string;

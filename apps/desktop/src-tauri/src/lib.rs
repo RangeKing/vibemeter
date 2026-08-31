@@ -1,13 +1,17 @@
 mod adapters;
 pub mod database;
+mod delegation_store;
 mod diagnostics;
 pub mod errors;
 pub mod export;
 mod export_localization;
 mod git_evidence;
+mod governance;
+mod governance_evidence_store;
 mod ingestion;
 mod live;
 mod live_sources;
+mod memory_ledger_store;
 mod migration;
 pub mod models;
 mod phrases;
@@ -15,22 +19,22 @@ mod pricing;
 mod privacy;
 mod providers;
 mod skill_usage;
-mod source_capabilities;
 mod tray;
 mod vcti;
 
 use crate::database::Database;
 use crate::errors::{AppError, AppResult};
+use crate::governance::capabilities::source_capabilities;
 use crate::models::{
-    AttentionEvent, AttentionQualityReport, ComparisonItem, DiagnosticClearResult,
-    DiagnosticRetentionStatus, ExportRequest, ExportResult, HookStatus, IndexStatus,
-    InsightsResponse, LiveActivityResponse, LiveSnapshot, MenuBarSnapshot, NotchClearResult,
-    OverviewResponse, PhraseCloudResponse, PlaybookItem, ProjectControl, ProviderUsage,
-    SavePlaybookRequest, SessionContext, SessionDetail, SessionListFilters, SessionsResponse,
-    SharePreview, ShareRenderRequest, SourceStatus, TaskSummary, VctiProfile,
+    AttentionEvent, AttentionQualityReport, ComparisonItem, DelegationTraceResponse,
+    DiagnosticClearResult, DiagnosticRetentionStatus, ExportRequest, ExportResult, HookStatus,
+    IndexStatus, InsightsResponse, LiveActivityResponse, LiveSnapshot, MemoryLedgerResponse,
+    MenuBarSnapshot, NotchClearResult, OverviewResponse, PhraseCloudResponse, PlaybookItem,
+    ProjectControl, ProviderUsage, SavePlaybookRequest, SessionContext, SessionDetail,
+    SessionListFilters, SessionsResponse, SharePreview, ShareRenderRequest, SourceStatus,
+    TaskSummary, VctiProfile,
 };
 use crate::providers::ProviderStore;
-use crate::source_capabilities::source_capabilities;
 use chrono::Utc;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,6 +44,17 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 static BACKEND_READY: AtomicBool = AtomicBool::new(false);
 static MAIN_PAGE_READY: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn qa_indexing_disabled() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        std::env::var_os("VIBEMETER_DISABLE_INDEXING_FOR_QA").is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -379,6 +394,28 @@ async fn get_session_detail(state: State<'_, AppState>, id: String) -> AppResult
     })
     .await
     .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_delegation_trace(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> AppResult<DelegationTraceResponse> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.delegation_trace(&session_id))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_memory_ledger(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> AppResult<MemoryLedgerResponse> {
+    let database = state.database.clone();
+    tauri::async_runtime::spawn_blocking(move || database.memory_ledger(&session_id))
+        .await
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
 }
 
 #[tauri::command]
@@ -981,7 +1018,7 @@ pub fn run() {
             let hooks_enabled = database
                 .setting("liveHooksEnabled")?
                 .is_none_or(|value| value == "true");
-            if onboarding_complete && hooks_enabled {
+            if onboarding_complete && hooks_enabled && !qa_indexing_disabled() {
                 let _ = live::install_hooks();
                 database.set_setting("liveHooksEnabled", "true")?;
             }
@@ -1133,6 +1170,8 @@ pub fn run() {
             split_session,
             get_sessions,
             get_session_detail,
+            get_delegation_trace,
+            get_memory_ledger,
             get_session_context,
             get_comparison,
             get_project_summaries,

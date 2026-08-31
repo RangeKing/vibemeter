@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RangeKing/vibemeter/releases"><img alt="Version" src="https://img.shields.io/badge/version-v0.4.1-9B87F5"></a>
+  <a href="https://github.com/RangeKing/vibemeter/releases"><img alt="Version" src="https://img.shields.io/badge/version-v0.6.0-9B87F5"></a>
   <a href="https://github.com/RangeKing/vibemeter/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RangeKing/vibemeter/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-222222?logo=apple">
   <img alt="Local first" src="https://img.shields.io/badge/data-local--first-79C7A3">
@@ -31,7 +31,7 @@ VibeMeter 把实时状态、长期数据和 VCTI 人格装进一款本机优先�
 - **越用越清楚。** Data 汇总会话、Token、输入/输出/缓存、时长、成本、Agent、模型、工具、Skill、活跃时间与工作事件。
 - **数据变成性格。** VCTI 用本机可验证的长期行为生成 24 种 AI 编程人格，并给出维度、置信度与证据；数据不足时继续观察，不强行判型。
 
-会话详情现在分为“过程”和“上下文”。“上下文”是只读观察面：它按已观测、估算、未记录标记覆盖状态，展示 Token 摘要、上下文组成、事件时间线，以及系统提示、工具定义、用户消息、注入上下文、Agent 回复和工具结果等分类。首次加载最近 50 条事件，可继续加载更早事件；正文只在按需读取时脱敏、限长预览，不保存完整原文。
+会话详情现在分为“过程”“上下文”“委派”和“记忆”。“委派”根据规范事件重建父子 Agent、创建、交接、恢复与汇合，提供可缩放关系图、时间轨迹、证据下钻和异常提示；证据不完整时明确显示部分记录或未记录，推断关系不会伪装成已观测。“记忆”按需加载可证明的记忆读写活动、时间轨迹和规范证据，不保存记忆正文；当前 Codex 读取仅为部分覆盖和派生证据，写入及其他来源保持不可用。“上下文”仍是只读观察面：它按已观测、估算、未记录标记覆盖状态，展示 Token 摘要、上下文组成、事件时间线，以及系统提示、工具定义、用户消息、注入上下文、Agent 回复和工具结果等分类。首次加载最近 50 条事件，可继续加载更早事件；正文只在按需读取时脱敏、限长预览，不保存完整原文。
 
 上下文浏览器的交互方向参考了 [dsh-context](https://github.com/bowenliang123/dsh-context)，感谢原作者 [bowenliang123](https://github.com/bowenliang123) 的开源工作。VibeMeter 采用独立的数据模型与实现。
 

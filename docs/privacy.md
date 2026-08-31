@@ -12,6 +12,8 @@ VibeMeter is local-first. It can encounter sensitive development data, so collec
 - optional read-only Git evidence;
 - generated reviews, settings, and user edits;
 - fixed-choice attention feedback linked to canonical evidence;
+- derived execution relations and canonical evidence references for Delegation Trace;
+- derived memory read/write activity metadata and canonical evidence references for Memory Ledger;
 - derived catchphrase counts, session counts, and Agent attribution;
 - raw local Hook envelopes only when the user enables diagnostic mode, encrypted with a platform-secured key and deleted after seven days;
 - long-term derived live counters used by activity analytics and VCTI.
@@ -24,6 +26,8 @@ VibeMeter is local-first. It can encounter sensitive development data, so collec
 - API keys, cookies, or provider credentials;
 - historical source text solely because it was scanned for catchphrases;
 - raw prompts, commands, code, paths, or tool output in the Notch.
+- provider-private event names, tool input, prompt text, response text, or raw source identifiers in Delegation UI labels.
+- memory contents, recalled text, memory paths, write payloads, or an inferred claim that a read caused a write.
 
 ## Agent configuration
 
@@ -53,3 +57,7 @@ Share Guard checks export content for secrets, absolute paths, email addresses, 
 ## Source access and migration
 
 Historical Agent directories and source repositories are read-only. First launch copies an existing aftervibe or legacy TokenGraph database through SQLite online backup into VibeMeter’s own application directory. The source database, WAL, and SHM are not migration targets. Schema contraction runs only on a staged VibeMeter copy and installs it after integrity and canonical-coverage checks. Reindexing tombstones replaceable source evidence instead of deleting user confirmations, manual task membership, attention feedback, or long-term snapshots.
+
+Delegation adapters inspect only source-provided structured identity and lifecycle fields. Shared DTOs expose internal session references, hashed node labels, normalized relation/event types, evidence levels, coverage, confidence, and canonical IDs. They do not expose the source payloads used to extract those fields.
+
+Memory adapters inspect only source-provided structured activity signals. Path data used to recognize a supported local memory activity is discarded before canonicalization. Shared DTOs expose only the normalized operation, safe session/work-unit references, time, evidence level, source coverage, confidence, algorithm version, and canonical evidence ID.

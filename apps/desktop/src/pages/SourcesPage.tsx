@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BookOpenCheck, Check, CheckCircle2, CircleHelp, CircleMinus, Database, LockKeyhole, RadioTower, RefreshCw, Settings2, ShieldCheck, Slash } from "lucide-react";
+import { ArrowLeft, BookOpenCheck, BrainCircuit, Check, CheckCircle2, CircleHelp, CircleMinus, Database, GitFork, LockKeyhole, RadioTower, RefreshCw, Settings2, ShieldCheck, Slash } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AgentBadge, ErrorState, LoadingState, PageHeader } from "../components/ui";
 import { api } from "../lib/api";
 import { formatCompact, formatDateTime } from "../lib/format";
-import { capabilityTranslationKey, sourceLiveTranslationKey } from "../lib/sourceStatus";
+import { capabilityTranslationKey, signalCapabilityTranslationKey, sourceLiveTranslationKey, sourceSignalCapability } from "../lib/sourceStatus";
 import { useUiStore } from "../store";
 import type { Locale, SourceStatus } from "../types";
 
@@ -61,6 +61,8 @@ export function SourcesPage({ locale }: { locale: Locale }) {
         const selected = source.available && source.selected;
         const readIssue = source.available && (source.status === "unavailable" || source.status === "partial");
         const cursorAccountDisabled = source.agent === "cursor" && settings.data?.cursorDashboardUsage === "false";
+        const delegationCapability = sourceSignalCapability(source.agent, "delegation");
+        const memoryCapability = sourceSignalCapability(source.agent, "memoryRead");
         return <section className={`source-card capability-${source.capabilityLevel} ${selected ? "is-selected" : "is-unselected"} ${source.available ? "" : "is-missing"}`} key={source.agent}>
           <span className="source-number">{String(index + 1).padStart(2, "0")}</span>
           <header>
@@ -82,6 +84,16 @@ export function SourcesPage({ locale }: { locale: Locale }) {
           </label>
           <div className="source-count"><strong>{formatCompact(source.sessionCount, locale)}</strong><span>{t("metrics.sessions")}</span></div>
           <div className="source-capability"><span>{t("sources.readability")}</span><strong>{t(capabilityTranslationKey(source.capabilityLevel, source.available))}</strong></div>
+          <div className={`source-signal capability-${delegationCapability}`}>
+            <GitFork size={13} />
+            <span>{t("sources.delegation")}</span>
+            <strong>{t(signalCapabilityTranslationKey(delegationCapability))}</strong>
+          </div>
+          <div className={`source-signal capability-${memoryCapability}`}>
+            <BrainCircuit size={13} />
+            <span>{t("sources.memoryRead")}</span>
+            <strong>{t(signalCapabilityTranslationKey(memoryCapability))}</strong>
+          </div>
           <div className={`source-live ${liveProvider?.installed ? "ready" : ""}`}>
             <RadioTower size={13} />
             <span>{t("sources.live")}</span>

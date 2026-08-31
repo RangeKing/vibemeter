@@ -422,7 +422,47 @@ pub fn record_event_with_source(
         success,
         duration_ms: None,
         provenance: "observed".into(),
+        delegation_child_session_id: None,
+        parent_session_id: None,
+        relation_type: None,
+        evidence_level: None,
+        source_coverage: None,
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_delegation_signal(
+    state: &mut ParseState,
+    child_session_id: &str,
+    parent_session_id: Option<&str>,
+    relation_type: &str,
+    event_type: &str,
+    success: Option<bool>,
+    timestamp: Option<&str>,
+    evidence_level: &str,
+    source_coverage: &str,
+    source_event_id: Option<&str>,
+) {
+    if !crate::governance::delegation::valid_relation_type(relation_type) {
+        return;
+    }
+    record_event_with_source(
+        state,
+        event_type,
+        "subagent",
+        relation_type,
+        success,
+        timestamp,
+        source_event_id,
+    );
+    let Some(event) = state.events.last_mut() else {
+        return;
+    };
+    event.delegation_child_session_id = Some(child_session_id.to_string());
+    event.parent_session_id = parent_session_id.map(str::to_string);
+    event.relation_type = Some(relation_type.to_string());
+    event.evidence_level = Some(evidence_level.to_string());
+    event.source_coverage = Some(source_coverage.to_string());
 }
 
 #[allow(clippy::too_many_arguments)]

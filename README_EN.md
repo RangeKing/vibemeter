@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RangeKing/vibemeter/releases"><img alt="Version" src="https://img.shields.io/badge/version-v0.4.1-9B87F5"></a>
+  <a href="https://github.com/RangeKing/vibemeter/releases"><img alt="Version" src="https://img.shields.io/badge/version-v0.6.0-9B87F5"></a>
   <a href="https://github.com/RangeKing/vibemeter/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RangeKing/vibemeter/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-222222?logo=apple">
   <img alt="Local first" src="https://img.shields.io/badge/data-local--first-79C7A3">
@@ -31,7 +31,7 @@ VibeMeter does not control your agents, approve requests, or modify source repos
 - **Learn from every session.** Data brings together sessions, input/output/cache tokens, time, cost, agents, models, tools, Skills, activity patterns, and work events.
 - **Turn behavior into identity.** VCTI maps verifiable local behavior to 24 AI coding personalities, with dimensions, confidence, and evidence. Thin evidence stays explicitly incomplete.
 
-Session details now have separate Process and Context views. Context is read-only observation: coverage is labeled Observed, Estimated, or Not recorded, with token summaries, context composition, an event timeline, and complete categories for system prompts, tool schemas, user messages, injected context, agent replies, and tool results. The first request loads the 50 most recent events and can continue into older history; text is sanitized and bounded only when previewed on demand, and complete source text is not stored.
+Session details now have separate Process, Context, Delegation, and Memory views. Delegation reconstructs parent/child agents, spawns, handoffs, resumes, and joins from canonical events, with a zoomable graph, shared timeline selection, evidence drill-down, and versioned anomaly hints. Incomplete evidence stays Partial or Not recorded, and inferred links never appear as observed. Memory lazily loads provable read/write activity, its timeline, and canonical evidence without storing memory content. Codex reads currently remain partial and derived; writes and other providers remain unavailable. Context remains read-only observation: coverage is labeled Observed, Estimated, or Not recorded, with token summaries, context composition, an event timeline, and complete categories for system prompts, tool schemas, user messages, injected context, agent replies, and tool results. The first request loads the 50 most recent events and can continue into older history; text is sanitized and bounded only when previewed on demand, and complete source text is not stored.
 
 The Context browser’s interaction direction was informed by [dsh-context](https://github.com/bowenliang123/dsh-context). Thanks to [bowenliang123](https://github.com/bowenliang123) for the open-source work; VibeMeter uses an independent data model and implementation.
 

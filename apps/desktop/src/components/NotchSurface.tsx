@@ -197,16 +197,26 @@ export function NotchAttentionQueue({
   return (
     <section className="notch-attention-queue">
       {visibleItems.map((attention) => (
-        <article key={attention.id} className={`kind-${attention.kind}`}>
+        <article key={attention.id} className={`kind-${attention.kind} ${attention.reasonKey.startsWith("attention.delegation.") ? "is-delegation" : ""}`}>
           <ProviderMark agent={attention.agent as LiveSession["agent"]} size={13} />
           <span>
-            <strong className="notch-attention-title">{t(`live.attention.kind.${attention.kind}`)}</strong>
+            <strong className="notch-attention-title">{attention.reasonKey.startsWith("attention.delegation.")
+              ? t(`delegation.anomaly.${attention.reasonKey.slice("attention.delegation.".length)}`)
+              : t(`live.attention.kind.${attention.kind}`)}</strong>
             <small className="notch-attention-context">
-              <b>{attention.projectLabel || agentName(attention.agent)}</b>
-              <i aria-hidden="true">·</i>
-              <span>{attention.conversationTitle || t("live.attention.sessionReference", {
-                value: privateSessionReference(attention.agent, attention.sourceSessionId),
-              })}</span>
+              {attention.reasonKey.startsWith("attention.delegation.") ? <>
+                <b>{agentName(attention.agent)}</b>
+                <i aria-hidden="true">·</i>
+                <span>{attention.projectLabel || t("metrics.unavailable")}</span>
+                <i aria-hidden="true">·</i>
+                <span>{t("live.attention.affectedBranches", { count: attention.affectedBranchCount ?? 1 })}</span>
+              </> : <>
+                <b>{attention.projectLabel || agentName(attention.agent)}</b>
+                <i aria-hidden="true">·</i>
+                <span>{attention.conversationTitle || t("live.attention.sessionReference", {
+                  value: privateSessionReference(attention.agent, attention.sourceSessionId),
+                })}</span>
+              </>}
             </small>
           </span>
           <span className="notch-attention-actions">
@@ -217,6 +227,14 @@ export function NotchAttentionQueue({
             >
               {t("live.attention.action.handled")}
             </button>
+            {attention.reasonKey.startsWith("attention.delegation.") ? (
+              <button
+                onPointerDown={(event) => activateOnPointerDown(event, () => onFeedback(attention.id, "not-relevant"))}
+                onClick={(event) => activateOnClick(event, () => onFeedback(attention.id, "not-relevant"))}
+              >
+                {t("live.attention.action.not-relevant")}
+              </button>
+            ) : null}
             {attention.kind === "stuck" ? (
               <button
                 onPointerDown={(event) => activateOnPointerDown(event, () => onFeedback(attention.id, "not-stuck"))}

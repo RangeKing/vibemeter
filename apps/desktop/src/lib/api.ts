@@ -6,12 +6,14 @@ import type {
   ComparisonItem,
   DiagnosticClearResult,
   DiagnosticRetentionStatus,
+  DelegationTraceResponse,
   ExportResult,
   InsightsResponse,
   IndexStatus,
   MenuBarSnapshot,
   LiveActivityResponse,
   LiveSnapshot,
+  MemoryLedgerResponse,
   NotchClearResult,
   NotchUiState,
   HookStatus,
@@ -80,6 +82,10 @@ export const api = {
   sessionDetail: (id: string) => invoke<SessionDetail>("get_session_detail", { id }),
   sessionContext: (id: string, offset = 0, limit = 50) =>
     invoke<SessionContext>("get_session_context", { id, offset, limit }),
+  delegationTrace: (sessionId: string) =>
+    invoke<DelegationTraceResponse>("get_delegation_trace", { sessionId }),
+  memoryLedger: (sessionId: string) =>
+    invoke<MemoryLedgerResponse>("get_memory_ledger", { sessionId }),
   comparison: (range: string) => invoke<ComparisonItem[]>("get_comparison", { range }),
   projectSummaries: (range: string, agent?: string) =>
     invoke<ProjectSummary[]>("get_project_summaries", { range, agent }),

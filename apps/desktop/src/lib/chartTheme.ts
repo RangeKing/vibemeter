@@ -68,12 +68,14 @@ export function useChartColors(): ChartColors {
   const [colors, setColors] = useState(readChartColors);
   useEffect(() => {
     const update = () => setColors(readChartColors());
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    media.addEventListener("change", update);
+    const media = typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)")
+      : undefined;
+    media?.addEventListener("change", update);
     const observer = new MutationObserver(update);
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => {
-      media.removeEventListener("change", update);
+      media?.removeEventListener("change", update);
       observer.disconnect();
     };
   }, []);

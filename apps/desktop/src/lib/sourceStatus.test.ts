@@ -8,9 +8,11 @@ import {
   parseDataPageAgents,
   parseSourceCapabilities,
   serializeDataPageAgents,
+  signalCapabilityTranslationKey,
   sourceCapabilityNameGroups,
   sourceNamesForLiveCapability,
   sourceLiveTranslationKey,
+  sourceSignalCapability,
 } from "./sourceStatus";
 
 describe("source status language", () => {
@@ -42,15 +44,37 @@ describe("source status language", () => {
 
   it("rejects an unknown capability value instead of silently downgrading it", () => {
     expect(() => parseSourceCapabilities({
-      version: 1,
+      version: 2,
       sources: [{
         agent: "codex",
         displayName: "Codex",
-        historyCapability: "full",
-        liveCapability: "typo",
-        jumpSupported: true,
+        history: "exact",
+        liveLifecycle: "exact",
+        jump: "exact",
+        delegation: "typo",
+        handoff: "partial",
+        subagent: "exact",
+        memoryRead: "partial",
+        memoryWrite: "unavailable",
+        skillUse: "derived",
+        evaluation: "derived",
       }],
-    })).toThrow("Unknown live capability");
+    })).toThrow("Unknown delegation capability");
+  });
+
+  it("keeps per-signal delegation capability truthful", () => {
+    expect(sourceSignalCapability("codex", "delegation")).toBe("exact");
+    expect(sourceSignalCapability("claude-code", "delegation")).toBe("derived");
+    expect(sourceSignalCapability("cursor", "delegation")).toBe("unavailable");
+    expect(sourceSignalCapability("unsupported", "delegation")).toBe("unavailable");
+    expect(signalCapabilityTranslationKey("partial")).toBe("sources.signalCapabilities.partial");
+  });
+
+  it("keeps Memory Read separate from unavailable Memory Write capability", () => {
+    expect(sourceSignalCapability("codex", "memoryRead")).toBe("partial");
+    expect(sourceSignalCapability("codex", "memoryWrite")).toBe("unavailable");
+    expect(sourceSignalCapability("claude-code", "memoryRead")).toBe("unavailable");
+    expect(sourceSignalCapability("cursor", "memoryRead")).toBe("unavailable");
   });
 
   it("only shows detected, selected Agents with positive usage by default", () => {

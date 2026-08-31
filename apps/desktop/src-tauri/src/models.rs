@@ -124,6 +124,16 @@ pub struct CanonicalEvent {
     pub success: Option<bool>,
     pub duration_ms: Option<u64>,
     pub provenance: String,
+    #[serde(default, skip_serializing)]
+    pub delegation_child_session_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub relation_type: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub evidence_level: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub source_coverage: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -262,6 +272,10 @@ pub struct ParseState {
     #[serde(default)]
     pub events: Vec<CanonicalEvent>,
     #[serde(default)]
+    pub delegation_parent_session_id: Option<String>,
+    #[serde(default)]
+    pub seen_delegation_children: HashSet<String>,
+    #[serde(default)]
     pub phrase_counts: HashMap<String, PhraseAggregate>,
     #[serde(default)]
     pub last_phrase_fingerprints: HashMap<String, String>,
@@ -337,6 +351,8 @@ impl ParseState {
             tool_counts: HashMap::new(),
             skill_counts: HashMap::new(),
             events: Vec::new(),
+            delegation_parent_session_id: None,
+            seen_delegation_children: HashSet::new(),
             phrase_counts: HashMap::new(),
             last_phrase_fingerprints: HashMap::new(),
             file_changes: HashMap::new(),
@@ -868,6 +884,7 @@ pub struct AttentionEvent {
     pub rule_version: String,
     pub evidence_count: u64,
     pub intervention_count: u64,
+    pub affected_branch_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1097,6 +1114,148 @@ pub struct SessionDetail {
     pub git_evidence: GitEvidence,
     pub capabilities: Vec<String>,
     pub attention: Vec<AttentionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationEvidenceReference {
+    pub id: String,
+    pub canonical_event_id: String,
+    pub session_id: Option<String>,
+    pub role: String,
+    pub occurred_at: Option<String>,
+    pub event_type: String,
+    pub evidence_level: String,
+    pub source_coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationNode {
+    pub id: String,
+    pub kind: String,
+    pub agent: String,
+    pub safe_label: String,
+    pub session_id: Option<String>,
+    pub work_unit_id: Option<String>,
+    pub status: String,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub outcome: Option<String>,
+    pub evidence_level: String,
+    pub source_coverage: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationEdge {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub relation_type: String,
+    pub status: String,
+    pub confidence: f64,
+    pub evidence_level: String,
+    pub source_coverage: String,
+    pub algorithm_version: String,
+    pub evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationAnomaly {
+    pub id: String,
+    pub kind: String,
+    pub severity: String,
+    pub node_ids: Vec<String>,
+    pub edge_ids: Vec<String>,
+    pub reason_key: String,
+    pub evidence_ids: Vec<String>,
+    pub rule_version: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationCoverage {
+    pub capability: String,
+    pub source_coverage: String,
+    pub relation_count: u64,
+    pub evidence_count: u64,
+    pub observed_count: u64,
+    pub derived_count: u64,
+    pub inferred_count: u64,
+    pub unavailable_signals: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegationTraceResponse {
+    pub status: String,
+    pub root_session_id: Option<String>,
+    pub algorithm_version: String,
+    pub nodes: Vec<DelegationNode>,
+    pub edges: Vec<DelegationEdge>,
+    pub anomalies: Vec<DelegationAnomaly>,
+    pub coverage: DelegationCoverage,
+    pub evidence: Vec<DelegationEvidenceReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryLedgerEvidenceReference {
+    pub id: String,
+    pub canonical_event_id: String,
+    pub session_id: Option<String>,
+    pub role: String,
+    pub occurred_at: Option<String>,
+    pub event_type: String,
+    pub evidence_level: String,
+    pub source_coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryAccess {
+    pub id: String,
+    pub agent: String,
+    pub session_id: Option<String>,
+    pub work_unit_id: Option<String>,
+    pub operation: String,
+    pub status: String,
+    pub occurred_at: Option<String>,
+    pub confidence: f64,
+    pub evidence_level: String,
+    pub source_coverage: String,
+    pub algorithm_version: String,
+    pub evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryLedgerCoverage {
+    pub capability: String,
+    pub source_coverage: String,
+    pub access_count: u64,
+    pub read_count: u64,
+    pub write_count: u64,
+    pub evidence_count: u64,
+    pub observed_count: u64,
+    pub derived_count: u64,
+    pub inferred_count: u64,
+    pub unavailable_operations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryLedgerResponse {
+    pub status: String,
+    pub session_id: Option<String>,
+    pub algorithm_version: String,
+    pub accesses: Vec<MemoryAccess>,
+    pub coverage: MemoryLedgerCoverage,
+    pub evidence: Vec<MemoryLedgerEvidenceReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1343,6 +1502,39 @@ pub struct SourceStatus {
     pub status: String,
     pub warning_count: u64,
     pub path_label: String,
+    pub signal_capabilities: SourceCapabilitiesDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCapabilitiesDto {
+    pub history: String,
+    pub live_lifecycle: String,
+    pub jump: String,
+    pub delegation: String,
+    pub handoff: String,
+    pub subagent: String,
+    pub memory_read: String,
+    pub memory_write: String,
+    pub skill_use: String,
+    pub evaluation: String,
+}
+
+impl SourceCapabilitiesDto {
+    pub fn unavailable() -> Self {
+        Self {
+            history: "unavailable".into(),
+            live_lifecycle: "unavailable".into(),
+            jump: "unavailable".into(),
+            delegation: "unavailable".into(),
+            handoff: "unavailable".into(),
+            subagent: "unavailable".into(),
+            memory_read: "unavailable".into(),
+            memory_write: "unavailable".into(),
+            skill_use: "unavailable".into(),
+            evaluation: "unavailable".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

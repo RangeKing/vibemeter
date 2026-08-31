@@ -78,6 +78,9 @@ pub fn start_indexing(
     app: AppHandle,
     force: bool,
 ) -> bool {
+    if crate::qa_indexing_disabled() {
+        return false;
+    }
     if status.read().map(|current| current.running).unwrap_or(true) {
         return false;
     }

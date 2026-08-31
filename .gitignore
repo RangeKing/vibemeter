@@ -97,7 +97,9 @@ apps/desktop/playwright-report/
 # Internal development plans, decisions, agent configuration, and local tickets.
 /CONTEXT.md
 /docs/product-roadmap.md
-/docs/adr/
+/docs/adr/*
+!/docs/adr/0001-delegation-trace-contract.md
+!/docs/adr/0009-memory-ledger-contract.md
 /docs/internal/
 /docs/agents/
 /.scratch/

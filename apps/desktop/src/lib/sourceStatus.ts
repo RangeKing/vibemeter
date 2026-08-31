@@ -1,40 +1,83 @@
 import capabilityRegistry from "../../source-capabilities.json";
-import type { DistributionItem, SourceLiveCapability, SourceStatus } from "../types";
+import type {
+  DistributionItem,
+  SignalCapability,
+  SourceCapabilitiesV2,
+  SourceLiveCapability,
+  SourceStatus,
+} from "../types";
 
 type SourceHistoryCapability = "full" | "partial";
 
-type SourceCapabilityEntry = {
+export type SourceCapabilityEntry = {
   agent: string;
   displayName: string;
   historyCapability: SourceHistoryCapability;
   liveCapability: SourceLiveCapability;
   jumpSupported: boolean;
+  signals: SourceCapabilitiesV2;
 };
 
+const signalKeys = [
+  "history",
+  "liveLifecycle",
+  "jump",
+  "delegation",
+  "handoff",
+  "subagent",
+  "memoryRead",
+  "memoryWrite",
+  "skillUse",
+  "evaluation",
+] as const satisfies readonly (keyof SourceCapabilitiesV2)[];
+
+function parseSignalCapability(value: unknown, key: string): SignalCapability {
+  if (value === "exact" || value === "derived" || value === "partial" || value === "unavailable") {
+    return value;
+  }
+  throw new Error(`Unknown ${key} capability: ${String(value)}`);
+}
+
+function historyCapability(value: SignalCapability): SourceHistoryCapability {
+  return value === "exact" || value === "derived" ? "full" : "partial";
+}
+
+function liveCapability(value: SignalCapability): SourceLiveCapability {
+  if (value === "exact") return "exact";
+  if (value === "unavailable") return "none";
+  return "experimental";
+}
+
 export function parseSourceCapabilities(registry: unknown): SourceCapabilityEntry[] {
-  if (!registry || typeof registry !== "object" || !("sources" in registry) || !Array.isArray(registry.sources)) {
+  if (
+    !registry
+    || typeof registry !== "object"
+    || !("version" in registry)
+    || registry.version !== 2
+    || !("sources" in registry)
+    || !Array.isArray(registry.sources)
+  ) {
     throw new Error("Invalid source capability registry");
   }
+  const agents = new Set<string>();
   return registry.sources.map((value) => {
     if (!value || typeof value !== "object") throw new Error("Invalid source capability entry");
     const source = value as Record<string, unknown>;
-    const historyCapability = source.historyCapability;
-    const liveCapability = source.liveCapability;
-    if (historyCapability !== "full" && historyCapability !== "partial") {
-      throw new Error(`Unknown history capability: ${String(historyCapability)}`);
-    }
-    if (liveCapability !== "exact" && liveCapability !== "experimental" && liveCapability !== "none") {
-      throw new Error(`Unknown live capability: ${String(liveCapability)}`);
-    }
-    if (typeof source.agent !== "string" || typeof source.displayName !== "string" || typeof source.jumpSupported !== "boolean") {
+    if (typeof source.agent !== "string" || !source.agent || typeof source.displayName !== "string" || !source.displayName) {
       throw new Error("Invalid source capability entry");
     }
+    if (agents.has(source.agent)) throw new Error(`Duplicate source capability: ${source.agent}`);
+    agents.add(source.agent);
+    const signals = Object.fromEntries(
+      signalKeys.map((key) => [key, parseSignalCapability(source[key], key)]),
+    ) as unknown as SourceCapabilitiesV2;
     return {
       agent: source.agent,
       displayName: source.displayName,
-      historyCapability,
-      liveCapability,
-      jumpSupported: source.jumpSupported,
+      historyCapability: historyCapability(signals.history),
+      liveCapability: liveCapability(signals.liveLifecycle),
+      jumpSupported: signals.jump !== "unavailable",
+      signals,
     };
   });
 }
@@ -42,6 +85,17 @@ export function parseSourceCapabilities(registry: unknown): SourceCapabilityEntr
 export const sourceCapabilities = parseSourceCapabilities(capabilityRegistry);
 
 export const DATA_PAGE_AGENTS_AUTO = "auto";
+
+export function sourceSignalCapability(
+  agent: string,
+  signal: keyof SourceCapabilitiesV2,
+): SignalCapability {
+  return sourceCapabilities.find((source) => source.agent === agent)?.signals[signal] ?? "unavailable";
+}
+
+export function signalCapabilityTranslationKey(capability: SignalCapability): string {
+  return `sources.signalCapabilities.${capability}`;
+}
 
 export function sourceNamesForLiveCapability(capability: SourceLiveCapability): string[] {
   return sourceCapabilities

@@ -9,6 +9,7 @@ Historical agent records                  Exact live event sources
                  ↘                         ↙
                     SQLite evidence store
                     ├─ canonical event ledger and activity cycles
+                    ├─ governance projections, delegation, and memory evidence
                     ├─ range analytics and work events
                     ├─ session ledger and replay
                     ├─ catchphrase counts and attribution
@@ -31,6 +32,9 @@ Historical agent records                  Exact live event sources
 - `live.rs`: Hook installation, socket ingestion, status mapping, notification, and jump-back behavior;
 - `migration.rs`: copy-forward database discovery and SQLite online backup;
 - `database.rs`: schema, queries, task grouping, phrase/live storage, and retention;
+- `governance/`: per-signal source capability, evidence semantics, deterministic delegation relations, versioned anomaly rules, and memory-access projection;
+- `delegation_store.rs`: transactional relation persistence, finite batch queries, tombstones, and Attention integration;
+- `memory_ledger_store.rs`: transactional memory-access persistence, bounded evidence queries, and tombstones;
 - `phrases.rs`: deterministic local phrase extraction and compaction;
 - `skill_usage.rs`: explicit Skill-use extraction and aggregation;
 - `pricing.rs`: API-equivalent model pricing with dated aliases;
@@ -58,6 +62,10 @@ The attention queue has one fixed priority: waiting, blocking error, high-confid
 The local attention quality gate is deliberately hard. It requires at least 100 user-reviewed stuck samples, at least 90% precision, no more than 10% irrelevant or false-positive feedback, notification latency below two seconds at the 95th percentile, at least 95% verified jump success, and three real-app checks covering duplicate suppression, foreground silence, and privacy surfaces. Missing observations remain unavailable and the gate stays incomplete; development fixtures never count as real acceptance evidence.
 
 Reindexing uses one transaction to mark the prior source generation, upsert the rebuilt generation, and commit only after all writes succeed. Stable source fingerprints let reordered records retain identity, absent records remain recoverable tombstones, and a failed generation leaves the previous visible result unchanged. User-owned reviews, manual task membership, attention feedback, and long-term VCTI snapshots have separate lifecycles.
+
+Delegation Trace is a derived governance projection over `canonical_events`, not a second event ledger. Provider adapters emit only sanitized parent/child, lifecycle, handoff, resume, and join signals. `governance::delegation` assigns stable relation identities and evidence status; `execution_relations` plus `execution_relation_evidence` persist the rebuildable projection and its canonical references. Session Replay loads the projection only when its Delegation tab opens. See [Governance Architecture](governance-architecture.md).
+
+Memory Ledger follows the same boundary. Provider adapters may emit only a structured `memory.read` or `memory.write` signal that they can actually prove. `governance::memory` assigns stable access identities and evidence semantics; `memory_accesses` plus `memory_access_evidence` persist the rebuildable projection. Session Replay loads it only when the Memory tab opens. No memory content, prompt, response, command, tool argument, or absolute path enters the projection or shared DTO.
 
 ## Data boundaries
 
