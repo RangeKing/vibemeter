@@ -28,6 +28,7 @@
     "dmg:finalize": "PATH=\"$PWD/.dmg-venv/bin:$PATH\" bash scripts/finalize-dmg.sh",
     "dmg:check": "PATH=\"$PWD/.dmg-venv/bin:$PATH\" bash scripts/check-dmg-layout.sh",
     "rust:check": "cd apps/desktop/src-tauri && cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings && cargo test",
-    "ci": "npm run check && npm test && npm run rust:check"
+    "ci": "npm run pricing:test && npm run check && npm test && npm run rust:check",
+    "pricing:test": "python3 -B -m unittest discover -s scripts -p 'test_*.py'"
   }
 }

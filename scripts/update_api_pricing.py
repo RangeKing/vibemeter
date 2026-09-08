@@ -136,18 +136,53 @@ def rows_from_html(source: str) -> list[list[str]]:
     return parser.rows
 
 
+class OpenAIPricingParser(HTMLParser):
+    """Read the complete Standard table, including rows collapsed by the UI.
+
+    The same page contains Batch, Flex and Fast tables. Never depend on their
+    document order or use those discounted rates as a standard price.
+    """
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[object]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs = dict(attrs)
+        if tag != "astro-island" or attrs.get("component-export") != "TextTokenPricingTables":
+            return
+        props = json.loads(attrs.get("props") or "{}")
+        if props.get("tier") != [0, "standard"]:
+            return
+        def decode(value: object) -> object:
+            if isinstance(value, list) and len(value) == 2:
+                kind, payload = value
+                if kind == 0:
+                    return payload
+                if kind == 1:
+                    return [decode(item) for item in payload]
+            raise ValueError("unsupported OpenAI pricing serialization")
+        self.rows.extend(decode(props["rows"]))
+
+
 def parse_openai(source: str) -> list[Price]:
+    parser = OpenAIPricingParser()
+    parser.feed(source)
+    # Missing Standard metadata is a source-shape change, never permission to
+    # use the first visible table (which could be Batch or Fast).
+    if not parser.rows:
+        return []
     prices: list[Price] = []
-    for row in rows_from_html(source):
-        if not row:
+    for row in parser.rows:
+        if len(row) not in {4, 5}:
             continue
-        model = normalized(row[0])
-        if not model.startswith(("gpt-", "o1", "o3", "o4")) or len(row) < 5:
+        model = normalized(str(row[0]))
+        if not model.startswith(("gpt-", "o1", "o3", "o4")):
             continue
-        values = [money(cell) for cell in row[1:5]]
-        if any(value is None for value in values):
+        input_price, cache_read, output = (money(str(row[i])) for i in (1, 2, -1))
+        cache_write = money(str(row[3])) if len(row) == 5 else None
+        if input_price is None or cache_read is None or output is None:
             continue
-        prices.append(Price(model, values[0], values[1], values[3], cache_write=values[2]))
+        prices.append(Price(model, input_price, cache_read, output, cache_write=cache_write))
     return unique_prices(prices)
 
 
@@ -330,6 +365,9 @@ def build_catalog(fixture_dir: Path | None) -> tuple[list[Price], list[dict[str,
     prices.extend(parse_xai(documents["xai"]))
     prices.extend(parse_cursor(documents["cursor"]))
     prices = with_aliases(unique_prices(prices))
+    missing = {"gpt-6-astra", "claude-fable-5-1"} - {price.name for price in prices}
+    if missing:
+        raise RuntimeError(f"required model prices missing: {', '.join(sorted(missing))}")
 
     required = {"openai": 1, "anthropic": 1, "deepseek": 2, "kimi": 1, "zai": 1, "xai": 1, "cursor": 1}
     checks = {

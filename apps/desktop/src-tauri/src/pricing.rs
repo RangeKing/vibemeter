@@ -97,9 +97,22 @@ fn normalized_model(model: &str) -> String {
 }
 
 fn is_versioned_match(model: &str, base: &str) -> bool {
-    model
-        .strip_prefix(base)
-        .is_some_and(|suffix| suffix.starts_with('-'))
+    // Providers append dated snapshots, not arbitrary product/service tiers.
+    // In particular, do not silently price astra-fast/pro as standard Astra.
+    let Some(suffix) = model.strip_prefix(base).and_then(|s| s.strip_prefix('-')) else {
+        return false;
+    };
+    let date = suffix.strip_suffix("-v1-0").unwrap_or(suffix);
+    (date.len() == 8 && date.bytes().all(|c| c.is_ascii_digit()))
+        || (date.len() == 10
+            && date.bytes().enumerate().all(|(i, c)| {
+                if i == 4 || i == 7 {
+                    c == b'-'
+                } else {
+                    c.is_ascii_digit()
+                }
+            }))
+        || suffix == "v1-0"
 }
 
 pub fn estimate_cost(agent: AgentKind, model: &str, usage: &TokenUsage) -> Option<f64> {
@@ -125,6 +138,47 @@ pub fn estimate_cost(agent: AgentKind, model: &str, usage: &TokenUsage) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn astra_and_fable_51_use_official_standard_rates() {
+        let astra = model_price(AgentKind::Codex, "openai/gpt-6-astra").expect("Astra");
+        assert_eq!(
+            (
+                astra.input,
+                astra.cache_read,
+                astra.cache_write,
+                astra.output
+            ),
+            (10.0, 1.0, Some(12.5), 50.0)
+        );
+        let fable =
+            model_price(AgentKind::ClaudeCode, "claude-fable-5-1-20260901").expect("Fable 5.1");
+        assert_eq!(
+            (
+                fable.input,
+                fable.cache_read,
+                fable.cache_write,
+                fable.cache_write_1h,
+                fable.output
+            ),
+            (10.0, 0.25, Some(12.5), Some(20.0), 50.0)
+        );
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            cache_read_tokens: 2_000_000,
+            cache_write_tokens: 1_000_000,
+            cache_write_1h_tokens: 1_000_000,
+            output_tokens: 100_000,
+            ..TokenUsage::default()
+        };
+        assert_eq!(
+            estimate_cost(AgentKind::ClaudeCode, "claude-fable-5.1", &usage),
+            Some(48.0)
+        );
+        assert!(model_price(AgentKind::Codex, "gpt-6-astra-fast").is_none());
+        assert!(model_price(AgentKind::Codex, "gpt-6-astra-pro").is_none());
+        assert!(model_price(AgentKind::ClaudeCode, "claude-fable-5-2").is_none());
+    }
 
     #[test]
     fn gpt_56_cost_keeps_cached_input_separate() {

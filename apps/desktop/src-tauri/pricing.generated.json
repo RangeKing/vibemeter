@@ -1,61 +1,51 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-27T13:30:35Z",
+  "generatedAt": "2026-09-08T01:13:32Z",
   "sources": [
     {
       "provider": "openai",
       "url": "https://developers.openai.com/api/docs/pricing",
-      "sha256": "5fe01cd0a4a58dd05404c5e172ac56d1aa43a54893625407b6e7c5486e2605d7",
-      "modelCount": 6
+      "sha256": "801c37c202e14fded977bdf6045e88a1756f1b4c51c42e8be01737e0fb558d93",
+      "modelCount": 22
     },
     {
       "provider": "anthropic",
       "url": "https://platform.claude.com/docs/en/about-claude/pricing",
-      "sha256": "a49ec022b2ddefd9aa03fcc87177255fe04792436d74e9047f41fdf0efe1e072",
-      "modelCount": 15
+      "sha256": "f5aed2ef0a9603d25bfcc130dbb4f08b26a92f7bd7b86bf4a277e960ebd99ec4",
+      "modelCount": 17
     },
     {
       "provider": "deepseek",
       "url": "https://api-docs.deepseek.com/quick_start/pricing/",
-      "sha256": "4fa4029c683129138a26d2521c1d306da8804d312d3cdfe4b8d9792cf1701a1f",
+      "sha256": "cf2c6fb2dd8a32a538f12a8176175b8809a3516326a5cb30dfe52d63c490a968",
       "modelCount": 2
     },
     {
       "provider": "kimi",
       "url": "https://platform.kimi.com/docs/pricing/chat",
-      "sha256": "12c3e026b5dc15c6721547d0b92647c8490b3b23dd95925a7026186e81430508",
-      "modelCount": 4
+      "sha256": "6f0eeecd6edb2fb0015b16ebf05332d47f20252ddb6dc5415aa05c70c1224321",
+      "modelCount": 3
     },
     {
       "provider": "zai",
       "url": "https://docs.z.ai/guides/overview/pricing",
-      "sha256": "39a02fbca90764f628d509c5c1a93b1dd2e97af00f9a688c192aaed31a4b31d3",
-      "modelCount": 20
+      "sha256": "9af408447ac574a622a379af910a8c5d4a1bc255a3189b988935b58c527495c4",
+      "modelCount": 18
     },
     {
       "provider": "xai",
       "url": "https://docs.x.ai/developers/models",
-      "sha256": "d7573870a3fba92657b7ce53d797b5b68c6b4dd4150bb714fb918522f2b1bd50",
+      "sha256": "dab0f39e8fb8071cfaf2192855910e8df376a6eedff7ebe7c6553e2ed3de93f2",
       "modelCount": 7
     },
     {
       "provider": "cursor",
       "url": "https://cursor.com/docs/models-and-pricing",
-      "sha256": "c08885b94e6616a015ca78d23cc98d439d302c9a6fb066844f8a14b429e90b09",
+      "sha256": "e6d833449b89a45c8f932ceada7f416735c949bb66af423412aa6a973e7cb717",
       "modelCount": 2
     }
   ],
   "models": [
-    {
-      "name": "kimi-k2-5",
-      "aliases": [],
-      "currency": "CNY",
-      "input": 4.0,
-      "cacheRead": 0.7,
-      "cacheWrite": null,
-      "cacheWrite1h": null,
-      "output": 21.0
-    },
     {
       "name": "kimi-k2-6",
       "aliases": [],
@@ -97,6 +87,16 @@
       "output": 50.0
     },
     {
+      "name": "claude-fable-5-1",
+      "aliases": [],
+      "currency": "USD",
+      "input": 10.0,
+      "cacheRead": 0.25,
+      "cacheWrite": 12.5,
+      "cacheWrite1h": 20.0,
+      "output": 50.0
+    },
+    {
       "name": "claude-haiku-3-5-retired-except-on-bedrock-and-google-cloud",
       "aliases": [],
       "currency": "USD",
@@ -115,6 +115,16 @@
       "cacheWrite": 1.25,
       "cacheWrite1h": 2.0,
       "output": 5.0
+    },
+    {
+      "name": "claude-mythos-5-1-limited-availability",
+      "aliases": [],
+      "currency": "USD",
+      "input": 10.0,
+      "cacheRead": 0.25,
+      "cacheWrite": 12.5,
+      "cacheWrite1h": 20.0,
+      "output": 50.0
     },
     {
       "name": "claude-mythos-5-limited-availability",
@@ -461,34 +471,128 @@
       "output": 0.5
     },
     {
-      "name": "glm-5-turbo",
+      "name": "gpt-4-1",
       "aliases": [],
       "currency": "USD",
-      "input": 1.2,
-      "cacheRead": 0.24,
+      "input": 2.0,
+      "cacheRead": 0.5,
       "cacheWrite": null,
       "cacheWrite1h": null,
-      "output": 4.0
+      "output": 8.0
     },
     {
-      "name": "glm-5v-turbo",
+      "name": "gpt-4-1-mini",
       "aliases": [],
       "currency": "USD",
-      "input": 1.2,
-      "cacheRead": 0.24,
+      "input": 0.4,
+      "cacheRead": 0.1,
       "cacheWrite": null,
       "cacheWrite1h": null,
-      "output": 4.0
+      "output": 1.6
     },
     {
-      "name": "gpt-5-6-cyber",
+      "name": "gpt-4-1-nano",
       "aliases": [],
       "currency": "USD",
-      "input": 12.5,
+      "input": 0.1,
+      "cacheRead": 0.025,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.4
+    },
+    {
+      "name": "gpt-4o",
+      "aliases": [],
+      "currency": "USD",
+      "input": 2.5,
       "cacheRead": 1.25,
-      "cacheWrite": 15.625,
+      "cacheWrite": null,
       "cacheWrite1h": null,
-      "output": 75.0
+      "output": 10.0
+    },
+    {
+      "name": "gpt-4o-mini",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.15,
+      "cacheRead": 0.075,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.6
+    },
+    {
+      "name": "gpt-5",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.25,
+      "cacheRead": 0.125,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 10.0
+    },
+    {
+      "name": "gpt-5-1",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.25,
+      "cacheRead": 0.125,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 10.0
+    },
+    {
+      "name": "gpt-5-2",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.75,
+      "cacheRead": 0.175,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 14.0
+    },
+    {
+      "name": "gpt-5-4-272k-context-length",
+      "aliases": [
+        "gpt-5-4"
+      ],
+      "currency": "USD",
+      "input": 2.5,
+      "cacheRead": 0.25,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 15.0
+    },
+    {
+      "name": "gpt-5-4-mini",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.75,
+      "cacheRead": 0.075,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.5
+    },
+    {
+      "name": "gpt-5-4-nano",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.2,
+      "cacheRead": 0.02,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 1.25
+    },
+    {
+      "name": "gpt-5-5-272k-context-length",
+      "aliases": [
+        "gpt-5-5"
+      ],
+      "currency": "USD",
+      "input": 5.0,
+      "cacheRead": 0.5,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 30.0
     },
     {
       "name": "gpt-5-6-luna",
@@ -521,6 +625,36 @@
       "cacheWrite": 2.5,
       "cacheWrite1h": null,
       "output": 12.0
+    },
+    {
+      "name": "gpt-5-mini",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.25,
+      "cacheRead": 0.025,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 2.0
+    },
+    {
+      "name": "gpt-5-nano",
+      "aliases": [],
+      "currency": "USD",
+      "input": 0.05,
+      "cacheRead": 0.005,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 0.4
+    },
+    {
+      "name": "gpt-6-astra",
+      "aliases": [],
+      "currency": "USD",
+      "input": 10.0,
+      "cacheRead": 1.0,
+      "cacheWrite": 12.5,
+      "cacheWrite1h": null,
+      "output": 50.0
     },
     {
       "name": "grok-4-20-0309-non-reasoning",
@@ -601,24 +735,44 @@
       "output": 2.0
     },
     {
-      "name": "o4-mini-2025-04-16",
+      "name": "o1",
       "aliases": [],
       "currency": "USD",
-      "input": 100.0,
-      "cacheRead": 4.0,
-      "cacheWrite": 1.0,
+      "input": 15.0,
+      "cacheRead": 7.5,
+      "cacheWrite": null,
       "cacheWrite1h": null,
-      "output": 16.0
+      "output": 60.0
     },
     {
-      "name": "o4-mini-2025-04-16with-data-sharing",
+      "name": "o3",
       "aliases": [],
       "currency": "USD",
-      "input": 100.0,
-      "cacheRead": 2.0,
-      "cacheWrite": 0.5,
+      "input": 2.0,
+      "cacheRead": 0.5,
+      "cacheWrite": null,
       "cacheWrite1h": null,
       "output": 8.0
+    },
+    {
+      "name": "o3-mini",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.1,
+      "cacheRead": 0.55,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.4
+    },
+    {
+      "name": "o4-mini",
+      "aliases": [],
+      "currency": "USD",
+      "input": 1.1,
+      "cacheRead": 0.275,
+      "cacheWrite": null,
+      "cacheWrite1h": null,
+      "output": 4.4
     }
   ]
 }

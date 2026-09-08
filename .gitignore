@@ -104,3 +104,6 @@ apps/desktop/playwright-report/
 /docs/agents/
 /.scratch/
 docs/vcti-identity-visual-requirements.md
+
+# Python pricing parser caches.
+__pycache__/
