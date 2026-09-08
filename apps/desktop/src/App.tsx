@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { EdgeSidebar } from "./components/EdgeSidebar";
 import { AppShell } from "./components/AppShell";
 import { MenuBarPopover } from "./components/MenuBarPopover";
 import { NotchSurface } from "./components/NotchSurface";
@@ -24,7 +25,7 @@ function systemLocale(): Locale {
 
 const pages: PageKey[] = ["data", "sessions", "live", "vcti", "share", "sources", "settings"];
 
-export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
+export function App({ surface }: { surface: "main" | "menubar" | "notch" | "edge" }) {
   const { i18n } = useTranslation();
   const client = useQueryClient();
   const page = useUiStore((state) => state.page);
@@ -32,6 +33,13 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const index = useQuery({ queryKey: ["index-status"], queryFn: api.indexStatus, refetchInterval: 1_500 });
   const locale: Locale = settings.data?.locale === "zh-CN" || settings.data?.locale === "en-US" ? settings.data.locale : systemLocale();
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("settings-changed", () => { void client.invalidateQueries({ queryKey: ["settings"] }); })
+      .then((cleanup) => { if (disposed) cleanup(); else unlisten = cleanup; });
+    return () => { disposed = true; unlisten?.(); };
+  }, [client]);
   const dismissMigration = useMutation({
     mutationFn: () => api.setSetting("iaMigrationTipSeen", "true"),
     onSuccess: async () => {
@@ -86,6 +94,7 @@ export function App({ surface }: { surface: "main" | "menubar" | "notch" }) {
 
   if (settings.isLoading) return <LoadingState />;
   if (surface === "menubar") return <MenuBarPopover locale={locale} />;
+  if (surface === "edge") return <EdgeSidebar locale={locale} />;
   if (surface === "notch") return <NotchSurface locale={locale} />;
   if (settings.data?.onboardingComplete !== "true") {
     return <Onboarding onComplete={async () => {

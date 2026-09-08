@@ -16,7 +16,7 @@ Historical agent records                  Exact live event sources
                     ├─ VCTI derived behavior
                     └─ deterministic share rendering
                                  ↓
-                     React UI / Notch / menu bar
+                     React UI / Notch / edge sidebar / menu bar
 ```
 
 ## Frontend
@@ -74,3 +74,9 @@ Source records and repositories remain read-only. Historical text used for catch
 Provider-specific fields must not leak into shared UI or query contracts. A provider is considered supported only when its data is represented end-to-end in analytics, VCTI, replay, sharing, source status, and attribution. Exact live monitoring currently covers Claude Code, Codex, and DeepSeek Harness.
 
 Preview and export share one deterministic render model. Privacy review and Share Guard run before every exposed export path.
+
+## Edge accessory and macOS material
+
+`edge.rs` owns a separate nonactivating native panel, enabled independently from the hardware Notch. Settings persist its enabled state and left/right position. Window-local pointer events request expansion; native state owns pinning and transition generations. A collapse keeps the full window only for the 700 ms settling interval, then returns to 16 × 108 points, so hidden content cannot intercept desktop clicks. Placement uses the primary display's work area and rechecks display geometry every two seconds without polling user input.
+
+`EdgeSidebar.tsx` subscribes to the existing live snapshot, filters by observed provider, preserves unknown lifecycle states and delegates source jumps to the existing read-only jump command. Settings-change events invalidate each surface's settings query so language and appearance stay synchronized. Native Sidebar vibrancy underlies the transparent main webview; explicit light/dark selections also update the macOS theme.

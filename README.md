@@ -25,6 +25,16 @@ VibeMeter 把实时状态、长期数据和 VCTI 人格装进一款本机优先�
 
 它不接管 Agent，不替你批准权限，也不改写源码仓库。读不到的数据会明确标注，不用漂亮的 `0` 掩盖缺失。
 
+## 0.6.0：边缘侧栏与毛玻璃
+
+在「设置 → 边缘侧栏」开启独立的屏幕边缘面板，可选择左侧或右侧，也适用于没有硬件 Notch 的显示器。悬停展开，移开后延迟收起；固定按钮保持展开，Escape 收起。来源图标可筛选会话，卡片显示工作阶段与来源覆盖，并可跳回来源。现有顶部 Notch 保留。
+
+主窗口使用 macOS 原生毛玻璃材质，搭配半透明导航和内容层，支持浅色、深色及系统外观，并尊重系统减少动态效果与降低透明度设置。
+
+新增 Claude Fable 5.1 和 GPT 6 Astra 的官方标准 API 价格。按每百万 token 计，输入 / 缓存读取 / 输出分别为 **$10 / $0.25 / $50** 和 **$10 / $1 / $50**。成本为标准档估算，不是订阅账单；Fast、Batch、长上下文和地区附加费未据此推断。详见[价格核验记录](docs/pricing-validation-2026-09-08.md)。
+
+侧栏交互与弹簧动画参考 [CodeNotch](https://github.com/vinzdg/codenotch)，感谢 [Vinz](https://github.com/vinzdg) 的开源工作。相关 MIT 声明保留于 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## ✨ 三件事，一款 VibeMeter
 
 - **抬眼就懂。** Notch 展示 Claude Code、Codex 与 DeepSeek Harness 的实时阶段、优先状态和最近结构化动作；菜单栏弹窗负责时间范围、Token、成本、活跃趋势与剩余额度。

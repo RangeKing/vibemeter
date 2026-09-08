@@ -1,5 +1,10 @@
 # VibeMeter 验收记录
 
+## 2026-09-08：v0.6.0 边缘侧栏、毛玻璃与官方价格
+
+本轮新增范围和验收结果见 [独立 QA 记录](docs/qa/v0.6.0-edge-sidebar-glass.md)，模型价格见 [官网核验记录](docs/pricing-validation-2026-09-08.md)。下方旧轮次记录保留其原始范围，不代表本轮新增功能的验证。
+
+
 ## v0.6.0 Governance Foundation + Delegation Trace + Memory Ledger
 
 验收日期：2026-08-31（Asia/Shanghai）<br>

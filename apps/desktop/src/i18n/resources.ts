@@ -303,6 +303,14 @@ export const enUS = {
       "status-unavailable": "Could not verify Hook runtime status",
     },
   },
+  edge: {
+    title: "Edge sidebar", description: "A quiet view of your live sessions. Hover to unfold, pin to keep open, or jump back to the source.",
+    enabled: "Show edge sidebar", position: "Screen edge", left: "Left", right: "Right",
+    open: "Open edge sidebar", close: "Fold sidebar", pin: "Keep open", unpin: "Unpin sidebar",
+    all: "All sessions", empty: "No recent sessions", emptyBody: "Your sessions will appear here when a connected source reports activity.",
+    loading: "Reading local activity…", error: "Activity is unavailable", retry: "Try again", jump: "Return to source", jumpError: "Could not open the source. Try again.",
+    overview: "Open VibeMeter", settings: "Sidebar settings", recent: "Recent activity", unavailable: "Status not recorded", count: "{{count}} sessions",
+  },
   notch: {
     open: "Open VibeMeter",
     pin: "Keep open",
@@ -1369,6 +1377,14 @@ export const zhCN = {
       "hook-modified": "VibeMeter Hook 有变更，请在 /hooks 重新确认",
       "status-unavailable": "暂时无法确认 Hook 是否生效",
     },
+  },
+  edge: {
+    title: "边缘侧栏", description: "随时查看会话动态。悬停展开，固定常驻，也可直接跳回来源。",
+    enabled: "显示边缘侧栏", position: "屏幕边缘", left: "左侧", right: "右侧",
+    open: "展开边缘侧栏", close: "收起侧栏", pin: "保持展开", unpin: "取消固定",
+    all: "全部会话", empty: "暂无近期会话", emptyBody: "接入的来源报告活动后，会话将显示在这里。",
+    loading: "正在读取本地活动…", error: "暂时无法读取活动", retry: "重试", jump: "跳回来源", jumpError: "未能打开来源，请重试。",
+    overview: "打开 VibeMeter", settings: "侧栏设置", recent: "近期活动", unavailable: "未记录状态", count: "{{count}} 个会话",
   },
   notch: {
     open: "打开 VibeMeter",

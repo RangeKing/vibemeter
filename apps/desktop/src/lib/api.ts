@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  EdgeState,
   AttentionEvent,
   AttentionQualityReport,
   ComparisonItem,
@@ -34,6 +35,8 @@ import type {
 } from "../types";
 
 export const api = {
+  edgeState: () => invoke<EdgeState>("get_edge_state"),
+  setEdgeExpanded: (expanded: boolean, pinned?: boolean) => invoke<void>("set_edge_expanded", { expanded, pinned }),
   overview: (range: string) => invoke<OverviewResponse>("get_overview", { range }),
   phraseCloud: (range: string) => invoke<PhraseCloudResponse>("get_phrase_cloud", { range }),
   liveSnapshot: () => invoke<LiveSnapshot>("get_live_snapshot"),

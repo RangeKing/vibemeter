@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "VibeMeter desktop permissions",
-  "windows": ["main", "menubar", "notch"],
+  "windows": ["main", "menubar", "notch", "edge"],
   "permissions": [
     "core:default",
     "dialog:allow-open",

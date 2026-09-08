@@ -1917,3 +1917,16 @@ html[data-surface="menubar"], html[data-surface="menubar"] body, html[data-surfa
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; transition-duration: .001ms !important; }
 }
+
+/* Native Sidebar material is installed underneath the main webview. Keep the
+   content readable while allowing the desktop to tint the navigation chrome. */
+html[data-surface="main"], html[data-surface="main"] body { background: transparent; }
+html[data-surface="main"] .app-shell { background: color-mix(in srgb, var(--bg) 52%, transparent); }
+html[data-surface="main"] .sidebar { background: color-mix(in srgb, var(--sidebar) 46%, transparent); border-color: color-mix(in srgb, var(--line) 65%, transparent); }
+html[data-surface="main"] .main-content { background: color-mix(in srgb, var(--bg) 88%, transparent); }
+html[data-surface="main"] :is(.settings-section, .live-panel, .chart-panel, .metric-card) { background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 1px rgb(255 255 255 / 8%), var(--shadow-small); }
+@media (prefers-reduced-transparency: reduce) {
+  html[data-surface="main"] .app-shell, html[data-surface="main"] .main-content { background: var(--bg); }
+  html[data-surface="main"] .sidebar { background: var(--sidebar); }
+  html[data-surface="main"] :is(.settings-section, .live-panel, .chart-panel, .metric-card) { background: var(--surface); }
+}

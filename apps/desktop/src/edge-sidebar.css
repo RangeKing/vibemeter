@@ -1,0 +1,68 @@
+/* Motion adapted from CodeNotch's NotchMotion: unfold .42/.78,
+   contents .36/.82, stagger 45 ms capped at 180 ms. See THIRD_PARTY_NOTICES.md. */
+:root {
+  --edge-spring: cubic-bezier(.2, .9, .22, 1.045);
+  --edge-glass: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+html[data-surface="edge"], html[data-surface="edge"] body { background: transparent; }
+.edge-surface { --agent-monochrome: var(--ink); position: absolute; top: 50%; width: 360px; height: min(580px, 100vh); transform: translateY(-50%); color: var(--ink); }
+.edge-surface.side-right { right: 0; }
+.edge-surface.side-left { left: 0; }
+.edge-sheet { display: flex; height: 100%; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 65%, transparent); background: var(--edge-glass); backdrop-filter: blur(32px) saturate(145%); -webkit-backdrop-filter: blur(32px) saturate(145%); box-shadow: inset 0 1px rgb(255 255 255 / 25%); transition: clip-path 650ms var(--edge-spring), opacity 160ms ease; }
+.side-right .edge-sheet { flex-direction: row-reverse; border-radius: 22px 0 0 22px; clip-path: inset(0 round 22px 0 0 22px); }
+.side-left .edge-sheet { border-radius: 0 22px 22px 0; clip-path: inset(0 round 0 22px 22px 0); }
+.side-right.is-folded .edge-sheet { clip-path: inset(calc(50% - 48px) 0 calc(50% - 48px) 350px round 8px 0 0 8px); opacity: 0; pointer-events: none; }
+.side-left.is-folded .edge-sheet { clip-path: inset(calc(50% - 48px) 350px calc(50% - 48px) 0 round 0 8px 8px 0); opacity: 0; pointer-events: none; }
+.edge-handle { position: absolute; z-index: 2; top: calc(50% - 48px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; width: 12px; height: 96px; padding: 0; border: 1px solid rgb(255 255 255 / 20%); background: #25242d; transition: opacity 160ms ease; }
+.side-right .edge-handle { right: 0; border-radius: 9px 0 0 9px; }
+.side-left .edge-handle { left: 0; border-radius: 0 9px 9px 0; }
+.edge-handle span { width: 3px; height: 3px; border-radius: 50%; background: #c4baf5; }
+.edge-handle.needs-attention span { background: #ffc665; }
+.is-expanded .edge-handle { opacity: 0; pointer-events: none; }
+.edge-rail { width: 56px; flex: 0 0 56px; display: flex; flex-direction: column; align-items: center; padding: 15px 6px; gap: 16px; background: color-mix(in srgb, var(--sidebar) 60%, transparent); }
+.edge-sheet button { display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--muted); border-radius: 10px; }
+.edge-sheet button:hover, .edge-sheet button.selected { background: var(--accent-soft); color: var(--accent); }
+.edge-rail button { position: relative; width: 40px; min-height: 42px; padding: 5px; }
+.edge-providers { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+.edge-providers button small { position: absolute; right: 0; bottom: 0; padding: 1px 4px; border-radius: 5px; background: var(--surface-strong); color: var(--muted); font-size: 9px; font-weight: 700; }
+.edge-rail .edge-settings { margin-top: auto; flex-shrink: 0; }
+.edge-detail { display: flex; flex-direction: column; flex: 1; min-width: 0; padding: 19px 16px 12px; }
+.edge-detail header { display: flex; align-items: center; gap: 3px; padding-bottom: 18px; }
+.edge-detail header > div { flex: 1; min-width: 0; }
+.edge-detail header small { font-size: 9px; letter-spacing: 1.7px; color: var(--faint); }
+.edge-detail h1 { margin: 6px 0 0; font-size: 17px; font-weight: 650; letter-spacing: -.5px; }
+.edge-detail header button { width: 28px; height: 30px; flex-shrink: 0; }
+.edge-session-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 2px; animation: edge-crossfade 160ms ease; }
+.edge-session { padding: 14px 12px 11px; margin-bottom: 10px; border: 1px solid color-mix(in srgb, var(--line) 66%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--surface-strong) 65%, transparent); }
+.edge-session-heading { display: flex; gap: 7px; align-items: center; }
+.edge-session-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted); }
+.edge-status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); }
+.status-running .edge-status-dot { background: var(--green); }
+.status-waiting .edge-status-dot { background: var(--amber); }
+.status-error .edge-status-dot { background: var(--red); }
+.edge-session h2 { font-size: 13px; line-height: 1.5; font-weight: 600; margin: 11px 0 8px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.edge-session-meta { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--muted); }
+.edge-session time { font-variant-numeric: tabular-nums; }
+.edge-phase { margin: 9px 0 11px; font-size: 10px; color: var(--accent); }
+.edge-sheet .edge-jump { padding: 0; min-height: 24px; gap: 5px; font-size: 10px; }
+.edge-detail footer { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; font-size: 9px; color: var(--faint); }
+.edge-detail footer button { gap: 3px; padding: 5px; font-size: 10px; }
+.edge-empty { min-height: 230px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.edge-empty strong { color: var(--ink); }
+.edge-empty p { margin: 0; }
+.edge-empty button { padding: 9px; }
+.edge-error { color: var(--red); font-size: 10px; line-height: 1.5; }
+.is-expanded .edge-providers button, .is-expanded .edge-session { animation: edge-arrive 560ms var(--edge-spring) both; animation-delay: min(calc(var(--edge-index) * 45ms), 180ms); }
+@keyframes edge-arrive { from { opacity: 0; transform: translateY(10px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes edge-crossfade { from { opacity: .3; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .edge-sheet, .edge-handle { transition: none; }
+  .edge-surface *, .edge-surface *::before { animation: none !important; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .edge-sheet { background: var(--surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+@supports (transition-timing-function: linear(0, 1)) {
+  :root { --edge-spring: linear(0.00000, 0.02602, 0.09149, 0.18077, 0.28196, 0.38636, 0.48784, 0.58236, 0.66748, 0.74202, 0.80565, 0.85872, 0.90195, 0.93633, 0.96298, 0.98303, 0.99758, 1.00766, 1.01418, 1.01795, 1.01965, 1.01986, 1.01902, 1.01752, 1.01564, 1.01358, 1.01151, 1.00953, 1.00771, 1.00608, 1.00467, 1.00348, 1.00249, 1.00170, 1.00107, 1.00058, 1.00023, 0.99997, 0.99979, 0.99969, 1); }
+}

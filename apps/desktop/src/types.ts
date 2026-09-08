@@ -243,6 +243,13 @@ export interface WorkPulse {
   freshness: WorkPulseDimension;
 }
 
+export interface EdgeState {
+  enabled: boolean;
+  expanded: boolean;
+  pinned: boolean;
+  side: "left" | "right";
+}
+
 export interface LiveSession {
   id: string;
   sourceSessionId: string;
@@ -1021,6 +1028,8 @@ export interface AppSettings {
   vctiPromptStructure: string;
   retentionDays: string;
   liveHooksEnabled: string;
+  edgeSidebarEnabled?: string;
+  edgeSidebarSide?: string;
   notchEnabled: string;
   menuBarEnabled: string;
   dataPageAgents: string;

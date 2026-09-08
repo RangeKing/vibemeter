@@ -6,6 +6,7 @@ import { I18nextProvider, useTranslation } from "react-i18next";
 import { App } from "./App";
 import i18n from "./i18n";
 import "./styles.css";
+import "./edge-sidebar.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +25,7 @@ function OfflineShell() {
 }
 
 const requestedSurface = new URLSearchParams(window.location.search).get("surface");
-const surface = requestedSurface === "menubar" || requestedSurface === "notch" ? requestedSurface : "main";
+const surface = requestedSurface === "menubar" || requestedSurface === "notch" || requestedSurface === "edge" ? requestedSurface : "main";
 document.documentElement.dataset.surface = surface;
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

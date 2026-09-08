@@ -25,6 +25,16 @@ VibeMeter brings live status, long-term analytics, and your VCTI profile into on
 
 VibeMeter does not control your agents, approve requests, or modify source repositories. If a signal is unavailable, the UI says so instead of dressing missing data up as zero.
 
+## 0.6.0: Edge sidebar and glass
+
+Enable the independent panel in **Settings → Edge sidebar**, then choose the left or right edge. It also works on displays without a hardware notch. Hover to unfold; leaving folds it after a short delay. Pin keeps it open and Escape folds it. Provider icons filter sessions; cards show work phases and source coverage and let you return to the source. The existing top Notch remains available.
+
+The main window uses native macOS vibrancy with translucent navigation and content layers. Light, dark and system appearance are supported, with reduced-motion and reduced-transparency fallbacks.
+
+Official standard API pricing now includes Claude Fable 5.1 and GPT 6 Astra. Input / cached input / output per million tokens are **$10 / $0.25 / $50** and **$10 / $1 / $50**, respectively. Costs are standard-rate estimates, not subscription bills; Fast, Batch, long-context and regional surcharges are not inferred. See the [pricing verification record](docs/pricing-validation-2026-09-08.md).
+
+Thanks to [Vinz](https://github.com/vinzdg) for [CodeNotch](https://github.com/vinzdg/codenotch), which inspired the edge interaction and spring motion. Its MIT notice is retained in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## ✨ Three views. One clear picture.
 
 - **Understand at a glance.** The Notch shows live Claude Code, Codex, and DeepSeek Harness stages, priority, and recent structured actions. The menu-bar popover covers time ranges, tokens, cost, activity trends, and remaining quota.

@@ -380,6 +380,12 @@ export function SettingsPage({ locale }: { locale: Locale }) {
         </section>
 
         <section className="settings-section">
+          <header><PanelTop size={17} /><div><h2>{t("edge.title")}</h2><p>{t("edge.description")}</p></div></header>
+          <div className="setting-row"><div><strong>{t("edge.enabled")}</strong></div><Toggle checked={data.edgeSidebarEnabled === "true"} onCheckedChange={(enabled) => void setSetting("edgeSidebarEnabled", String(enabled))} label={t("edge.enabled")} /></div>
+          <div className="setting-row"><div><strong>{t("edge.position")}</strong></div><select aria-label={t("edge.position")} value={data.edgeSidebarSide ?? "right"} onChange={(event) => void setSetting("edgeSidebarSide", event.target.value)}><option value="left">{t("edge.left")}</option><option value="right">{t("edge.right")}</option></select></div>
+        </section>
+
+        <section className="settings-section">
           <header><Database size={17} /><div><h2>{t("settings.sources")}</h2><p>{t("settings.sourcesBody")}</p></div></header>
           <div className="setting-row multiline">
             <div><strong>{t("settings.manageSources")}</strong><p>{t("settings.manageSourcesBody")}</p></div>

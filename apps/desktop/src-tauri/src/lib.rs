@@ -2,6 +2,7 @@ mod adapters;
 pub mod database;
 mod delegation_store;
 mod diagnostics;
+mod edge;
 pub mod errors;
 pub mod export;
 mod export_localization;
@@ -292,6 +293,17 @@ fn undo_clear_notch_completed_sessions(
 #[tauri::command]
 fn set_notch_expanded(app: AppHandle, expanded: bool) -> AppResult<()> {
     tray::set_notch_expanded(&app, expanded)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+#[tauri::command]
+fn get_edge_state() -> edge::EdgeState {
+    edge::state()
+}
+
+#[tauri::command]
+fn set_edge_expanded(app: AppHandle, expanded: bool, pinned: Option<bool>) -> AppResult<()> {
+    edge::set_expanded(&app, expanded, pinned)
         .map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
@@ -790,6 +802,8 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("launchAtLogin", "false"),
             ("liveHooksEnabled", "true"),
             ("notchEnabled", "true"),
+            ("edgeSidebarEnabled", "false"),
+            ("edgeSidebarSide", "right"),
             ("menuBarEnabled", "true"),
             ("dataPageAgents", "auto"),
             ("iaMigrationTipSeen", "false"),
@@ -813,6 +827,21 @@ async fn set_app_setting(
     value: String,
 ) -> AppResult<()> {
     validate_setting(&key, &value)?;
+    if key == "theme" {
+        app.set_theme(match value.as_str() {
+            "light" => Some(tauri::Theme::Light),
+            "dark" => Some(tauri::Theme::Dark),
+            _ => None,
+        });
+    }
+    if key == "edgeSidebarEnabled" || key == "edgeSidebarSide" {
+        edge::configure(
+            &app,
+            (key == "edgeSidebarEnabled").then_some(value == "true"),
+            (key == "edgeSidebarSide").then_some(value.as_str()),
+        )
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    }
     if key == "notchEnabled" {
         tray::set_notch_enabled(&app, value == "true")
             .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
@@ -831,13 +860,17 @@ async fn set_app_setting(
     let database = state.database.clone();
     tauri::async_runtime::spawn_blocking(move || database.set_setting(&key, &value))
         .await
-        .map_err(|error| AppError::InvalidRequest(error.to_string()))?
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))??;
+    app.emit("settings-changed", ())
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+    Ok(())
 }
 
 fn validate_setting(key: &str, value: &str) -> AppResult<()> {
     let valid = match key {
         "locale" => matches!(value, "system" | "zh-CN" | "en-US"),
         "theme" => matches!(value, "system" | "light" | "dark"),
+        "edgeSidebarSide" => matches!(value, "left" | "right"),
         "onboardingComplete"
         | "credentialsAllowed"
         | "cursorDashboardUsage"
@@ -847,6 +880,7 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
         | "launchAtLogin"
         | "liveHooksEnabled"
         | "notchEnabled"
+        | "edgeSidebarEnabled"
         | "menuBarEnabled"
         | "iaMigrationTipSeen" => {
             matches!(value, "true" | "false")
@@ -880,6 +914,7 @@ fn is_surface_preview() -> bool {
         || std::env::var_os("AFTERVIBE_PREVIEW_MENUBAR").is_some()
         || std::env::var_os("TOKENGRAPH_PREVIEW_MENUBAR").is_some()
         || std::env::var_os("VIBEMETER_PREVIEW_NOTCH").is_some()
+        || (cfg!(debug_assertions) && std::env::var_os("VIBEMETER_PREVIEW_EDGE").is_some())
 }
 
 fn reveal_main_window(app: &AppHandle) -> AppResult<()> {
@@ -1039,7 +1074,22 @@ pub fn run() {
                 .is_none_or(|value| value == "true");
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            app.set_theme(match database.setting("theme")?.as_deref() {
+                Some("light") => Some(tauri::Theme::Light),
+                Some("dark") => Some(tauri::Theme::Dark),
+                _ => None,
+            });
             tray::setup(app, notch_enabled, menu_bar_enabled)?;
+            edge::setup(
+                app.handle(),
+                onboarding_complete
+                    && database
+                        .setting("edgeSidebarEnabled")?
+                        .is_some_and(|v| v == "true"),
+                &database
+                    .setting("edgeSidebarSide")?
+                    .unwrap_or_else(|| "right".into()),
+            )?;
 
             #[cfg(debug_assertions)]
             if std::env::var_os("VIBEMETER_PREVIEW_MENUBAR").is_some()
@@ -1055,6 +1105,12 @@ pub fn run() {
                     let _ = menubar.set_focus();
                 }
             }
+            #[cfg(debug_assertions)]
+            if std::env::var_os("VIBEMETER_PREVIEW_EDGE").is_some() {
+                edge::configure(app.handle(), Some(true), None)?;
+                edge::set_expanded(app.handle(), true, Some(true))?;
+            }
+
             #[cfg(debug_assertions)]
             if std::env::var_os("VIBEMETER_PREVIEW_NOTCH").is_some() {
                 if let Some(main) = app.get_webview_window("main") {
@@ -1162,6 +1218,8 @@ pub fn run() {
             undo_clear_notch_completed_sessions,
             set_notch_expanded,
             get_notch_state,
+            get_edge_state,
+            set_edge_expanded,
             set_notch_pinned,
             set_notch_activity,
             set_notch_layout,

@@ -61,3 +61,7 @@ Historical Agent directories and source repositories are read-only. First launch
 Delegation adapters inspect only source-provided structured identity and lifecycle fields. Shared DTOs expose internal session references, hashed node labels, normalized relation/event types, evidence levels, coverage, confidence, and canonical IDs. They do not expose the source payloads used to extract those fields.
 
 Memory adapters inspect only source-provided structured activity signals. Path data used to recognize a supported local memory activity is discarded before canonicalization. Shared DTOs expose only the normalized operation, safe session/work-unit references, time, evidence level, source coverage, confidence, algorithm version, and canonical evidence ID.
+
+## Edge sidebar
+
+The optional edge panel uses the existing sanitized live-session snapshot and existing source-jump commands. It adds no source reader, global input hook, telemetry, approval or execution capability. Hover is handled only inside the panel's own window; periodic checks read display geometry, not cursor or application activity. Pinning changes only VibeMeter's presentation.

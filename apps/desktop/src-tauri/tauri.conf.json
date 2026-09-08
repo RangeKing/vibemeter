@@ -24,7 +24,15 @@
         "fullscreen": false,
         "visible": false,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "active"
+        }
       }
     ],
     "security": {
@@ -33,7 +41,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": [
+      "app"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Track your agents. Discover your coding type.",
     "longDescription": "Live agent monitoring, local AI coding analytics, and an evolving VCTI profile.",
