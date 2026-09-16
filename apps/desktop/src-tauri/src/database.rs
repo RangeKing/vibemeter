@@ -475,7 +475,7 @@ const CANONICAL_EVENT_PROTOCOL_VERSION: &str = "1.0.0";
 const CANONICAL_EVENT_SCHEMA_VERSION: i64 = 20;
 const LIVE_NORMALIZER_VERSION: &str = "live-normalizer-1.0.0";
 const HISTORY_NORMALIZER_VERSION: &str = "history-normalizer-1.0.0";
-const DATABASE_SCHEMA_VERSION: i64 = 31;
+const DATABASE_SCHEMA_VERSION: i64 = 32;
 const LIVE_REPLAY_WINDOW_SECONDS: i64 = 30;
 pub(crate) const ATTENTION_NOTIFICATION_LEASE_SECONDS: i64 = 5 * 60;
 const ATTENTION_UNBOUNDED_EXPIRES_AT: &str = "9999-12-31T23:59:59Z";
@@ -1033,6 +1033,27 @@ CREATE INDEX memory_accesses_active_idx
 CREATE INDEX memory_access_evidence_canonical_idx
     ON memory_access_evidence(canonical_event_id, memory_access_id);
 PRAGMA user_version = 31;
+"#;
+
+const MIGRATION_V32: &str = r#"
+UPDATE attention_events
+SET state='expired',
+    expires_at=datetime(latest_evidence_at, '+24 hours'),
+    updated_at=datetime('now')
+WHERE reason_key LIKE 'attention.delegation.%'
+  AND expires_at='9999-12-31T23:59:59Z'
+  AND datetime('now') > datetime(latest_evidence_at, '+24 hours');
+
+UPDATE attention_events
+SET state='resolved',
+    resolved_at=datetime('now'),
+    resolution_reason='session-ended',
+    updated_at=datetime('now')
+WHERE reason_key LIKE 'attention.delegation.%'
+  AND state IN ('open', 'acknowledged', 'snoozed')
+  AND source_session_id IN (SELECT source_session_id FROM sessions WHERE ended_at IS NOT NULL);
+
+PRAGMA user_version = 32;
 "#;
 
 #[derive(Clone)]
@@ -3171,6 +3192,9 @@ fn apply_schema_migrations(connection: &Connection, version: i64) -> AppResult<(
     }
     if version < 31 {
         connection.execute_batch(MIGRATION_V31)?;
+    }
+    if version < 32 {
+        connection.execute_batch(MIGRATION_V32)?;
     }
     Ok(())
 }
@@ -16229,7 +16253,7 @@ mod concurrency_tests {
     }
 
     #[test]
-    fn schema_30_migrates_to_memory_schema_31_with_integrity_and_indexes() {
+    fn schema_30_migrates_to_memory_schema_31_and_attention_schema_32_with_integrity_and_indexes() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let path = temporary.path().join("schema-30.sqlite");
         let database = Database::open(path.clone()).expect("fixture database should open");
@@ -16277,7 +16301,10 @@ mod concurrency_tests {
                 },
             )
             .expect("migration checks should load");
-        assert_eq!(checks, (31, "ok".into(), "ok".into(), 0, 2, 5));
+        assert_eq!(
+            checks,
+            (DATABASE_SCHEMA_VERSION, "ok".into(), "ok".into(), 0, 2, 5)
+        );
         let preserved: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM sessions WHERE id=?1",

@@ -12,11 +12,9 @@ use crate::models::{
     DelegationAnomaly, DelegationCoverage, DelegationEdge, DelegationEvidenceReference,
     DelegationNode, DelegationTraceResponse,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-
-const ATTENTION_NEVER_EXPIRES: &str = "9999-12-31T23:59:59Z";
 
 #[derive(Clone, Debug)]
 struct SessionMetadata {
@@ -270,6 +268,32 @@ fn sync_delegation_attention(
             .map(|signal| signal.observed_at.as_str())
             .max()
             .unwrap_or(primary_signal.observed_at.as_str());
+        let now_dt = DateTime::parse_from_rfc3339(now)
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let latest_dt = DateTime::parse_from_rfc3339(latest_evidence_at)
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or(now_dt);
+        let expires_dt = latest_dt + Duration::hours(24);
+        if now_dt >= expires_dt {
+            continue;
+        }
+
+        let session_ended: bool = transaction
+            .query_row(
+                "SELECT ended_at IS NOT NULL FROM sessions
+                 WHERE source_session_id=?1 AND agent=?2
+                 ORDER BY ended_at IS NOT NULL DESC
+                 LIMIT 1",
+                params![relation.child_session_id, primary_signal.agent,],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if session_ended {
+            continue;
+        }
+
+        let expires_at_str = expires_dt.to_rfc3339_opts(SecondsFormat::AutoSi, true);
         if existing
             .as_ref()
             .is_none_or(|item| item.1.starts_with("attention.delegation."))
@@ -294,11 +318,14 @@ fn sync_delegation_attention(
                     updated_at=excluded.updated_at,
                     state=CASE
                         WHEN attention_events.feedback IS NULL
-                         AND attention_events.state IN('resolved','expired') THEN 'open'
+                         AND attention_events.state IN('resolved','expired')
+                         AND excluded.latest_evidence_at > attention_events.latest_evidence_at THEN 'open'
                         ELSE attention_events.state
                     END,
                     resolved_at=CASE
-                        WHEN attention_events.feedback IS NULL THEN NULL
+                        WHEN attention_events.feedback IS NULL
+                         AND attention_events.state IN('resolved','expired')
+                         AND excluded.latest_evidence_at > attention_events.latest_evidence_at THEN NULL
                         ELSE attention_events.resolved_at
                     END
                  WHERE attention_events.feedback IS NULL",
@@ -311,7 +338,7 @@ fn sync_delegation_attention(
                     safe_project_label(&primary_signal.project_label),
                     opened_at,
                     latest_evidence_at,
-                    ATTENTION_NEVER_EXPIRES,
+                    expires_at_str.as_str(),
                     relation.evidence_level,
                     relation.source_coverage,
                     anomaly.rule_version,

@@ -7,9 +7,9 @@ use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl};
 use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelBuilder, PanelLevel, StyleMask};
 
 const WIDTH: f64 = 360.0;
-const HEIGHT: f64 = 580.0;
-const FOLDED_WIDTH: f64 = 16.0;
-const FOLDED_HEIGHT: f64 = 108.0;
+const HEIGHT: f64 = 520.0;
+const FOLDED_WIDTH: f64 = 72.0;
+const FOLDED_HEIGHT: f64 = 320.0;
 const SETTLE_MS: u64 = 700;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -271,7 +271,7 @@ mod tests {
     use super::*;
     #[test]
     fn folded_window_does_not_intercept_the_hidden_sidebar() {
-        assert_eq!(dimensions(false, 900.0), (16.0, 108.0));
+        assert_eq!(dimensions(false, 900.0), (72.0, 320.0));
         assert_eq!(dimensions(true, 500.0), (360.0, 468.0));
     }
     #[test]

@@ -403,7 +403,13 @@ select { padding-right: 28px; }
 .live-privacy-note p { margin: 0; font-size: var(--font-caption); line-height: 1.6; }
 .live-privacy-note strong { color: var(--ink); }
 
-html[data-surface="notch"], html[data-surface="notch"] body, html[data-surface="notch"] #root { width: 100%; height: 100%; overflow: hidden; background: transparent !important; }
+html[data-surface="notch"], html[data-surface="notch"] body, html[data-surface="notch"] #root,
+html[data-surface="edge"], html[data-surface="edge"] body, html[data-surface="edge"] #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent !important;
+}
 html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none; user-select: none; }
 .notch-island { position: relative; width: 100%; height: 100%; color: #fff8f2; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; }
 .notch-island-morph { isolation: isolate; overflow: hidden; }
@@ -1611,7 +1617,8 @@ body.modal-open { overflow: hidden; }
 .privacy-panel p { margin: 4px 0 0; color: var(--muted); font-size: var(--font-caption); line-height: 1.55; }
 
 /* Settings */
-.settings-stack { max-width: 850px; border-top: 1px solid var(--line-strong); }
+.settings-page { width: 100%; box-sizing: border-box; }
+.settings-stack { width: 100%; max-width: 850px; box-sizing: border-box; border-top: 1px solid var(--line-strong); }
 .settings-section { display: grid; grid-template-columns: 205px minmax(0, 1fr); gap: 25px; padding: 22px 0; border-bottom: 1px solid var(--line); }
 .settings-section > header { display: flex; align-items: flex-start; gap: 8px; color: var(--accent-dark); }
 .settings-section h2 { margin: 0; color: var(--ink); font-family: var(--serif); font-size: 17px; }
@@ -1924,9 +1931,9 @@ html[data-surface="main"], html[data-surface="main"] body { background: transpar
 html[data-surface="main"] .app-shell { background: color-mix(in srgb, var(--bg) 52%, transparent); }
 html[data-surface="main"] .sidebar { background: color-mix(in srgb, var(--sidebar) 46%, transparent); border-color: color-mix(in srgb, var(--line) 65%, transparent); }
 html[data-surface="main"] .main-content { background: color-mix(in srgb, var(--bg) 88%, transparent); }
-html[data-surface="main"] :is(.settings-section, .live-panel, .chart-panel, .metric-card) { background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 1px rgb(255 255 255 / 8%), var(--shadow-small); }
+html[data-surface="main"] :is(.live-panel, .chart-panel, .metric-card) { background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 1px rgb(255 255 255 / 8%), var(--shadow-small); }
 @media (prefers-reduced-transparency: reduce) {
   html[data-surface="main"] .app-shell, html[data-surface="main"] .main-content { background: var(--bg); }
   html[data-surface="main"] .sidebar { background: var(--sidebar); }
-  html[data-surface="main"] :is(.settings-section, .live-panel, .chart-panel, .metric-card) { background: var(--surface); }
+  html[data-surface="main"] :is(.live-panel, .chart-panel, .metric-card) { background: var(--surface); }
 }

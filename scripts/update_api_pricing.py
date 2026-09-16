@@ -331,6 +331,7 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "grok-build-0-1": ("grok-code-fast-1", "grok-code-fast", "grok-code-fast-1-0825"),
     "grok-4-5": ("grok-4-5-latest",),
     "grok-4-3": ("grok-4-3-latest",),
+    "deepseek-v4-pro-2": ("deepseek-v4-pro",),
     "composer-2-5": ("composer-2.5",),
     "composer-2-5-fast": ("composer-2.5-fast",),
 }
