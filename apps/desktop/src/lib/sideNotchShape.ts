@@ -3,17 +3,17 @@
 
 /* codenotch fixes the outline by three measurements in points: a 70 body depth,
    a 38.7 flare and a 29.6 corner — ratios of 1 : 0.553 : 0.423 against the
-   depth. VibeMeter draws the same outline at 0.77 scale, which is what keeps
+   depth. VibeMeter draws the same outline at 0.62 scale, which is what keeps
    the curve reading as the reference's while the strip stays slim enough to
    live on the edge of a working screen all day. Keep the three in step: the
    ratios, not the absolute numbers, are what the shape is. */
 
 /** Across the notch, bezel to free side. */
-export const SIDE_NOTCH_DEPTH = 54;
+export const SIDE_NOTCH_DEPTH = 43;
 /** Radius of the inverse flare that welds each end back onto the bezel. */
-export const SIDE_NOTCH_CURL_RADIUS = 30;
+export const SIDE_NOTCH_CURL_RADIUS = 24;
 /** Radius of the two rounded corners on the free side of the body. */
-export const SIDE_NOTCH_CORNER_RADIUS = 23;
+export const SIDE_NOTCH_CORNER_RADIUS = 18;
 
 export interface SideNotchGeometry {
   /** Across the shape. The bezel sits at `x = depth`. */

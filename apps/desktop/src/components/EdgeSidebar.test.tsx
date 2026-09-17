@@ -242,10 +242,10 @@ describe("Edge sidebar", () => {
   });
 
   it("keeps the notch inside the folded panel however many providers report", async () => {
-    expect(notchHeightFor(1)).toBe(147);
-    expect(notchHeightFor(3)).toBe(279);
+    expect(notchHeightFor(1)).toBe(117);
+    expect(notchHeightFor(3)).toBe(223);
     // Every supported Agent still fits inside the folded panel.
-    expect(notchHeightFor(9)).toBe(675);
+    expect(notchHeightFor(9)).toBe(541);
     expect(notchHeightFor(40)).toBe(720);
   });
 });

@@ -6,10 +6,10 @@
 :root {
   --edge-spring: cubic-bezier(.2, .9, .22, 1.045);
   /* Kept in step with the constants in EdgeSidebar.tsx, which size the SVG. */
-  --edge-depth: 54px;
-  --edge-ring: 34px;
-  --edge-pad: 18px;
-  --edge-curl: 30px;
+  --edge-depth: 43px;
+  --edge-ring: 27px;
+  --edge-pad: 14px;
+  --edge-curl: 24px;
 }
 
 html[data-surface="edge"],
@@ -27,7 +27,7 @@ html[data-surface="edge"] #root {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  width: 300px;
+  width: 240px;
   height: 100%;
   display: flex;
   align-items: center;
@@ -99,7 +99,7 @@ html[data-surface="edge"] #root {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 15px;
+  gap: 12px;
   /* A short display can leave less room than the rings want. Scrolling keeps
      the last one reachable instead of clipping it against the flare. */
   min-height: 0;
@@ -118,7 +118,7 @@ html[data-surface="edge"] #root {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   padding: 0;
   border: none;
   background: transparent;
@@ -151,12 +151,12 @@ html[data-surface="edge"] #root {
 .edge-ring-track {
   fill: none;
   stroke: rgba(255, 255, 255, 0.14);
-  stroke-width: 4.5px;
+  stroke-width: 3.6px;
 }
 
 .edge-ring-arc {
   fill: none;
-  stroke-width: 4.5px;
+  stroke-width: 3.6px;
   stroke-linecap: round;
   transition: stroke-dashoffset 400ms var(--edge-spring), stroke 200ms ease;
 }
@@ -188,8 +188,8 @@ html[data-surface="edge"] #root {
 }
 
 .edge-ring-label {
-  font-size: 10.5px;
-  height: 12px;
+  font-size: 9.5px;
+  height: 10px;
   font-weight: 600;
   letter-spacing: -0.2px;
   color: rgba(255, 255, 255, 0.72);
@@ -206,10 +206,13 @@ html[data-surface="edge"] #root {
    ========================================================================== */
 .edge-sheet {
   position: relative;
-  width: 232px;
-  max-height: 440px;
+  /* Takes whatever the strip and its margins leave, so the panel width is the
+     one number that decides how wide the card is. */
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 600px;
   pointer-events: auto;
-  margin: 0 9px;
+  margin: 0 7px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   /* Solid by intent. The card is one shape inside a mostly transparent
@@ -270,7 +273,7 @@ html[data-surface="edge"] #root {
 .edge-detail {
   display: flex;
   flex-direction: column;
-  padding: 12px 13px 10px;
+  padding: 10px 11px 8px;
   height: 100%;
   box-sizing: border-box;
 }
@@ -287,26 +290,31 @@ html[data-surface="edge"] #root {
 .edge-card-title {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .edge-card-title h1 {
   margin: 0;
-  font-size: 13.5px;
+  overflow: hidden;
+  font-size: 11.5px;
   font-weight: 650;
   color: #fff;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .edge-card-actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 
 .edge-card-actions button {
-  width: 23px;
-  height: 23px;
+  width: 17px;
+  height: 17px;
   display: grid;
   place-items: center;
   border: none;
@@ -332,8 +340,8 @@ html[data-surface="edge"] #root {
 }
 
 .edge-quota-window {
-  padding: 9px 10px;
-  margin-bottom: 7px;
+  padding: 8px 9px;
+  margin-bottom: 6px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.04);
@@ -354,7 +362,7 @@ html[data-surface="edge"] #root {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
-  font-size: 11.5px;
+  font-size: 11px;
   color: #fff;
 }
 
@@ -379,7 +387,7 @@ html[data-surface="edge"] #root {
 
 .edge-quota-track {
   height: 4px;
-  margin: 7px 0 5px;
+  margin: 6px 0 4px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.1);
   overflow: hidden;

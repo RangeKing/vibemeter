@@ -29,16 +29,16 @@ const NOTCH_WIDTH = SIDE_NOTCH_DEPTH;
 /* Mirrors the block in edge-sidebar.css. The notch is sized in JS because the
    SVG outline needs a number, so the stylesheet follows these rather than the
    other way round. */
-const NOTCH_PADDING = 18;
-const RING_DIAMETER = 34;
-const RING_TRACK_STROKE = 4.5;
+const NOTCH_PADDING = 14;
+const RING_DIAMETER = 27;
+const RING_TRACK_STROKE = 3.6;
 const RING_RADIUS = (RING_DIAMETER - RING_TRACK_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 /** Ring plus the gap and line box of its percentage caption. */
-const RING_CELL_HEIGHT = RING_DIAMETER + 5 + 12;
-const RING_GAP = 15;
+const RING_CELL_HEIGHT = RING_DIAMETER + 4 + 10;
+const RING_GAP = 12;
 /** The flare owns this much of each end, where the shape has left the body. */
-const NOTCH_CURL = 30;
+const NOTCH_CURL = 24;
 /** The folded panel in `edge.rs` is this tall; the notch cannot outgrow it. */
 const NOTCH_MAX_HEIGHT = 720;
 
@@ -314,7 +314,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                       )}
                     </svg>
                     <div className="edge-ring-icon">
-                      <AgentIcon agent={ring.agent} size={14} />
+                      <AgentIcon agent={ring.agent} size={11} />
                     </div>
                   </div>
                   <span className="edge-ring-label">{label}</span>
@@ -340,8 +340,10 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
         <div className="edge-detail">
           <header className="edge-card-header">
             <div className="edge-card-title">
-              {active ? <AgentIcon agent={active.agent} size={18} /> : <Gauge size={18} />}
-              <h1>{active ? agentName(active.agent) : t("edge.quota")}</h1>
+              {active ? <AgentIcon agent={active.agent} size={15} /> : <Gauge size={15} />}
+              <h1 title={active ? agentName(active.agent) : undefined}>
+                {active ? agentName(active.agent) : t("edge.quota")}
+              </h1>
             </div>
             <div className="edge-card-actions">
               <button
@@ -349,7 +351,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 onClick={() => void openMain(true)}
                 title={t("edge.settings")}
               >
-                <Settings2 size={13} />
+                <Settings2 size={12} />
               </button>
               <button
                 aria-label={t(state.pinned ? "edge.unpin" : "edge.pin")}
@@ -358,7 +360,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 onClick={() => void expand(true, !state.pinned)}
                 title={t(state.pinned ? "edge.unpin" : "edge.pin")}
               >
-                <Pin size={14} />
+                <Pin size={12} />
               </button>
               <button
                 aria-label={t("edge.close")}
@@ -368,7 +370,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 }}
                 title={t("edge.close")}
               >
-                <X size={14} />
+                <X size={12} />
               </button>
             </div>
           </header>
@@ -380,7 +382,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                   <strong>{t("quota.noQuota")}</strong>
                   <small>{t("quota.enableInSettings")}</small>
                 </span>
-                <ArrowUpRight size={15} />
+                <ArrowUpRight size={13} />
               </button>
             ) : quota.isLoading || settings.isLoading ? (
               <p className="edge-empty" role="status">
@@ -397,17 +399,17 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                   <strong>{t("edge.allHidden")}</strong>
                   <small>{t("edge.allHiddenBody")}</small>
                 </span>
-                <ArrowUpRight size={15} />
+                <ArrowUpRight size={13} />
               </button>
             ) : !active ? (
               <div className="edge-empty">
-                <Gauge size={28} />
+                <Gauge size={22} />
                 <strong>{t("edge.empty")}</strong>
                 <p>{t("edge.emptyBody")}</p>
               </div>
             ) : !summary?.windows.length ? (
               <div className="edge-empty">
-                <Gauge size={28} />
+                <Gauge size={22} />
                 <strong>{t("edge.unavailable")}</strong>
                 <p>{t(active.provider ? "edge.unavailableBody" : "edge.noSubscriptionBody")}</p>
               </div>
@@ -476,7 +478,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
             </span>
             <button onClick={() => void openMain()}>
               {t("edge.overview")}
-              {state.side === "left" ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
+              {state.side === "left" ? <ChevronRight size={11} /> : <ChevronLeft size={11} />}
             </button>
           </footer>
         </div>
