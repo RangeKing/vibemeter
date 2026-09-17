@@ -23,7 +23,24 @@ export const EDGE_QUOTA_REFRESH_MS = 5 * 60_000;
 /** How often it re-reads the in-memory snapshot a refresh anywhere leaves. */
 const EDGE_SNAPSHOT_POLL_MS = 30_000;
 
-const initialState: EdgeState = { enabled: false, expanded: false, pinned: false, side: "right" };
+const initialState: EdgeState = {
+  enabled: false,
+  expanded: false,
+  pinned: false,
+  side: "right",
+  offset: 0.5,
+};
+
+/** Movement before a press on the strip counts as a drag and not a click. */
+export const EDGE_DRAG_THRESHOLD = 4;
+
+interface DragState {
+  pointerId: number;
+  /** Where the pointer sat relative to the notch's middle when it went down. */
+  grab: number;
+  startScreenY: number;
+  moved: boolean;
+}
 
 const NOTCH_WIDTH = SIDE_NOTCH_DEPTH;
 /* Mirrors the block in edge-sidebar.css. The notch is sized in JS because the
@@ -85,7 +102,10 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   const [commandError, setCommandError] = useState(false);
   const [now, setNow] = useState(() => new Date());
   const [tailTop, setTailTop] = useState(48);
+  const [dragging, setDragging] = useState(false);
   const stateRef = useRef(state);
+  const notchRef = useRef<HTMLElement>(null);
+  const drag = useRef<DragState | undefined>(undefined);
   const foldTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const panelRef = useRef<HTMLElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
@@ -223,6 +243,51 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     setTailTop(Math.round(Math.min(Math.max(center, 18), sheetRect.height - 18)));
   }, [active, rings.length, state.expanded, state.side]);
 
+  useEffect(() => {
+    void api.setEdgePlacement(undefined, notchHeight).catch(() => undefined);
+  }, [notchHeight]);
+
+  /* Dragging moves the panel, so the pointer stays over the strip the whole
+     time; capture keeps the events coming even when a frame lands late and the
+     cursor is briefly off it. The offset is only written back to settings once
+     the drag ends — one row per drag, not one per frame. */
+  const startDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    const notch = notchRef.current;
+    if (!notch) return;
+    const rect = notch.getBoundingClientRect();
+    const center = window.screenY + rect.top + rect.height / 2;
+    drag.current = {
+      pointerId: event.pointerId,
+      grab: event.screenY - center,
+      startScreenY: event.screenY,
+      moved: false,
+    };
+    notch.setPointerCapture(event.pointerId);
+  };
+
+  const moveDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const current = drag.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    if (!current.moved) {
+      if (Math.abs(event.screenY - current.startScreenY) < EDGE_DRAG_THRESHOLD) return;
+      current.moved = true;
+      setDragging(true);
+      cancelFold();
+    }
+    void api.setEdgePlacement(event.screenY - current.grab, notchHeight).catch(() => undefined);
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLElement>) => {
+    const current = drag.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    drag.current = undefined;
+    notchRef.current?.releasePointerCapture(event.pointerId);
+    if (!current.moved) return;
+    setDragging(false);
+    void api.setSetting("edgeSidebarOffset", String(stateRef.current.offset)).catch(() => undefined);
+  };
+
   const select = (agent: string) => {
     setSelected(agent);
     if (!stateRef.current.expanded) void expand(true);
@@ -253,7 +318,16 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
       }}
     >
       {/* CodeNotch Docked Edge Notch */}
-      <aside className="edge-notch" style={{ height: notchHeight }}>
+      <aside
+        ref={notchRef}
+        className={`edge-notch ${dragging ? "is-dragging" : ""}`}
+        style={{ height: notchHeight }}
+        title={t("edge.dragHint")}
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
         <SideNotchPath
           side={state.side === "left" ? "left" : "right"}
           height={notchHeight}
@@ -283,9 +357,13 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                       : `${name} · ${t("quota.remaining", { value: Math.round(remaining) })}`
                   }
                   aria-pressed={isSelected}
-                  onPointerEnter={() => select(ring.agent)}
+                  onPointerEnter={() => {
+                    if (!drag.current?.moved) select(ring.agent);
+                  }}
                   onFocus={() => select(ring.agent)}
-                  onClick={() => select(ring.agent)}
+                  onClick={() => {
+                    if (!drag.current?.moved) select(ring.agent);
+                  }}
                 >
                   <div className="edge-ring-wrapper">
                     <svg

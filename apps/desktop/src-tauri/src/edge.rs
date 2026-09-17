@@ -13,6 +13,10 @@ const FOLDED_WIDTH: f64 = 47.0;
 /// long as the rings it carries, and the rest of the panel stays click-through.
 const FOLDED_HEIGHT: f64 = 720.0;
 const SETTLE_MS: u64 = 700;
+/// Centred until the user drags it.
+const DEFAULT_OFFSET: f64 = 0.5;
+/// Until the page reports its own, which it does as soon as it has rings.
+const DEFAULT_NOTCH_HEIGHT: f64 = 220.0;
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,6 +25,13 @@ pub struct EdgeState {
     pub expanded: bool,
     pub pinned: bool,
     pub side: String,
+    /// Where along the display's travel the notch's centre sits, 0 at the top
+    /// and 1 at the bottom. The panel is much taller than the notch, so this
+    /// places the notch and lets the empty, click-through remainder of the
+    /// panel hang off the screen if it must.
+    pub offset: f64,
+    #[serde(skip)]
+    notch_height: f64,
     #[serde(skip)]
     generation: u64,
     #[serde(skip)]
@@ -31,6 +42,8 @@ fn state_lock() -> &'static Mutex<EdgeState> {
     STATE.get_or_init(|| {
         Mutex::new(EdgeState {
             side: "right".into(),
+            offset: DEFAULT_OFFSET,
+            notch_height: DEFAULT_NOTCH_HEIGHT,
             ..Default::default()
         })
     })
@@ -50,7 +63,7 @@ tauri_nspanel::tauri_panel! {
     })
 }
 
-pub fn setup(app: &tauri::AppHandle, enabled: bool, side: &str) -> tauri::Result<()> {
+pub fn setup(app: &tauri::AppHandle, enabled: bool, side: &str, offset: f64) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     {
         let panel = PanelBuilder::<_, VibeMeterEdgePanel>::new(app, "edge")
@@ -103,7 +116,7 @@ pub fn setup(app: &tauri::AppHandle, enabled: bool, side: &str) -> tauri::Result
     .resizable(false)
     .visible(false)
     .build()?;
-    configure(app, Some(enabled), Some(side))?;
+    configure(app, Some(enabled), Some(side), Some(offset))?;
     // Recheck display geometry without polling input, so unplugging a monitor
     // cannot strand the accessory off-screen. All AppKit work stays on main.
     let handle = app.clone();
@@ -125,6 +138,7 @@ pub fn configure(
     app: &tauri::AppHandle,
     enabled: Option<bool>,
     side: Option<&str>,
+    offset: Option<f64>,
 ) -> tauri::Result<()> {
     {
         let mut s = state_lock().lock().expect("edge state");
@@ -133,6 +147,9 @@ pub fn configure(
         }
         if let Some(side) = side {
             s.side = side.into();
+        }
+        if let Some(offset) = offset {
+            s.offset = offset.clamp(0.0, 1.0);
         }
         s.closing = false;
         s.expanded = false;
@@ -203,6 +220,74 @@ pub fn set_expanded(
     Ok(())
 }
 
+/// Moves the notch, and records how long it is.
+///
+/// `center_y` is a screen coordinate — where the page wants the middle of the
+/// notch to land — because the page has no idea where the display's work area
+/// starts or ends. It is turned into an offset here, against the travel the
+/// display actually allows, and clamped so the notch cannot be dragged past
+/// either end and stranded out of reach.
+pub fn set_placement(
+    app: &tauri::AppHandle,
+    center_y: Option<f64>,
+    notch_height: Option<f64>,
+) -> tauri::Result<()> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window("edge") else {
+            return;
+        };
+        let Ok(Some(monitor)) = window.primary_monitor() else {
+            return;
+        };
+        let scale = monitor.scale_factor();
+        let area = monitor.work_area();
+        let origin = area.position.y as f64 / scale;
+        let available = area.size.height as f64 / scale;
+        let changed = {
+            let mut s = state_lock().lock().expect("edge state");
+            if let Some(height) = notch_height {
+                s.notch_height = height.max(1.0);
+            }
+            if let Some(center) = center_y {
+                s.offset = offset_for_center(center, origin, available, s.notch_height);
+            }
+            center_y.is_some() || notch_height.is_some()
+        };
+        if changed {
+            let _ = layout(&handle);
+            let _ = handle.emit_to("edge", "edge-state", state());
+        }
+    })
+}
+
+/// The screen coordinates the notch's centre can occupy, given how long it is.
+fn travel(origin: f64, available: f64, notch_height: f64) -> (f64, f64) {
+    let half = (notch_height.min(available) / 2.0).max(0.0);
+    (origin + half, origin + available - half)
+}
+
+fn offset_for_center(center: f64, origin: f64, available: f64, notch_height: f64) -> f64 {
+    let (top, bottom) = travel(origin, available, notch_height);
+    if bottom <= top {
+        return DEFAULT_OFFSET;
+    }
+    ((center - top) / (bottom - top)).clamp(0.0, 1.0)
+}
+
+/// Top of the panel, so the notch's centre lands at `offset` of its travel.
+fn vertical_origin(
+    origin: f64,
+    available: f64,
+    panel_height: f64,
+    notch_height: f64,
+    offset: f64,
+) -> f64 {
+    let (top, bottom) = travel(origin, available, notch_height);
+    let center = top + (bottom - top).max(0.0) * offset.clamp(0.0, 1.0);
+    center - panel_height / 2.0
+}
+
 fn dimensions(expanded: bool, available_height: f64) -> (f64, f64) {
     // Both states clamp to the display: a panel taller than the work area
     // would put the first or last ring off-screen with no way to reach it.
@@ -213,23 +298,12 @@ fn dimensions(expanded: bool, available_height: f64) -> (f64, f64) {
         (FOLDED_WIDTH, FOLDED_HEIGHT.min(height))
     }
 }
-fn position(
-    side: &str,
-    x: f64,
-    y: f64,
-    screen_width: f64,
-    screen_height: f64,
-    width: f64,
-    height: f64,
-) -> (f64, f64) {
-    (
-        if side == "left" {
-            x
-        } else {
-            x + screen_width - width
-        },
-        y + (screen_height - height) / 2.0,
-    )
+fn horizontal_origin(side: &str, x: f64, screen_width: f64, width: f64) -> f64 {
+    if side == "left" {
+        x
+    } else {
+        x + screen_width - width
+    }
 }
 fn layout(app: &tauri::AppHandle) -> tauri::Result<()> {
     let Some(window) = app.get_webview_window("edge") else {
@@ -241,16 +315,21 @@ fn layout(app: &tauri::AppHandle) -> tauri::Result<()> {
     let s = state();
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
-    let (width, height) = dimensions(s.expanded || s.closing, area.size.height as f64 / scale);
-    let (x, y) = position(
+    let available = area.size.height as f64 / scale;
+    let (width, height) = dimensions(s.expanded || s.closing, available);
+    let x = horizontal_origin(
         &s.side,
         area.position.x as f64,
-        area.position.y as f64,
         area.size.width as f64,
-        area.size.height as f64,
         width * scale,
-        height * scale,
     );
+    let y = vertical_origin(
+        area.position.y as f64 / scale,
+        available,
+        height,
+        s.notch_height,
+        s.offset,
+    ) * scale;
     let size = window.inner_size()?;
     if size.width != (width * scale).round() as u32
         || size.height != (height * scale).round() as u32
@@ -279,13 +358,36 @@ mod tests {
     }
     #[test]
     fn placement_respects_display_origin_and_both_edges() {
-        assert_eq!(
-            position("left", -1920.0, 100.0, 1920.0, 1080.0, 240.0, 580.0),
-            (-1920.0, 350.0)
-        );
-        assert_eq!(
-            position("right", -1920.0, 100.0, 1920.0, 1080.0, 240.0, 580.0),
-            (-240.0, 350.0)
-        );
+        assert_eq!(horizontal_origin("left", -1920.0, 1920.0, 240.0), -1920.0);
+        assert_eq!(horizontal_origin("right", -1920.0, 1920.0, 240.0), -240.0);
+    }
+
+    #[test]
+    fn dragging_moves_the_notch_and_never_past_either_end() {
+        // A 900pt work area starting at 25, a 220pt notch and a 720pt panel:
+        // the notch's centre can travel between 135 and 815.
+        let (origin, available, notch, panel) = (25.0, 900.0, 220.0, 720.0);
+        assert_eq!(offset_for_center(475.0, origin, available, notch), 0.5);
+        assert_eq!(offset_for_center(135.0, origin, available, notch), 0.0);
+        // Dragged well past the bottom of the display, it stops at the end
+        // rather than leaving the notch somewhere unreachable.
+        assert_eq!(offset_for_center(4000.0, origin, available, notch), 1.0);
+
+        // The panel is taller than the notch's travel, so at either end most of
+        // it hangs off the screen. That part is empty and click-through; what
+        // matters is that the notch itself lands on the display.
+        let top = vertical_origin(origin, available, panel, notch, 0.0);
+        assert_eq!(top + panel / 2.0, 135.0);
+        let bottom = vertical_origin(origin, available, panel, notch, 1.0);
+        assert_eq!(bottom + panel / 2.0, 815.0);
+        assert_eq!(vertical_origin(origin, available, panel, notch, 0.5), 115.0);
+    }
+
+    #[test]
+    fn a_notch_taller_than_the_display_still_lands_on_it() {
+        // No travel to speak of: every offset has to resolve to the same place
+        // rather than dividing by a zero-width range.
+        assert_eq!(offset_for_center(500.0, 0.0, 400.0, 900.0), DEFAULT_OFFSET);
+        assert_eq!(vertical_origin(0.0, 400.0, 400.0, 900.0, 1.0), 0.0);
     }
 }

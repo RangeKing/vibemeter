@@ -8,13 +8,15 @@ import type { AppSettings, EdgeState, ProviderUsage, RateWindow, SourceStatus } 
 import { EdgeSidebar, notchHeightFor } from "./EdgeSidebar";
 
 const mocks = vi.hoisted(() => ({
-  state: { enabled: true, expanded: true, pinned: false, side: "right" } as EdgeState,
+  state: { enabled: true, expanded: true, pinned: false, side: "right", offset: 0.5 } as EdgeState,
   listener: undefined as undefined | ((event: { payload: EdgeState }) => void),
   expand: vi.fn(),
   settings: vi.fn(),
   main: vi.fn(),
   providers: vi.fn(),
   sources: vi.fn(),
+  placement: vi.fn(),
+  setSetting: vi.fn(),
   refreshProviders: vi.fn(),
   credentialsAllowed: "true",
   edgeSidebarAgents: "auto",
@@ -33,6 +35,8 @@ vi.mock("../lib/api", () => ({
     showMain: mocks.main,
     providers: mocks.providers,
     sources: mocks.sources,
+    setEdgePlacement: mocks.placement,
+    setSetting: mocks.setSetting,
     refreshProviders: mocks.refreshProviders,
     settings: async (): Promise<Partial<AppSettings>> => ({
       credentialsAllowed: mocks.credentialsAllowed,
@@ -90,10 +94,12 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   await i18n.changeLanguage("en-US");
-  mocks.state = { enabled: true, expanded: true, pinned: false, side: "right" };
+  mocks.state = { enabled: true, expanded: true, pinned: false, side: "right", offset: 0.5 };
   mocks.credentialsAllowed = "true";
   mocks.edgeSidebarAgents = "auto";
   mocks.refreshProviders.mockResolvedValue([]);
+  mocks.placement.mockResolvedValue(undefined);
+  mocks.setSetting.mockResolvedValue(undefined);
   mocks.sources.mockResolvedValue([
     source("claude-code"),
     source("codex"),
@@ -239,6 +245,42 @@ describe("Edge sidebar", () => {
     await mount();
     expect(screen.getByText("Every Agent is hidden")).toBeTruthy();
     expect(screen.queryByText("No Agent detected")).toBeNull();
+  });
+
+  it("drags along the edge without selecting the ring it started on", async () => {
+    await mount();
+    const strip = document.querySelector(".edge-notch") as HTMLElement;
+    strip.setPointerCapture = vi.fn();
+    strip.releasePointerCapture = vi.fn();
+    // The page reports how long the notch is so the clamp knows the travel.
+    expect(mocks.placement).toHaveBeenCalledWith(undefined, 276);
+    mocks.placement.mockClear();
+
+    await act(async () => {
+      fireEvent.pointerDown(strip, { button: 0, pointerId: 1, screenY: 500 });
+      // Under the threshold: still a click, nothing moves.
+      fireEvent.pointerMove(strip, { pointerId: 1, screenY: 502 });
+    });
+    expect(mocks.placement).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.pointerMove(strip, { pointerId: 1, screenY: 560 });
+    });
+    expect(mocks.placement).toHaveBeenCalledWith(expect.any(Number), 276);
+
+    // A drag that passes over a ring must not switch the card to it.
+    const codex = screen.getByRole("button", { name: /^Codex/ });
+    await act(async () => {
+      fireEvent.pointerEnter(codex);
+      fireEvent.click(codex);
+    });
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Claude Code");
+
+    // The offset is written back once, at the end, not once per frame.
+    await act(async () => {
+      fireEvent.pointerUp(strip, { pointerId: 1, screenY: 560 });
+    });
+    expect(mocks.setSetting).toHaveBeenCalledExactlyOnceWith("edgeSidebarOffset", "0.5");
   });
 
   it("keeps the notch inside the folded panel however many providers report", async () => {

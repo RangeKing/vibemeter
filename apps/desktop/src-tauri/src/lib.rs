@@ -308,6 +308,16 @@ fn set_edge_expanded(app: AppHandle, expanded: bool, pinned: Option<bool>) -> Ap
 }
 
 #[tauri::command]
+fn set_edge_placement(
+    app: AppHandle,
+    center_y: Option<f64>,
+    notch_height: Option<f64>,
+) -> AppResult<()> {
+    edge::set_placement(&app, center_y, notch_height)
+        .map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+#[tauri::command]
 fn get_notch_state() -> tray::NotchUiState {
     tray::notch_state()
 }
@@ -804,6 +814,7 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("notchEnabled", "true"),
             ("edgeSidebarEnabled", "false"),
             ("edgeSidebarSide", "right"),
+            ("edgeSidebarOffset", "0.5"),
             ("edgeSidebarAgents", "auto"),
             ("menuBarEnabled", "true"),
             ("dataPageAgents", "auto"),
@@ -835,11 +846,14 @@ async fn set_app_setting(
             _ => None,
         });
     }
-    if key == "edgeSidebarEnabled" || key == "edgeSidebarSide" {
+    if key == "edgeSidebarEnabled" || key == "edgeSidebarSide" || key == "edgeSidebarOffset" {
         edge::configure(
             &app,
             (key == "edgeSidebarEnabled").then_some(value == "true"),
             (key == "edgeSidebarSide").then_some(value.as_str()),
+            (key == "edgeSidebarOffset")
+                .then(|| value.parse::<f64>().ok())
+                .flatten(),
         )
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     }
@@ -872,6 +886,9 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
         "locale" => matches!(value, "system" | "zh-CN" | "en-US"),
         "theme" => matches!(value, "system" | "light" | "dark"),
         "edgeSidebarSide" => matches!(value, "left" | "right"),
+        "edgeSidebarOffset" => value
+            .parse::<f64>()
+            .is_ok_and(|offset| (0.0..=1.0).contains(&offset)),
         "onboardingComplete"
         | "credentialsAllowed"
         | "cursorDashboardUsage"
@@ -1090,6 +1107,10 @@ pub fn run() {
                 &database
                     .setting("edgeSidebarSide")?
                     .unwrap_or_else(|| "right".into()),
+                database
+                    .setting("edgeSidebarOffset")?
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .unwrap_or(0.5),
             )?;
 
             #[cfg(debug_assertions)]
@@ -1108,7 +1129,7 @@ pub fn run() {
             }
             #[cfg(debug_assertions)]
             if std::env::var_os("VIBEMETER_PREVIEW_EDGE").is_some() {
-                edge::configure(app.handle(), Some(true), None)?;
+                edge::configure(app.handle(), Some(true), None, None)?;
                 edge::set_expanded(app.handle(), true, Some(true))?;
             }
 
@@ -1221,6 +1242,7 @@ pub fn run() {
             get_notch_state,
             get_edge_state,
             set_edge_expanded,
+            set_edge_placement,
             set_notch_pinned,
             set_notch_activity,
             set_notch_layout,
@@ -1324,6 +1346,10 @@ mod startup_tests {
     fn data_page_agent_setting_accepts_auto_and_known_agents_only() {
         // The sidebar lists agents, including the ones with no subscription to
         // read, so it validates against the same set the rest of the app does.
+        assert!(validate_setting("edgeSidebarOffset", "0").is_ok());
+        assert!(validate_setting("edgeSidebarOffset", "0.73").is_ok());
+        assert!(validate_setting("edgeSidebarOffset", "1.4").is_err());
+        assert!(validate_setting("edgeSidebarOffset", "top").is_err());
         assert!(validate_setting("edgeSidebarAgents", "auto").is_ok());
         assert!(validate_setting("edgeSidebarAgents", "[]").is_ok());
         assert!(validate_setting("edgeSidebarAgents", r#"["claude-code","zcode"]"#).is_ok());

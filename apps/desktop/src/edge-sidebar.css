@@ -58,7 +58,19 @@ html[data-surface="edge"] #root {
   width: var(--edge-depth);
   flex: 0 0 var(--edge-depth);
   pointer-events: auto;
+  cursor: grab;
   filter: drop-shadow(0 6px 20px rgba(0, 0, 0, 0.5));
+}
+
+.edge-notch.is-dragging,
+.edge-notch.is-dragging .edge-ring-cell {
+  cursor: grabbing;
+}
+
+/* The rings stop reacting mid-drag: a ring that lit up as the strip slid past
+   the pointer would read as a selection the drag did not make. */
+.edge-notch.is-dragging .edge-ring-cell:hover {
+  transform: none;
 }
 
 .edge-notch-svg {

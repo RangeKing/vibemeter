@@ -244,6 +244,7 @@ export interface WorkPulse {
 }
 
 export interface EdgeState {
+  offset: number;
   enabled: boolean;
   expanded: boolean;
   pinned: boolean;
@@ -1032,6 +1033,7 @@ export interface AppSettings {
   edgeSidebarSide?: string;
   notchEnabled: string;
   menuBarEnabled: string;
+  edgeSidebarOffset: string;
   edgeSidebarAgents: string;
   dataPageAgents: string;
 }
