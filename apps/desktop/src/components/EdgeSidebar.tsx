@@ -1,22 +1,53 @@
+import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
-import { Activity, ArrowUpRight, ChevronLeft, ChevronRight, Pin, Settings2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { ArrowUpRight, ChevronLeft, ChevronRight, Gauge, Pin, Settings2, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
-import { agentName } from "../lib/format";
+import {
+  formatResetRemaining,
+  providerAgentIcon,
+  providerDisplayName,
+  quotaSummary,
+  resetRemainingSeconds,
+  resetTime,
+  type QuotaSummary,
+} from "../lib/quota";
 import { sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
-import { useLiveSnapshot } from "../lib/useLiveSnapshot";
-import type { EdgeState, LiveSession, Locale } from "../types";
+import type { EdgeState, Locale, ProviderUsage } from "../types";
 import { AgentIcon } from "./AgentIcon";
-import { formatLiveElapsed, liveElapsedEnd, notchPulseValue } from "./NotchSurface";
 
 export const EDGE_FOLD_GRACE_MS = 450;
+/** How often the sidebar asks the providers for a fresh reading. */
+export const EDGE_QUOTA_REFRESH_MS = 5 * 60_000;
+/** How often it re-reads the in-memory snapshot a refresh anywhere leaves. */
+const EDGE_SNAPSHOT_POLL_MS = 30_000;
+
 const initialState: EdgeState = { enabled: false, expanded: false, pinned: false, side: "right" };
 
 const NOTCH_WIDTH = 68;
+/** Keeps the ring column clear of the flare at both ends. */
+const NOTCH_PADDING = 30;
 const RING_DIAMETER = 44;
 const RING_RADIUS = 19;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+/** Ring plus its percentage caption. */
+const RING_CELL_HEIGHT = RING_DIAMETER + 4 + 11;
+const RING_GAP = 14;
+const NOTCH_FOOTER_HEIGHT = 14 + 28;
+/** The folded panel in `edge.rs` is this tall; the notch cannot outgrow it. */
+const NOTCH_MAX_HEIGHT = 320;
+const NOTCH_MIN_HEIGHT = 180;
+
+export function notchHeightFor(ringCount: number): number {
+  const rings = Math.max(1, ringCount);
+  const content =
+    NOTCH_PADDING * 2 +
+    rings * RING_CELL_HEIGHT +
+    (rings - 1) * RING_GAP +
+    NOTCH_FOOTER_HEIGHT;
+  return Math.min(NOTCH_MAX_HEIGHT, Math.max(NOTCH_MIN_HEIGHT, content));
+}
 
 function SideNotchPath({
   side,
@@ -44,48 +75,25 @@ function SideNotchPath({
   );
 }
 
-function providerStatus(sessions: LiveSession[]): {
-  status: "running" | "waiting" | "error" | "idle";
-  fraction: number;
-  label: string;
-} {
-  if (!sessions.length) {
-    return { status: "idle", fraction: 0, label: "idle" };
-  }
-  const hasError = sessions.some(
-    (s) => s.status === "error" || s.pulse.lifecycle.value === "error",
-  );
-  if (hasError) {
-    return { status: "error", fraction: 1, label: "err" };
-  }
-  const hasWaiting = sessions.some(
-    (s) => s.status === "waiting" || s.pulse.lifecycle.value === "waiting",
-  );
-  if (hasWaiting) {
-    return { status: "waiting", fraction: 0.85, label: "wait" };
-  }
-  const hasRunning = sessions.some(
-    (s) => s.status === "running" || s.pulse.lifecycle.value === "running",
-  );
-  if (hasRunning) {
-    return { status: "running", fraction: 0.72, label: `${sessions.length} act` };
-  }
-  return { status: "idle", fraction: 0.2, label: "idle" };
-}
-
-export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
+export function EdgeSidebar({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
-  const snapshot = useLiveSnapshot();
   const [state, setState] = useState(initialState);
-  const [provider, setProvider] = useState<LiveSession["agent"]>();
-  const [jumpError, setJumpError] = useState<string>();
+  const [selected, setSelected] = useState<string>();
   const [commandError, setCommandError] = useState(false);
-  const [pending, setPending] = useState<string>();
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => new Date());
+  const [tailTop, setTailTop] = useState(48);
   const stateRef = useRef(state);
   const foldTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const panelRef = useRef<HTMLElement>(null);
+  const sheetRef = useRef<HTMLElement>(null);
   const ringRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  const quota = useQuery({
+    queryKey: ["edge-quota"],
+    queryFn: api.providers,
+    refetchInterval: EDGE_SNAPSHOT_POLL_MS,
+  });
 
   const cancelFold = () => {
     clearTimeout(foldTimer.current);
@@ -113,7 +121,7 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
       .catch(() => {
         if (!disposed) setCommandError(true);
       });
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setNow(new Date()), 30_000);
     return () => {
       disposed = true;
       cleanup?.();
@@ -121,6 +129,33 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
       clearTimeout(foldTimer.current);
     };
   }, []);
+
+  const credentialsAllowed = settings.data?.credentialsAllowed === "true";
+  const cursorDashboardUsage = settings.data?.cursorDashboardUsage === "true";
+  const useSystemProxy = settings.data?.useSystemProxy === "true";
+
+  // Quota is a network reading, not a local file: it only moves when someone
+  // asks. Keep asking on the sidebar's own clock so a pinned panel does not sit
+  // on whatever the menu bar last happened to fetch.
+  useEffect(() => {
+    if (!settings.data || !credentialsAllowed) return;
+    let disposed = false;
+    const refresh = () => {
+      void api
+        .refreshProviders(true, cursorDashboardUsage, useSystemProxy)
+        .then(() => {
+          if (!disposed) void quota.refetch();
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    const timer = setInterval(refresh, EDGE_QUOTA_REFRESH_MS);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [Boolean(settings.data), credentialsAllowed, cursorDashboardUsage, useSystemProxy]);
 
   const expand = async (expanded: boolean, pinned?: boolean) => {
     cancelFold();
@@ -148,46 +183,41 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
     }, EDGE_FOLD_GRACE_MS);
   };
 
-  const sessions = snapshot.data?.sessions ?? [];
-  const providers = useMemo(
-    () => [...new Set(sessions.map((session) => session.agent))],
-    [sessions],
-  );
-  const selectedProvider =
-    provider && providers.includes(provider) ? provider : undefined;
-  const visible = sessions.filter(
-    (session) => !selectedProvider || session.agent === selectedProvider,
-  );
+  const providers: ProviderUsage[] = quota.data ?? [];
+  const active =
+    providers.find((provider) => provider.provider === selected) ?? providers[0];
+  const summary: QuotaSummary | undefined = active ? quotaSummary(active) : undefined;
 
-  const jump = async (session: LiveSession) => {
-    if (pending) return;
-    setPending(session.id);
-    setJumpError(undefined);
+  const openMain = async (settingsPage = false) => {
     try {
-      await api.jumpToLiveSession(session.id);
-    } catch {
-      setJumpError(session.id);
-    } finally {
-      setPending(undefined);
-    }
-  };
-
-  const openMain = async (settings = false) => {
-    try {
-      if (settings) await api.showSettings();
+      if (settingsPage) await api.showSettings();
       else await api.showMain();
     } catch {
       setCommandError(true);
     }
   };
 
-  const notchHeight = Math.max(180, 56 + Math.max(1, providers.length) * 66 + 36);
+  const notchHeight = notchHeightFor(providers.length);
 
-  const selectedIndex = selectedProvider ? providers.indexOf(selectedProvider) : -1;
-  const tailTop =
-    selectedIndex >= 0
-      ? 28 + selectedIndex * 66 + 22 - 7
-      : 50;
+  // Point the tail at the ring it belongs to by measuring both, so it keeps up
+  // with a provider list that grows or shrinks between readings.
+  useLayoutEffect(() => {
+    const sheet = sheetRef.current;
+    const ring = active ? ringRefs.current.get(active.provider) : undefined;
+    if (!sheet || !ring) return;
+    const sheetRect = sheet.getBoundingClientRect();
+    const ringRect = ring.getBoundingClientRect();
+    if (!sheetRect.height || !ringRect.height) return;
+    const center = ringRect.top + RING_DIAMETER / 2 - sheetRect.top;
+    setTailTop(Math.round(Math.min(Math.max(center, 18), sheetRect.height - 18)));
+  }, [active, providers.length, state.expanded, state.side]);
+
+  const select = (provider: string) => {
+    setSelected(provider);
+    if (!stateRef.current.expanded) void expand(true);
+  };
+
+  const refreshedAt = active?.refreshedAt ? new Date(active.refreshedAt) : undefined;
 
   return (
     <main
@@ -217,35 +247,33 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
         />
         <div className="edge-notch-body">
           <div className="edge-provider-rings">
-            {providers.map((agent) => {
-              const agentSessions = sessions.filter((s) => s.agent === agent);
-              const info = providerStatus(agentSessions);
-              const isSelected = selectedProvider === agent;
+            {providers.map((provider) => {
+              const info = quotaSummary(provider);
+              const isSelected = active?.provider === provider.provider;
+              const remaining = info.remainingPercent;
+              const name = providerDisplayName(provider.provider);
+              const label =
+                remaining === undefined ? "—" : `${Math.round(remaining)}%`;
               const dashOffset =
-                RING_CIRCUMFERENCE * (1 - Math.min(Math.max(info.fraction, 0), 1));
+                RING_CIRCUMFERENCE * (1 - Math.min(Math.max((remaining ?? 0) / 100, 0), 1));
               return (
                 <button
-                  key={agent}
+                  key={provider.provider}
                   ref={(el) => {
-                    if (el) ringRefs.current.set(agent, el);
-                    else ringRefs.current.delete(agent);
+                    if (el) ringRefs.current.set(provider.provider, el);
+                    else ringRefs.current.delete(provider.provider);
                   }}
-                  className={`edge-ring-cell ${isSelected ? "is-selected" : ""} status-${info.status}`}
-                  title={agentName(agent)}
-                  aria-label={agentName(agent)}
+                  className={`edge-ring-cell ${isSelected ? "is-selected" : ""} band-${info.band}`}
+                  title={name}
+                  aria-label={
+                    remaining === undefined
+                      ? `${name} · ${t("edge.unavailable")}`
+                      : `${name} · ${t("quota.remaining", { value: Math.round(remaining) })}`
+                  }
                   aria-pressed={isSelected}
-                  onPointerEnter={() => {
-                    setProvider(agent);
-                    if (!stateRef.current.expanded) void expand(true);
-                  }}
-                  onFocus={() => {
-                    setProvider(agent);
-                    if (!stateRef.current.expanded) void expand(true);
-                  }}
-                  onClick={() => {
-                    setProvider(agent);
-                    if (!stateRef.current.expanded) void expand(true);
-                  }}
+                  onPointerEnter={() => select(provider.provider)}
+                  onFocus={() => select(provider.provider)}
+                  onClick={() => select(provider.provider)}
                 >
                   <div className="edge-ring-wrapper">
                     <svg
@@ -254,28 +282,25 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
                       height={RING_DIAMETER}
                       viewBox={`0 0 ${RING_DIAMETER} ${RING_DIAMETER}`}
                     >
-                      <circle
-                        cx="22"
-                        cy="22"
-                        r={RING_RADIUS}
-                        className="edge-ring-track"
-                      />
-                      <circle
-                        cx="22"
-                        cy="22"
-                        r={RING_RADIUS}
-                        className={`edge-ring-arc arc-${info.status}`}
-                        style={{
-                          strokeDasharray: RING_CIRCUMFERENCE,
-                          strokeDashoffset: dashOffset,
-                        }}
-                      />
+                      <circle cx="22" cy="22" r={RING_RADIUS} className="edge-ring-track" />
+                      {remaining === undefined ? null : (
+                        <circle
+                          cx="22"
+                          cy="22"
+                          r={RING_RADIUS}
+                          className={`edge-ring-arc arc-${info.band}`}
+                          style={{
+                            strokeDasharray: RING_CIRCUMFERENCE,
+                            strokeDashoffset: dashOffset,
+                          }}
+                        />
+                      )}
                     </svg>
                     <div className="edge-ring-icon">
-                      <AgentIcon agent={agent} size={20} />
+                      <AgentIcon agent={providerAgentIcon(provider.provider)} size={20} />
                     </div>
                   </div>
-                  <span className="edge-ring-label">{info.label}</span>
+                  <span className="edge-ring-label">{label}</span>
                 </button>
               );
             })}
@@ -293,6 +318,7 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
 
       {/* CodeNotch Floating TooltipCard */}
       <section
+        ref={sheetRef}
         className="edge-sheet"
         inert={!state.expanded}
         aria-hidden={!state.expanded}
@@ -305,12 +331,12 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
         <div className="edge-detail">
           <header className="edge-card-header">
             <div className="edge-card-title">
-              {selectedProvider ? (
-                <AgentIcon agent={selectedProvider} size={18} />
+              {active ? (
+                <AgentIcon agent={providerAgentIcon(active.provider)} size={18} />
               ) : (
-                <Activity size={18} />
+                <Gauge size={18} />
               )}
-              <h1>{selectedProvider ? agentName(selectedProvider) : t("edge.recent")}</h1>
+              <h1>{active ? providerDisplayName(active.provider) : t("edge.quota")}</h1>
             </div>
             <div className="edge-card-actions">
               <button
@@ -335,84 +361,80 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
             </div>
           </header>
 
-          <div className="edge-session-list" key={selectedProvider ?? "all"}>
-            {snapshot.isLoading ? (
+          <div className="edge-quota-list" key={active?.provider ?? "none"}>
+            {!credentialsAllowed && settings.data ? (
+              <button className="edge-enable-quota" onClick={() => void openMain(true)}>
+                <span>
+                  <strong>{t("quota.noQuota")}</strong>
+                  <small>{t("quota.enableInSettings")}</small>
+                </span>
+                <ArrowUpRight size={15} />
+              </button>
+            ) : quota.isLoading || settings.isLoading ? (
               <p className="edge-empty" role="status">
                 {t("edge.loading")}
               </p>
-            ) : snapshot.isError ? (
+            ) : quota.isError ? (
               <div className="edge-empty" role="alert">
                 <strong>{t("edge.error")}</strong>
-                <button onClick={() => void snapshot.refetch()}>
-                  {t("edge.retry")}
-                </button>
+                <button onClick={() => void quota.refetch()}>{t("edge.retry")}</button>
               </div>
-            ) : !visible.length ? (
+            ) : !active ? (
               <div className="edge-empty">
-                <Activity size={28} />
+                <Gauge size={28} />
                 <strong>{t("edge.empty")}</strong>
                 <p>{t("edge.emptyBody")}</p>
               </div>
+            ) : !summary?.windows.length ? (
+              <div className="edge-empty">
+                <Gauge size={28} />
+                <strong>{t("edge.unavailable")}</strong>
+                <p>{t("edge.unavailableBody")}</p>
+              </div>
             ) : (
-              visible.map((session, index) => {
-                const exact = session.pulse.lifecycle.availability === "available";
-                const lifecycle = exact
-                  ? session.pulse.lifecycle.value ?? "idle"
-                  : "unknown";
-                const pulse = notchPulseValue(session);
+              summary.windows.map((window) => {
+                const used = window.usedPercent;
+                const remaining =
+                  used === undefined ? undefined : Math.max(0, Math.min(100, 100 - used));
+                const band =
+                  remaining === undefined
+                    ? "unknown"
+                    : remaining < 20
+                      ? "critical"
+                      : remaining < 50
+                        ? "warning"
+                        : "steady";
+                const reset = resetTime(window, locale);
+                const resetSeconds = resetRemainingSeconds(window, now);
+                const resetLabel = reset
+                  ? t("quota.resetsAt", { time: reset })
+                  : t("quota.resetUnknown");
+                const countdown =
+                  resetSeconds === undefined
+                    ? undefined
+                    : t("quota.resetIn", { time: formatResetRemaining(resetSeconds, locale) });
                 return (
-                  <article
-                    key={session.id}
-                    className={`edge-session status-${lifecycle}`}
-                    style={{ "--edge-index": index } as CSSProperties}
-                  >
-                    <div className="edge-session-heading">
-                      <AgentIcon agent={session.agent} size={14} />
-                      <strong title={session.projectLabel}>
-                        {session.projectLabel}
-                      </strong>
-                      <span className="edge-status-dot" />
-                    </div>
-                    <h2>{session.conversationTitle || session.projectLabel}</h2>
-                    <div className="edge-session-meta">
+                  <article className={`edge-quota-window band-${band}`} key={window.id}>
+                    <div className="edge-quota-heading">
+                      <strong>{t(window.label, { defaultValue: window.label })}</strong>
                       <span>
-                        {exact
-                          ? t(`live.status.${lifecycle}`, {
-                              defaultValue: t("edge.unavailable"),
-                            })
-                          : t("edge.unavailable")}
+                        {remaining === undefined
+                          ? t("edge.unavailable")
+                          : t("quota.remaining", { value: Math.round(remaining) })}
                       </span>
-                      <time>
-                        {formatLiveElapsed(
-                          session.startedAt,
-                          liveElapsedEnd(session, now),
-                        )}
-                      </time>
                     </div>
-                    <p className="edge-phase">
-                      {t(`notch.phase.${pulse}`, {
-                        defaultValue: t(`live.pulse.value.${pulse}`, {
-                          defaultValue: t("edge.unavailable"),
-                        }),
-                      })}
+                    <div className="edge-quota-track" aria-hidden="true">
+                      <i style={{ width: `${remaining ?? 0}%` }} />
+                    </div>
+                    <p className="edge-quota-reset">
+                      {resetLabel}
+                      {countdown ? <span> · {countdown}</span> : null}
                     </p>
-                    <button
-                      className="edge-jump"
-                      disabled={Boolean(pending)}
-                      onClick={() => void jump(session)}
-                    >
-                      {t("edge.jump")}
-                      <ArrowUpRight size={13} />
-                    </button>
-                    {jumpError === session.id ? (
-                      <p className="edge-error" role="alert">
-                        {t("edge.jumpError")}
-                      </p>
-                    ) : null}
                   </article>
                 );
               })
             )}
+            {active?.stale ? <p className="edge-note">{t("edge.stale")}</p> : null}
           </div>
 
           {commandError ? (
@@ -422,14 +444,19 @@ export function EdgeSidebar({ locale: _locale }: { locale: Locale }) {
           ) : null}
 
           <footer>
-            <span>{t("edge.count", { count: visible.length })}</span>
+            <span>
+              {refreshedAt && !Number.isNaN(refreshedAt.getTime())
+                ? t("edge.refreshedAt", {
+                    time: new Intl.DateTimeFormat(locale, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    }).format(refreshedAt),
+                  })
+                : t("edge.quota")}
+            </span>
             <button onClick={() => void openMain()}>
               {t("edge.overview")}
-              {state.side === "left" ? (
-                <ChevronRight size={13} />
-              ) : (
-                <ChevronLeft size={13} />
-              )}
+              {state.side === "left" ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
             </button>
           </footer>
         </div>

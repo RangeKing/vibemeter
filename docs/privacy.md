@@ -64,4 +64,4 @@ Memory adapters inspect only source-provided structured activity signals. Path d
 
 ## Edge sidebar
 
-The optional edge panel uses the existing sanitized live-session snapshot and existing source-jump commands. It adds no source reader, global input hook, telemetry, approval or execution capability. Hover is handled only inside the panel's own window; periodic checks read display geometry, not cursor or application activity. Pinning changes only VibeMeter's presentation.
+The optional edge panel reads the existing provider quota snapshot: the same rate-window readings the menu bar shows, refreshed through the existing provider commands and only while the credentials permission is on. It adds no source reader, global input hook, telemetry, approval or execution capability. Hover is handled only inside the panel's own window; periodic checks read display geometry, not cursor or application activity. Pinning changes only VibeMeter's presentation.

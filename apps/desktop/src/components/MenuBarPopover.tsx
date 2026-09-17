@@ -11,14 +11,7 @@ import type { Locale } from "../types";
 import { focusHeatmapIndex, HeatmapCell } from "./HeatmapCell";
 import { RangePicker } from "./RangePicker";
 import { ErrorState, LoadingState } from "./ui";
-import { formatResetRemaining, resetRemainingSeconds, resetTime } from "../lib/quota";
-
-function providerName(provider: string): string {
-  if (provider === "claude") return "Claude";
-  if (provider === "codex") return "Codex";
-  if (provider === "cursor") return "Cursor";
-  return provider;
-}
+import { formatResetRemaining, providerDisplayName, resetRemainingSeconds, resetTime } from "../lib/quota";
 
 export function MenuBarPopover({ locale }: { locale: Locale }) {
   const { t } = useTranslation();
@@ -136,15 +129,15 @@ export function MenuBarPopover({ locale }: { locale: Locale }) {
           const remaining = window.usedPercent === undefined ? undefined : Math.max(0, Math.min(100, 100 - window.usedPercent));
           const reset = resetTime(window, locale);
           const resetSeconds = resetRemainingSeconds(window, now);
-          const resetLabel = reset ? t("menubar.resetsAt", { time: reset }) : t("menubar.resetUnknown");
-          const countdownLabel = resetSeconds === undefined ? undefined : t("menubar.resetIn", { time: formatResetRemaining(resetSeconds, locale) });
+          const resetLabel = reset ? t("quota.resetsAt", { time: reset }) : t("quota.resetUnknown");
+          const countdownLabel = resetSeconds === undefined ? undefined : t("quota.resetIn", { time: formatResetRemaining(resetSeconds, locale) });
           const resetTitle = countdownLabel ? `${resetLabel} · ${countdownLabel}` : resetLabel;
           return <div className={`menu-quota-row ${remaining !== undefined && remaining < 20 ? "critical" : remaining !== undefined && remaining < 50 ? "warning" : ""}`} key={`${provider.provider}-${window.id}`}>
-            <div className="menu-quota-copy"><span>{providerName(provider.provider)} · {t(window.label, { defaultValue: window.label })}</span><strong>{remaining === undefined ? t("metrics.unavailable") : t("menubar.remaining", { value: Math.round(remaining) })}</strong></div>
+            <div className="menu-quota-copy"><span>{providerDisplayName(provider.provider)} · {t(window.label, { defaultValue: window.label })}</span><strong>{remaining === undefined ? t("metrics.unavailable") : t("quota.remaining", { value: Math.round(remaining) })}</strong></div>
             <div className="menu-quota-track" aria-hidden="true"><i style={{ width: `${remaining ?? 0}%` }} /></div>
             <small title={resetTitle}><span>{resetLabel}</span>{countdownLabel ? <strong className="menu-quota-countdown"> · {countdownLabel}</strong> : null}</small>
           </div>;
-        })}</div> : <button className="menu-enable-quota" onClick={() => void open(true)}><span><strong>{t("menubar.noQuota")}</strong><small>{t("menubar.enableInSettings")}</small></span><ArrowUpRight size={15} /></button>}
+        })}</div> : <button className="menu-enable-quota" onClick={() => void open(true)}><span><strong>{t("quota.noQuota")}</strong><small>{t("quota.enableInSettings")}</small></span><ArrowUpRight size={15} /></button>}
       </section>
       <section className="menu-provider-status">
         <header>

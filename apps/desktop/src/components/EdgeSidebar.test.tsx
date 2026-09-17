@@ -1,79 +1,194 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
-import type { EdgeState, LiveSession } from "../types";
-import { EdgeSidebar } from "./EdgeSidebar";
+import type { AppSettings, EdgeState, ProviderUsage, RateWindow } from "../types";
+import { EdgeSidebar, notchHeightFor } from "./EdgeSidebar";
+
 const mocks = vi.hoisted(() => ({
   state: { enabled: true, expanded: true, pinned: false, side: "right" } as EdgeState,
   listener: undefined as undefined | ((event: { payload: EdgeState }) => void),
-  expand: vi.fn(), jump: vi.fn(), settings: vi.fn(), main: vi.fn(), refetch: vi.fn(),
-  sessions: [] as LiveSession[], error: false,
+  expand: vi.fn(),
+  settings: vi.fn(),
+  main: vi.fn(),
+  providers: vi.fn(),
+  refreshProviders: vi.fn(),
+  credentialsAllowed: "true",
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (_name, cb) => { mocks.listener = cb; return () => {}; }) }));
-vi.mock("../lib/api", () => ({ api: {
-  edgeState: async () => mocks.state, setEdgeExpanded: mocks.expand, jumpToLiveSession: mocks.jump, showSettings: mocks.settings, showMain: mocks.main,
-} }));
-vi.mock("../lib/useLiveSnapshot", () => ({ useLiveSnapshot: () => ({ data: { sessions: mocks.sessions, attentionAvailable: true, attentionQueue: [] }, isError: mocks.error, isLoading: false, refetch: mocks.refetch }) }));
-function session(agent: LiveSession["agent"], available = true): LiveSession {
-  return { id: agent, sourceSessionId: agent, agent, projectLabel: `${agent}-project`, conversationTitle: `${agent} conversation`, status: "running", phase: "thinking", startedAt: "2026-09-08T00:00:00Z", updatedAt: "2026-09-08T00:01:00Z", actions: [], pulse: {
-    lifecycle: { availability: available ? "available" : "not-recorded", value: available ? "running" : undefined, evidenceLevel: "observed", sourceCoverage: available ? "exact" : "unavailable" },
-    workPhase: { availability: "available", value: "thinking", evidenceLevel: "derived", sourceCoverage: "exact" },
-    attentionSignal: { availability: "available", value: "none", evidenceLevel: "derived", sourceCoverage: "exact" },
-    freshness: { availability: "available", value: "fresh", evidenceLevel: "derived", sourceCoverage: "exact" },
-  } };
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_name, cb) => {
+    mocks.listener = cb;
+    return () => {};
+  }),
+}));
+vi.mock("../lib/api", () => ({
+  api: {
+    edgeState: async () => mocks.state,
+    setEdgeExpanded: mocks.expand,
+    showSettings: mocks.settings,
+    showMain: mocks.main,
+    providers: mocks.providers,
+    refreshProviders: mocks.refreshProviders,
+    settings: async (): Promise<Partial<AppSettings>> => ({
+      credentialsAllowed: mocks.credentialsAllowed,
+      cursorDashboardUsage: "false",
+      useSystemProxy: "false",
+    }),
+  },
+}));
+
+function window_(id: string, label: string, usedPercent?: number, resetAt?: string): RateWindow {
+  return { id, label, usedPercent, resetAt, provenance: "observed" };
 }
+function provider(name: string, windows: RateWindow[], available = true): ProviderUsage {
+  return {
+    provider: name,
+    available,
+    source: `${name}-oauth`,
+    windows,
+    health: { state: "operational", description: "", statusUrl: "https://example.test" },
+    refreshedAt: "2026-09-17T02:00:00Z",
+    stale: false,
+  };
+}
+
 async function mount() {
-  await act(async () => { render(<I18nextProvider i18n={i18n}><EdgeSidebar locale="en-US" /></I18nextProvider>); });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={client}>
+          <EdgeSidebar locale="en-US" />
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+  });
 }
+
 beforeEach(async () => {
-  vi.useFakeTimers(); vi.clearAllMocks(); await i18n.changeLanguage("en-US");
+  vi.useFakeTimers();
+  vi.clearAllMocks();
+  await i18n.changeLanguage("en-US");
   mocks.state = { enabled: true, expanded: true, pinned: false, side: "right" };
-  mocks.sessions = [session("codex"), session("claude-code", false)]; mocks.error = false;
+  mocks.credentialsAllowed = "true";
+  mocks.refreshProviders.mockResolvedValue([]);
+  mocks.providers.mockResolvedValue([
+    provider("claude", [
+      window_("session", "quota.session", 73, "2026-09-17T03:00:00Z"),
+      window_("weekly", "quota.weekly", 7),
+    ]),
+    provider("codex", [window_("codex-primary", "quota.window", 21)]),
+    provider("cursor", [], false),
+  ]);
   mocks.expand.mockImplementation(async (expanded: boolean, pinned?: boolean) => {
     mocks.state = { ...mocks.state, expanded, pinned: pinned ?? mocks.state.pinned };
     mocks.listener?.({ payload: mocks.state });
   });
-  mocks.jump.mockResolvedValue(undefined);
 });
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
 describe("Edge sidebar", () => {
-  it("filters observed providers and keeps unavailable lifecycle explicit", async () => {
+  it("reports remaining subscription quota and its reset, not live sessions", async () => {
     await mount();
-    expect(screen.getByText("Status not recorded")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
-    expect(screen.getByText("codex conversation")).toBeTruthy();
-    expect(screen.queryByText("claude-code conversation")).toBeNull();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Return to source" })); });
-    expect(mocks.jump).toHaveBeenCalledWith("codex");
+    // The first provider's windows, as remaining rather than consumed.
+    expect(screen.getByText("Current session")).toBeTruthy();
+    expect(screen.getByText("27% left")).toBeTruthy();
+    expect(screen.getByText("93% left")).toBeTruthy();
+    expect(screen.getByText(/Resets /)).toBeTruthy();
+    // The ring carries the tightest window for that provider.
+    expect(screen.getByRole("button", { name: "Claude · 27% left" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Codex · 79% left" })).toBeTruthy();
   });
+
+  it("switches provider on hover and keeps an unreported quota explicit", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.pointerEnter(screen.getByRole("button", { name: /^Cursor/ }));
+    });
+    expect(screen.getByRole("button", { name: "Cursor · Quota not reported" })).toBeTruthy();
+    expect(screen.getByText("Quota not reported")).toBeTruthy();
+    expect(screen.queryByText("27% left")).toBeNull();
+    // An unreported window draws no arc rather than a full one.
+    expect(document.querySelectorAll(".edge-ring-arc")).toHaveLength(2);
+  });
+
+  it("offers the settings route instead of a quota when credentials are off", async () => {
+    mocks.credentialsAllowed = "false";
+    await mount();
+    expect(screen.getByText("Quota access is off")).toBeTruthy();
+    expect(mocks.refreshProviders).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Quota access is off/ }));
+    });
+    expect(mocks.settings).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes the reading on its own clock while it stays open", async () => {
+    await mount();
+    expect(mocks.refreshProviders).toHaveBeenCalledWith(true, false, false);
+    mocks.refreshProviders.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 60_000);
+    });
+    expect(mocks.refreshProviders).toHaveBeenCalledOnce();
+  });
+
   it("waits 450ms on leave, cancels on reentry and keeps a pinned panel open", async () => {
-    await mount(); const panel = screen.getByRole("main");
+    await mount();
+    const panel = screen.getByRole("main");
     fireEvent.pointerLeave(panel);
-    await act(async () => { vi.advanceTimersByTime(400); }); expect(mocks.expand).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(mocks.expand).not.toHaveBeenCalled();
     fireEvent.pointerEnter(panel);
-    await act(async () => { vi.advanceTimersByTime(100); }); expect(mocks.expand).not.toHaveBeenCalled();
+    await act(async () => {
+      vi.advanceTimersByTime(100);
+    });
+    expect(mocks.expand).not.toHaveBeenCalled();
     fireEvent.pointerLeave(panel);
-    await act(async () => { vi.advanceTimersByTime(450); }); expect(mocks.expand).toHaveBeenLastCalledWith(false, undefined);
-    await act(async () => { fireEvent.pointerEnter(panel); });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Keep open" })); });
-    mocks.expand.mockClear(); fireEvent.pointerLeave(panel);
-    await act(async () => { vi.advanceTimersByTime(1000); }); expect(mocks.expand).not.toHaveBeenCalled();
-    await act(async () => { fireEvent.keyDown(panel, { key: "Escape" }); });
+    await act(async () => {
+      vi.advanceTimersByTime(450);
+    });
+    expect(mocks.expand).toHaveBeenLastCalledWith(false, undefined);
+    await act(async () => {
+      fireEvent.pointerEnter(panel);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Keep open" }));
+    });
+    mocks.expand.mockClear();
+    fireEvent.pointerLeave(panel);
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.expand).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.keyDown(panel, { key: "Escape" });
+    });
     expect(mocks.expand).toHaveBeenLastCalledWith(false, false);
     expect(document.querySelector(".edge-sheet")?.hasAttribute("inert")).toBe(true);
   });
-  it("shows jump failure, preserves the session and exposes a retry", async () => {
-    mocks.sessions = [session("codex")]; mocks.jump.mockRejectedValue(new Error("unavailable"));
-    await mount(); await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Return to source" })); });
-    expect(screen.getByRole("alert").textContent).toContain("Could not open");
-    expect(screen.getByText("codex conversation")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Return to source" }).hasAttribute("disabled")).toBe(false);
+
+  it("distinguishes an empty provider list from a failed read", async () => {
+    mocks.providers.mockResolvedValue([]);
+    await mount();
+    expect(screen.getByText("No subscription providers")).toBeTruthy();
+    cleanup();
+    mocks.providers.mockRejectedValue(new Error("unavailable"));
+    await mount();
+    expect(screen.queryByText("No subscription providers")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("Quota is unavailable");
   });
-  it("distinguishes empty activity from failure", async () => {
-    mocks.sessions = []; await mount(); expect(screen.getByText("No recent sessions")).toBeTruthy(); cleanup();
-    mocks.error = true; await mount(); expect(screen.queryByText("No recent sessions")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Try again" })); expect(mocks.refetch).toHaveBeenCalledOnce();
+
+  it("keeps the notch inside the folded panel however many providers report", async () => {
+    expect(notchHeightFor(0)).toBe(180);
+    expect(notchHeightFor(3)).toBe(307);
+    expect(notchHeightFor(9)).toBe(320);
   });
 });
