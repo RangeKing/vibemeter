@@ -130,17 +130,24 @@ fn run_index(
     let roots = source_roots();
     let mut files = Vec::new();
     for root in &roots {
-        let path_hash = stable_hash(&root.path.to_string_lossy());
-        let available = root.path.is_dir();
+        if root.path.is_dir() {
+            collect_jsonl_files(&root.path, root.agent, root.adapter, &mut files);
+        }
+    }
+    // One row per agent, so writing a status per root means the last root wins.
+    // Several agents keep more than one: Claude Code reads both `~/.claude` and
+    // `~/.config/claude`, ZCode both its v2 and CLI trees. Collapse them first —
+    // an agent is found when *any* of its roots is, never only when its last
+    // one is — or an installed agent reads as not-found for the whole run.
+    for agent in INDEXED_AGENTS {
+        let agent_roots = agent_root_paths(&roots, agent);
+        let available = agent_available(agent, &agent_roots);
         database.upsert_source(
-            root.agent,
-            &path_hash,
+            agent,
+            &stable_hash(&agent_roots.join("|")),
             available,
             if available { "indexing" } else { "not-found" },
         )?;
-        if available {
-            collect_jsonl_files(&root.path, root.agent, root.adapter, &mut files);
-        }
     }
     let zcode_model_io_ids = files
         .iter()
@@ -227,26 +234,10 @@ fn run_index(
         }
     }
 
-    for agent in [
-        AgentKind::ClaudeCode,
-        AgentKind::Codex,
-        AgentKind::DeepSeekHarness,
-        AgentKind::GrokBuild,
-        AgentKind::KimiCode,
-        AgentKind::Cursor,
-        AgentKind::OpenClaw,
-        AgentKind::Hermes,
-        AgentKind::ZCode,
-    ] {
-        let agent_roots = roots
-            .iter()
-            .filter(|root| root.agent == agent)
-            .map(|root| root.path.to_string_lossy().to_string())
-            .collect::<Vec<_>>();
-        let file_history_available = agent_roots.iter().any(|root| Path::new(root).is_dir());
-        let available = agent_installation_available(agent, file_history_available)
-            || (agent == AgentKind::Cursor && cursor_database_path().is_file())
-            || (agent == AgentKind::Hermes && hermes_database_path().is_file());
+    for agent in INDEXED_AGENTS {
+        let agent_roots = agent_root_paths(&roots, agent);
+        let file_history_available = any_root_present(&agent_roots);
+        let available = agent_available(agent, &agent_roots);
         let path_hash = stable_hash(&agent_roots.join("|"));
         database.upsert_source(
             agent,
@@ -822,6 +813,42 @@ fn source_roots() -> Vec<SourceRoot> {
         left.agent == right.agent && left.path == right.path && left.adapter == right.adapter
     });
     roots
+}
+
+/// Every agent that owns a row in `sources`.
+const INDEXED_AGENTS: [AgentKind; 9] = [
+    AgentKind::ClaudeCode,
+    AgentKind::Codex,
+    AgentKind::DeepSeekHarness,
+    AgentKind::GrokBuild,
+    AgentKind::KimiCode,
+    AgentKind::Cursor,
+    AgentKind::OpenClaw,
+    AgentKind::Hermes,
+    AgentKind::ZCode,
+];
+
+fn agent_root_paths(roots: &[SourceRoot], agent: AgentKind) -> Vec<String> {
+    roots
+        .iter()
+        .filter(|root| root.agent == agent)
+        .map(|root| root.path.to_string_lossy().to_string())
+        .collect()
+}
+
+/// True when *any* of an agent's roots exists. Decided once across all of them,
+/// never per root: `sources` keys on the agent, so a per-root answer is really
+/// the answer for whichever root happens to be written last.
+fn any_root_present(agent_roots: &[String]) -> bool {
+    agent_roots.iter().any(|root| Path::new(root).is_dir())
+}
+
+/// Whether the agent is installed at all, across every root it may keep plus
+/// the database histories that have no root of their own.
+fn agent_available(agent: AgentKind, agent_roots: &[String]) -> bool {
+    agent_installation_available(agent, any_root_present(agent_roots))
+        || (agent == AgentKind::Cursor && cursor_database_path().is_file())
+        || (agent == AgentKind::Hermes && hermes_database_path().is_file())
 }
 
 fn agent_installation_available(agent: AgentKind, file_history_available: bool) -> bool {
@@ -1485,6 +1512,39 @@ mod tests {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn every_root_an_agent_keeps_counts_toward_its_availability() {
+        let roots = source_roots();
+        for agent in [AgentKind::ClaudeCode, AgentKind::ZCode] {
+            assert!(
+                agent_root_paths(&roots, agent).len() > 1,
+                "{agent:?} is expected to keep more than one root"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_sibling_root_does_not_hide_an_installed_agent() {
+        let temp = std::env::temp_dir().join(format!(
+            "vibemeter-roots-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let present = temp.join("claude/projects");
+        std::fs::create_dir_all(&present).expect("test root");
+        let roots = vec![
+            present.to_string_lossy().to_string(),
+            temp.join("config/claude/projects")
+                .to_string_lossy()
+                .to_string(),
+        ];
+        // The absent root sorts last, which is exactly the one a per-root
+        // answer would have kept.
+        assert!(any_root_present(&roots));
+        assert!(!any_root_present(&roots[1..]));
+        std::fs::remove_dir_all(&temp).ok();
+    }
 
     #[test]
     fn installed_agents_are_available_before_their_first_history_file() {
