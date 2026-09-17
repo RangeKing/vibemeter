@@ -187,8 +187,8 @@ describe("Edge sidebar", () => {
   });
 
   it("keeps the notch inside the folded panel however many providers report", async () => {
-    expect(notchHeightFor(0)).toBe(180);
-    expect(notchHeightFor(3)).toBe(307);
-    expect(notchHeightFor(9)).toBe(320);
+    expect(notchHeightFor(1)).toBe(147);
+    expect(notchHeightFor(3)).toBe(279);
+    expect(notchHeightFor(9)).toBe(300);
   });
 });

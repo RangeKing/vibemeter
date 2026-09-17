@@ -6,10 +6,10 @@ use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl};
 #[cfg(target_os = "macos")]
 use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelBuilder, PanelLevel, StyleMask};
 
-const WIDTH: f64 = 360.0;
-const HEIGHT: f64 = 520.0;
-const FOLDED_WIDTH: f64 = 72.0;
-const FOLDED_HEIGHT: f64 = 320.0;
+const WIDTH: f64 = 300.0;
+const HEIGHT: f64 = 460.0;
+const FOLDED_WIDTH: f64 = 58.0;
+const FOLDED_HEIGHT: f64 = 300.0;
 const SETTLE_MS: u64 = 700;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -271,18 +271,18 @@ mod tests {
     use super::*;
     #[test]
     fn folded_window_does_not_intercept_the_hidden_sidebar() {
-        assert_eq!(dimensions(false, 900.0), (72.0, 320.0));
-        assert_eq!(dimensions(true, 500.0), (360.0, 468.0));
+        assert_eq!(dimensions(false, 900.0), (58.0, 300.0));
+        assert_eq!(dimensions(true, 500.0), (300.0, 460.0));
     }
     #[test]
     fn placement_respects_display_origin_and_both_edges() {
         assert_eq!(
-            position("left", -1920.0, 100.0, 1920.0, 1080.0, 360.0, 580.0),
+            position("left", -1920.0, 100.0, 1920.0, 1080.0, 300.0, 580.0),
             (-1920.0, 350.0)
         );
         assert_eq!(
-            position("right", -1920.0, 100.0, 1920.0, 1080.0, 360.0, 580.0),
-            (-360.0, 350.0)
+            position("right", -1920.0, 100.0, 1920.0, 1080.0, 300.0, 580.0),
+            (-300.0, 350.0)
         );
     }
 }

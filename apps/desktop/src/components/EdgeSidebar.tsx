@@ -13,7 +13,7 @@ import {
   resetTime,
   type QuotaSummary,
 } from "../lib/quota";
-import { sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
+import { SIDE_NOTCH_DEPTH, sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
 import type { EdgeState, Locale, ProviderUsage } from "../types";
 import { AgentIcon } from "./AgentIcon";
 
@@ -25,28 +25,31 @@ const EDGE_SNAPSHOT_POLL_MS = 30_000;
 
 const initialState: EdgeState = { enabled: false, expanded: false, pinned: false, side: "right" };
 
-const NOTCH_WIDTH = 68;
-/** Keeps the ring column clear of the flare at both ends. */
-const NOTCH_PADDING = 30;
-const RING_DIAMETER = 44;
-const RING_RADIUS = 19;
+const NOTCH_WIDTH = SIDE_NOTCH_DEPTH;
+/* Mirrors the block in edge-sidebar.css. The notch is sized in JS because the
+   SVG outline needs a number, so the stylesheet follows these rather than the
+   other way round. */
+const NOTCH_PADDING = 18;
+const RING_DIAMETER = 34;
+const RING_TRACK_STROKE = 4.5;
+const RING_RADIUS = (RING_DIAMETER - RING_TRACK_STROKE) / 2;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-/** Ring plus its percentage caption. */
-const RING_CELL_HEIGHT = RING_DIAMETER + 4 + 11;
-const RING_GAP = 14;
-const NOTCH_FOOTER_HEIGHT = 14 + 28;
+/** Ring plus the gap and line box of its percentage caption. */
+const RING_CELL_HEIGHT = RING_DIAMETER + 5 + 12;
+const RING_GAP = 15;
+/** The flare owns this much of each end, where the shape has left the body. */
+const NOTCH_CURL = 30;
 /** The folded panel in `edge.rs` is this tall; the notch cannot outgrow it. */
-const NOTCH_MAX_HEIGHT = 320;
-const NOTCH_MIN_HEIGHT = 180;
+const NOTCH_MAX_HEIGHT = 300;
 
 export function notchHeightFor(ringCount: number): number {
   const rings = Math.max(1, ringCount);
   const content =
+    NOTCH_CURL * 2 +
     NOTCH_PADDING * 2 +
     rings * RING_CELL_HEIGHT +
-    (rings - 1) * RING_GAP +
-    NOTCH_FOOTER_HEIGHT;
-  return Math.min(NOTCH_MAX_HEIGHT, Math.max(NOTCH_MIN_HEIGHT, content));
+    (rings - 1) * RING_GAP;
+  return Math.min(NOTCH_MAX_HEIGHT, content);
 }
 
 function SideNotchPath({
@@ -282,11 +285,16 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                       height={RING_DIAMETER}
                       viewBox={`0 0 ${RING_DIAMETER} ${RING_DIAMETER}`}
                     >
-                      <circle cx="22" cy="22" r={RING_RADIUS} className="edge-ring-track" />
+                      <circle
+                        cx={RING_DIAMETER / 2}
+                        cy={RING_DIAMETER / 2}
+                        r={RING_RADIUS}
+                        className="edge-ring-track"
+                      />
                       {remaining === undefined ? null : (
                         <circle
-                          cx="22"
-                          cy="22"
+                          cx={RING_DIAMETER / 2}
+                          cy={RING_DIAMETER / 2}
                           r={RING_RADIUS}
                           className={`edge-ring-arc arc-${info.band}`}
                           style={{
@@ -297,7 +305,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                       )}
                     </svg>
                     <div className="edge-ring-icon">
-                      <AgentIcon agent={providerAgentIcon(provider.provider)} size={20} />
+                      <AgentIcon agent={providerAgentIcon(provider.provider)} size={14} />
                     </div>
                   </div>
                   <span className="edge-ring-label">{label}</span>
@@ -305,14 +313,6 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
               );
             })}
           </div>
-          <button
-            className="edge-notch-settings"
-            title={t("edge.settings")}
-            aria-label={t("edge.settings")}
-            onClick={() => void openMain(true)}
-          >
-            <Settings2 size={16} />
-          </button>
         </div>
       </aside>
 
@@ -339,6 +339,13 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
               <h1>{active ? providerDisplayName(active.provider) : t("edge.quota")}</h1>
             </div>
             <div className="edge-card-actions">
+              <button
+                aria-label={t("edge.settings")}
+                onClick={() => void openMain(true)}
+                title={t("edge.settings")}
+              >
+                <Settings2 size={13} />
+              </button>
               <button
                 aria-label={t(state.pinned ? "edge.unpin" : "edge.pin")}
                 aria-pressed={state.pinned}
