@@ -83,7 +83,9 @@ html[data-surface="edge"] #root {
   align-items: center;
   justify-content: space-between;
   height: 100%;
-  padding: 26px 0 18px;
+  /* The flare owns the first and last `curlRadius` of the body, where the
+     shape has already narrowed to the bezel. Content starts clear of it. */
+  padding: 30px 0;
   box-sizing: border-box;
 }
 

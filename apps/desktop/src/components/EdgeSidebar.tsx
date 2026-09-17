@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import { agentName } from "../lib/format";
+import { sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
 import { useLiveSnapshot } from "../lib/useLiveSnapshot";
 import type { EdgeState, LiveSession, Locale } from "../types";
 import { AgentIcon } from "./AgentIcon";
@@ -26,26 +27,19 @@ function SideNotchPath({
   height: number;
   width?: number;
 }) {
-  const curl = 24;
-  const corner = 18;
-  const h = Math.max(height, 160);
-  const w = width;
-
-  const d =
-    side === "right"
-      ? `M ${w} 0 A ${curl} ${curl} 0 0 0 ${w - curl} ${curl} L ${corner} ${curl} A ${corner} ${corner} 0 0 0 0 ${curl + corner} L 0 ${h - curl - corner} A ${corner} ${corner} 0 0 0 ${corner} ${h - curl} L ${w - curl} ${h - curl} A ${curl} ${curl} 0 0 0 ${w} ${h} Z`
-      : `M 0 0 A ${curl} ${curl} 0 0 0 ${curl} ${curl} L ${w - corner} ${curl} A ${corner} ${corner} 0 0 0 ${w} ${curl + corner} L ${w} ${h - curl - corner} A ${corner} ${corner} 0 0 0 ${w - corner} ${h - curl} L ${curl} ${h - curl} A ${curl} ${curl} 0 0 0 0 ${h} Z`;
-
+  const d = sideNotchPath({ depth: width, length: height });
   return (
     <svg
       className="edge-notch-svg"
-      width={w}
-      height={h}
-      viewBox={`0 0 ${w} ${h}`}
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
       aria-hidden="true"
     >
-      <path d={d} className="edge-notch-fill" />
-      <path d={d} className="edge-notch-stroke" />
+      <g transform={sideNotchTransform(side, width)}>
+        <path d={d} className="edge-notch-fill" />
+        <path d={d} className="edge-notch-stroke" />
+      </g>
     </svg>
   );
 }
