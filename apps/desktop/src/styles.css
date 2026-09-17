@@ -6,7 +6,8 @@
   text-rendering: geometricPrecision;
   --bg: #f3f0e8;
   --sidebar: #ebe7dc;
-  --surface: #fbfaf6;
+  --surface-solid: #fbfaf6;
+  --surface: var(--surface-solid);
   --surface-strong: #ffffff;
   --surface-soft: #f0ede5;
   --ink: #262521;
@@ -71,7 +72,7 @@
   --text-secondary: var(--muted);
   --text-tertiary: var(--faint);
   --hairline: var(--line);
-  --paper-solid: var(--surface);
+  --paper-solid: var(--surface-solid);
   --positive: var(--green);
   --shadow: 0 18px 50px rgb(43 38 29 / 8%);
   --shadow-small: 0 8px 24px rgb(43 38 29 / 7%);
@@ -84,7 +85,8 @@
   background: #171816;
   --bg: #171816;
   --sidebar: #1e201d;
-  --surface: #232521;
+  --surface-solid: #232521;
+  --surface: var(--surface-solid);
   --surface-strong: #292b27;
   --surface-soft: #1d1f1c;
   --ink: #f0ede4;
@@ -140,7 +142,8 @@
     background: #171816;
     --bg: #171816;
     --sidebar: #1e201d;
-    --surface: #232521;
+    --surface-solid: #232521;
+    --surface: var(--surface-solid);
     --surface-strong: #292b27;
     --surface-soft: #1d1f1c;
     --ink: #f0ede4;
@@ -419,7 +422,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 .notch-island-morph.is-closing { pointer-events: none; }
 .notch-island-morph.is-closing .notch-collapsed-shell { animation: notch-compact-handoff-in 300ms cubic-bezier(.4,0,.2,1) both; }
 .notch-hardware { display: block; align-self: start; width: var(--notch-hardware-width); height: var(--notch-hardware-height); background: #000; }
-.notch-wing { display: flex; min-width: 0; height: var(--notch-hardware-height); align-items: center; gap: 6px; overflow: hidden; background: linear-gradient(180deg, #020203, #08080a 82%); box-shadow: inset 0 -1px 0 rgb(255 255 255 / 5%); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+.notch-wing { display: flex; min-width: 0; height: var(--notch-hardware-height); align-items: center; gap: 6px; overflow: hidden; background: linear-gradient(180deg, #020203, #08080a 82%); box-shadow: inset 0 -1px 0 rgb(255 255 255 / 5%); }
 .notch-wing-left { justify-content: flex-end; padding: 0 7px 1px 8px; border-radius: 0 0 0 13px; transform-origin: right top; }
 .notch-wing-left.is-multi { justify-content: center; padding-inline: 6px; }
 .notch-wing-right { justify-content: flex-start; padding: 0 8px 1px 7px; border-radius: 0 0 13px; transform-origin: left top; }
@@ -492,7 +495,7 @@ html[data-surface="notch"] body { color-scheme: dark; -webkit-user-select: none;
 @keyframes notch-activity-error { to { transform: translateX(1.4px); } }
 @keyframes notch-activity-complete { 0% { opacity: .35; transform: scale(.65) rotate(-18deg); } 70% { transform: scale(1.12); } }
 @keyframes notch-completion-ring { 75%, 100% { opacity: 0; transform: scale(1.45); } }
-.notch-island-expanded { position: absolute; z-index: 1; inset: 0; display: grid; grid-template-rows: var(--notch-hardware-height) 36px minmax(0, 1fr); overflow: clip; border: 0; border-radius: 0 0 23px 23px; background: linear-gradient(180deg, rgb(7 7 10 / 99%), rgb(8 8 11 / 98%)); box-shadow: inset 0 -1px 0 rgb(255 255 255 / 8%), inset 1px 0 0 rgb(255 255 255 / 6%), inset -1px 0 0 rgb(255 255 255 / 6%); clip-path: inset(0 0 0 0 round 0 0 23px 23px); -webkit-backdrop-filter: blur(28px); backdrop-filter: blur(28px); will-change: clip-path; }
+.notch-island-expanded { position: absolute; z-index: 1; inset: 0; display: grid; grid-template-rows: var(--notch-hardware-height) 36px minmax(0, 1fr); overflow: clip; border: 0; border-radius: 0 0 23px 23px; background: linear-gradient(180deg, rgb(7 7 10 / 99%), rgb(8 8 11 / 98%)); box-shadow: inset 0 -1px 0 rgb(255 255 255 / 8%), inset 1px 0 0 rgb(255 255 255 / 6%), inset -1px 0 0 rgb(255 255 255 / 6%); clip-path: inset(0 0 0 0 round 0 0 23px 23px); will-change: clip-path; }
 .notch-island-morph.is-expanded .notch-island-expanded { animation: notch-panel-open 360ms cubic-bezier(.16,1,.3,1) both; }
 .notch-island-morph.is-closing .notch-island-expanded { animation: notch-panel-close 300ms cubic-bezier(.4,0,.2,1) both; }
 @keyframes notch-panel-open {
@@ -1728,7 +1731,8 @@ body.modal-open { overflow: hidden; }
 
 /* Menu bar */
 html[data-surface="menubar"], html[data-surface="menubar"] body, html[data-surface="menubar"] #root { background: transparent !important; }
-.menubar-root { position: relative; display: flex; flex-direction: column; width: calc(100% - 16px); height: calc(100% - 16px); margin: 8px; padding: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 20px; background: color-mix(in srgb, var(--surface) 97%, transparent); box-shadow: none; backdrop-filter: blur(24px); }
+.menubar-root { position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 20px; background: color-mix(in srgb, var(--surface-solid) 62%, transparent); box-shadow: none; }
+@media (prefers-reduced-transparency: reduce) { .menubar-root { background: var(--surface-solid); } }
 .menubar-header { display: flex; flex: 0 0 52px; align-items: center; justify-content: space-between; height: 52px; padding: 0 16px; border-bottom: 1px solid var(--line); }
 .menubar-header > div { display: flex; align-items: center; height: 100%; gap: 9px; }
 .menubar-header strong { display: flex; align-items: center; height: 26px; font-size: 15px; line-height: 1; }
@@ -1927,13 +1931,23 @@ html[data-surface="menubar"], html[data-surface="menubar"] body, html[data-surfa
 
 /* Native Sidebar material is installed underneath the main webview. Keep the
    content readable while allowing the desktop to tint the navigation chrome. */
+/* The main window carries a native NSVisualEffectView behind the webview
+   (`windowEffects` in tauri.conf.json). Everything the page paints over it has
+   to let some of it through, or the material is created and then hidden. The
+   card layer goes through --surface rather than a list of components, so a new
+   panel joins the glass by using the token every other panel already uses. */
 html[data-surface="main"], html[data-surface="main"] body { background: transparent; }
-html[data-surface="main"] .app-shell { background: color-mix(in srgb, var(--bg) 52%, transparent); }
-html[data-surface="main"] .sidebar { background: color-mix(in srgb, var(--sidebar) 46%, transparent); border-color: color-mix(in srgb, var(--line) 65%, transparent); }
-html[data-surface="main"] .main-content { background: color-mix(in srgb, var(--bg) 88%, transparent); }
-html[data-surface="main"] :is(.live-panel, .chart-panel, .metric-card) { background: color-mix(in srgb, var(--surface) 82%, transparent); box-shadow: inset 0 1px rgb(255 255 255 / 8%), var(--shadow-small); }
+html[data-surface="main"] { --surface: color-mix(in srgb, var(--surface-solid) 78%, transparent); }
+/* The shell sits behind both panes, so tinting it too stacks with them: a 52%
+   shell under an 88% content pane left the content 94% opaque and the material
+   only ever showed through the nav. Each pane carries its own tint and the
+   shell carries none. */
+html[data-surface="main"] .app-shell { background: transparent; }
+html[data-surface="main"] .sidebar { background: color-mix(in srgb, var(--sidebar) 52%, transparent); border-color: color-mix(in srgb, var(--line) 65%, transparent); }
+html[data-surface="main"] .main-content { background: color-mix(in srgb, var(--bg) 62%, transparent); }
+html[data-surface="main"] .live-panel { box-shadow: inset 0 1px rgb(255 255 255 / 8%), var(--shadow-small); }
 @media (prefers-reduced-transparency: reduce) {
+  html[data-surface="main"] { --surface: var(--surface-solid); }
   html[data-surface="main"] .app-shell, html[data-surface="main"] .main-content { background: var(--bg); }
   html[data-surface="main"] .sidebar { background: var(--sidebar); }
-  html[data-surface="main"] :is(.live-panel, .chart-panel, .metric-card) { background: var(--surface); }
 }

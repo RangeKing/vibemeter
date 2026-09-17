@@ -203,9 +203,11 @@ html[data-surface="edge"] #root {
   margin: 0 9px;
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.12);
+  /* Solid by intent. The card is one shape inside a mostly transparent
+     window, so a window-wide macOS material would blur the empty space around
+     it too; and backdrop-filter has nothing to sample, because the desktop
+     behind a transparent webview is not in the page's compositing tree. */
   background: rgba(14, 15, 19, 0.95);
-  -webkit-backdrop-filter: blur(32px) saturate(145%);
-  backdrop-filter: blur(32px) saturate(145%);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.15);
   display: flex;
   flex-direction: column;
@@ -514,8 +516,6 @@ html[data-surface="edge"] #root {
 @media (prefers-reduced-transparency: reduce) {
   .edge-sheet {
     background: #141519;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
   }
   .edge-notch-fill {
     fill: #0a0b0e;

@@ -128,6 +128,8 @@ pub fn setup(
     .skip_taskbar(true)
     .visible(false)
     .build()?;
+    #[cfg(target_os = "macos")]
+    apply_popover_material(app.handle());
 
     #[cfg(target_os = "macos")]
     {
@@ -711,6 +713,35 @@ fn hide_notch(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+/// Put a real macOS material behind the menu bar popover.
+///
+/// A transparent webview has no backdrop to sample: the desktop behind the
+/// window is not in the page's compositing tree, so `backdrop-filter` in the
+/// stylesheet blurs nothing at all. The blur has to come from an
+/// NSVisualEffectView behind the webview, which is what this adds.
+///
+/// Only the popover gets one. It is the one accessory that fills its window
+/// with a single card, so a window-wide material lines up with what is drawn.
+/// The Notch and the edge sidebar are shaped surfaces floating in a mostly
+/// empty window, where the same material would blur the space around them.
+#[cfg(target_os = "macos")]
+fn apply_popover_material(app: &tauri::AppHandle) {
+    use tauri::utils::{WindowEffect, WindowEffectState};
+    use tauri::window::EffectsBuilder;
+    let Some(window) = app.get_webview_window("menubar") else {
+        return;
+    };
+    // Matches the popover card's own border-radius, so the material stops
+    // where the card does instead of squaring off behind its corners.
+    let _ = window.set_effects(
+        EffectsBuilder::new()
+            .effect(WindowEffect::Popover)
+            .state(WindowEffectState::Active)
+            .radius(20.0)
+            .build(),
+    );
+}
+
 fn detect_notch() -> Option<NotchGeometry> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::NSScreen;
