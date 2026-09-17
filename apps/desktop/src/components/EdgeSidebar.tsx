@@ -101,14 +101,18 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   const [selected, setSelected] = useState<string>();
   const [commandError, setCommandError] = useState(false);
   const [now, setNow] = useState(() => new Date());
-  const [tailTop, setTailTop] = useState(48);
   const [dragging, setDragging] = useState(false);
   const stateRef = useRef(state);
   const notchRef = useRef<HTMLElement>(null);
   const drag = useRef<DragState | undefined>(undefined);
+  /* What was last asked of the panel, which runs ahead of what it reports.
+     Sweeping the rings fires an enter per ring, and each unguarded ask is
+     another native resize and reposition for a panel that is already open. */
+  const requested = useRef<boolean | undefined>(undefined);
   const foldTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const panelRef = useRef<HTMLElement>(null);
   const sheetRef = useRef<HTMLElement>(null);
+  const tailRef = useRef<HTMLSpanElement>(null);
   const ringRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -124,6 +128,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   };
   const updateState = (next: EdgeState) => {
     stateRef.current = next;
+    requested.current = next.expanded;
     setState(next);
   };
 
@@ -184,6 +189,8 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   const expand = async (expanded: boolean, pinned?: boolean) => {
     cancelFold();
     setCommandError(false);
+    if (pinned === undefined && requested.current === expanded) return;
+    requested.current = expanded;
     try {
       await api.setEdgeExpanded(expanded, pinned);
     } catch {
@@ -231,16 +238,20 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   const notchHeight = notchHeightFor(rings.length);
 
   // Point the tail at the ring it belongs to by measuring both, so it keeps up
-  // with a provider list that grows or shrinks between readings.
+  // with a list that grows or shrinks between readings. Written straight to the
+  // node: as state this would cost a second render on every hover, which is
+  // exactly when the sidebar can least afford one.
   useLayoutEffect(() => {
     const sheet = sheetRef.current;
+    const tail = tailRef.current;
     const ring = active ? ringRefs.current.get(active.agent) : undefined;
-    if (!sheet || !ring) return;
+    if (!sheet || !tail || !ring) return;
     const sheetRect = sheet.getBoundingClientRect();
     const ringRect = ring.getBoundingClientRect();
     if (!sheetRect.height || !ringRect.height) return;
     const center = ringRect.top + RING_DIAMETER / 2 - sheetRect.top;
-    setTailTop(Math.round(Math.min(Math.max(center, 18), sheetRect.height - 18)));
+    const clamped = Math.min(Math.max(center, 16), sheetRect.height - 16);
+    tail.style.top = `${Math.round(clamped)}px`;
   }, [active, rings.length, state.expanded, state.side]);
 
   useEffect(() => {
@@ -411,8 +422,8 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
         aria-hidden={!state.expanded}
       >
         <span
+          ref={tailRef}
           className={`edge-tooltip-tail tail-${state.side}`}
-          style={{ top: `${tailTop}px` }}
           aria-hidden="true"
         />
         <div className="edge-detail">
@@ -453,7 +464,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
             </div>
           </header>
 
-          <div className="edge-quota-list" key={active?.agent ?? "none"}>
+          <div className="edge-quota-list">
             {!credentialsAllowed && settings.data ? (
               <button className="edge-enable-quota" onClick={() => void openMain(true)}>
                 <span>

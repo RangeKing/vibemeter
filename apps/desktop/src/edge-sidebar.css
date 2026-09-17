@@ -136,11 +136,11 @@ html[data-surface="edge"] #root {
   background: transparent;
   cursor: pointer;
   color: #fff;
-  transition: transform 160ms ease;
+  transition: transform 120ms ease;
 }
 
 .edge-ring-cell:hover {
-  transform: scale(1.06);
+  transform: scale(1.04);
 }
 
 .edge-ring-wrapper {
@@ -263,7 +263,7 @@ html[data-surface="edge"] #root {
   height: 0;
   z-index: 10;
   pointer-events: none;
-  transition: top 240ms var(--edge-spring);
+  transition: top 130ms var(--edge-spring);
 }
 
 .edge-tooltip-tail.tail-right {
@@ -344,11 +344,19 @@ html[data-surface="edge"] #root {
 }
 
 .edge-quota-list {
-  flex: 1;
-  min-height: 0;
+  /* Fixed, not intrinsic. The card is centred on the strip, so a list that
+     sized itself to each Agent made the whole card grow and shrink around its
+     middle every time the pointer crossed a ring. Agents report between none
+     and four windows; the box stays put and scrolls. */
+  flex: 0 0 auto;
+  height: 132px;
   overflow-y: auto;
-  padding-top: 10px;
+  padding-top: 8px;
   scrollbar-width: none;
+}
+
+.edge-quota-list::-webkit-scrollbar {
+  display: none;
 }
 
 .edge-quota-window {
@@ -477,7 +485,7 @@ html[data-surface="edge"] #root {
 }
 
 .edge-empty {
-  min-height: 160px;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;

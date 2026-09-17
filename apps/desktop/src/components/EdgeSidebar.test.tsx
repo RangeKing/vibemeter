@@ -247,6 +247,20 @@ describe("Edge sidebar", () => {
     expect(screen.queryByText("No Agent detected")).toBeNull();
   });
 
+  it("does not re-ask an open panel to open on every ring it sweeps", async () => {
+    await mount();
+    mocks.expand.mockClear();
+    // The panel is already open; crossing four rings is four selections and no
+    // native resize at all.
+    for (const name of [/^Codex/, /^Cursor/, /^ZCode/, /^Claude Code/]) {
+      await act(async () => {
+        fireEvent.pointerEnter(screen.getByRole("button", { name }));
+      });
+    }
+    expect(mocks.expand).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Claude Code");
+  });
+
   it("drags along the edge without selecting the ring it started on", async () => {
     await mount();
     const strip = document.querySelector(".edge-notch") as HTMLElement;
