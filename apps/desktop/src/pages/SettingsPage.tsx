@@ -9,7 +9,8 @@ import { AgentBadge, ErrorState, LoadingState, PageHeader, Toggle } from "../com
 import { api } from "../lib/api";
 import { refreshHistoryIndex } from "../lib/indexRefresh";
 import { detectedDataAgents, parseDataPageAgents, serializeDataPageAgents, sourceCapabilityNameGroups } from "../lib/sourceStatus";
-import { parseEdgeProviders, providerAgentIcon, providerDisplayName, serializeEdgeProviders } from "../lib/quota";
+import { agentName } from "../lib/format";
+import { agentSubscription, parseEdgeAgents, serializeEdgeAgents } from "../lib/quota";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useUiStore } from "../store";
 import type { AppSettings, DiagnosticRetentionStatus, Locale, ProjectControl, Theme } from "../types";
@@ -83,9 +84,8 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
   const [historyRefreshPending, setHistoryRefreshPending] = useState(false);
   const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
-  const edgeProviderOptions = useQuery({ queryKey: ["providers"], queryFn: api.providers });
-  const [edgeProvidersDraft, setEdgeProvidersDraft] = useState<string | null>(null);
-  const [edgeProvidersPending, setEdgeProvidersPending] = useState(false);
+  const [edgeAgentsDraft, setEdgeAgentsDraft] = useState<string | null>(null);
+  const [edgeAgentsPending, setEdgeAgentsPending] = useState(false);
   const [dataPageAgentsDraft, setDataPageAgentsDraft] = useState<string | null>(null);
   const [dataPageAgentsPending, setDataPageAgentsPending] = useState(false);
   const [agentDetectionPending, setAgentDetectionPending] = useState(false);
@@ -262,22 +262,21 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const theme = data.theme as Theme;
   const diagnosticStatus = diagnostics.data;
   const diagnosticPending = setDiagnostics.isPending || clearDiagnostics.isPending;
-  const configuredEdgeProviders = parseEdgeProviders(edgeProvidersDraft ?? data.edgeSidebarProviders);
-  const knownEdgeProviders = (edgeProviderOptions.data ?? []).map((provider) => provider.provider);
-  const selectedEdgeProviders = new Set(configuredEdgeProviders ?? knownEdgeProviders);
-  const toggleEdgeProvider = async (provider: string, checked: boolean) => {
-    const base = configuredEdgeProviders ?? knownEdgeProviders;
-    const next = checked ? [...base, provider] : base.filter((item) => item !== provider);
-    const previous = edgeProvidersDraft;
-    const value = serializeEdgeProviders(next);
-    setEdgeProvidersDraft(value);
-    setEdgeProvidersPending(true);
+  const configuredEdgeAgents = parseEdgeAgents(edgeAgentsDraft ?? data.edgeSidebarAgents);
+  const selectedEdgeAgents = new Set(configuredEdgeAgents ?? detectedAgents);
+  const toggleEdgeAgent = async (agent: string, checked: boolean) => {
+    const base = configuredEdgeAgents ?? detectedAgents;
+    const next = checked ? [...base, agent] : base.filter((item) => item !== agent);
+    const previous = edgeAgentsDraft;
+    const value = serializeEdgeAgents(next);
+    setEdgeAgentsDraft(value);
+    setEdgeAgentsPending(true);
     try {
-      await setSetting("edgeSidebarProviders", value);
+      await setSetting("edgeSidebarAgents", value);
     } catch {
-      setEdgeProvidersDraft(previous);
+      setEdgeAgentsDraft(previous);
     } finally {
-      setEdgeProvidersPending(false);
+      setEdgeAgentsPending(false);
     }
   };
   const persistDataPageAgents = async (value: string) => {
@@ -405,18 +404,18 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <header><PanelTop size={17} /><div><h2>{t("edge.title")}</h2><p>{t("edge.description")}</p></div></header>
           <div className="setting-row"><div><strong>{t("edge.enabled")}</strong></div><Toggle checked={data.edgeSidebarEnabled === "true"} onCheckedChange={(enabled) => void setSetting("edgeSidebarEnabled", String(enabled))} label={t("edge.enabled")} /></div>
           <div className="setting-row"><div><strong>{t("edge.position")}</strong></div><select aria-label={t("edge.position")} value={data.edgeSidebarSide ?? "right"} onChange={(event) => void setSetting("edgeSidebarSide", event.target.value)}><option value="left">{t("edge.left")}</option><option value="right">{t("edge.right")}</option></select></div>
-          <div className="setting-row multiline"><div><strong>{t("edge.providers")}</strong><p>{t("edge.providersBody")}</p></div></div>
-          <div className="data-page-agent-options" role="group" aria-label={t("edge.providers")}>
-            {(edgeProviderOptions.data ?? []).map((provider) => (
-              <label className={`data-page-agent-option ${provider.available ? "" : "is-missing"}`} key={provider.provider}>
-                <AgentBadge agent={providerAgentIcon(provider.provider)} compact />
-                <span><strong>{providerDisplayName(provider.provider)}</strong><small>{provider.available ? t("edge.providerReporting") : t("edge.providerSilent")}</small></span>
+          <div className="setting-row multiline"><div><strong>{t("edge.agents")}</strong><p>{t("edge.agentsBody")}</p></div></div>
+          <div className="data-page-agent-options" role="group" aria-label={t("edge.agents")}>
+            {sources.data.map((source) => (
+              <label className={`data-page-agent-option ${source.available ? "" : "is-missing"}`} key={source.agent}>
+                <AgentBadge agent={source.agent} compact />
+                <span><strong>{source.available ? t("settings.dataPageAgentsDetected") : t("settings.dataPageAgentsNotDetected")}</strong><small>{agentSubscription(source.agent) ? t("edge.agentHasQuota") : t("edge.agentNoQuota")}</small></span>
                 <input
                   type="checkbox"
-                  checked={selectedEdgeProviders.has(provider.provider)}
-                  disabled={edgeProvidersPending}
-                  aria-label={providerDisplayName(provider.provider)}
-                  onChange={(event) => void toggleEdgeProvider(provider.provider, event.target.checked)}
+                  checked={selectedEdgeAgents.has(source.agent)}
+                  disabled={edgeAgentsPending}
+                  aria-label={t("edge.agentToggle", { agent: agentName(source.agent) })}
+                  onChange={(event) => void toggleEdgeAgent(source.agent, event.target.checked)}
                 />
               </label>
             ))}

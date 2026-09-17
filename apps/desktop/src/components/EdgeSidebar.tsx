@@ -4,19 +4,17 @@ import { ArrowUpRight, ChevronLeft, ChevronRight, Gauge, Pin, Settings2, X } fro
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
+import { agentName } from "../lib/format";
 import {
+  edgeAgentQuotas,
   formatResetRemaining,
-  parseEdgeProviders,
-  providerAgentIcon,
-  providerDisplayName,
-  quotaSummary,
+  parseEdgeAgents,
   resetRemainingSeconds,
   resetTime,
-  visibleQuotaProviders,
-  type QuotaSummary,
+  type EdgeAgentQuota,
 } from "../lib/quota";
 import { SIDE_NOTCH_DEPTH, sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
-import type { EdgeState, Locale, ProviderUsage } from "../types";
+import type { EdgeState, Locale } from "../types";
 import { AgentIcon } from "./AgentIcon";
 
 export const EDGE_FOLD_GRACE_MS = 450;
@@ -42,7 +40,7 @@ const RING_GAP = 15;
 /** The flare owns this much of each end, where the shape has left the body. */
 const NOTCH_CURL = 30;
 /** The folded panel in `edge.rs` is this tall; the notch cannot outgrow it. */
-const NOTCH_MAX_HEIGHT = 300;
+const NOTCH_MAX_HEIGHT = 720;
 
 export function notchHeightFor(ringCount: number): number {
   const rings = Math.max(1, ringCount);
@@ -99,6 +97,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     queryFn: api.providers,
     refetchInterval: EDGE_SNAPSHOT_POLL_MS,
   });
+  const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources });
 
   const cancelFold = () => {
     clearTimeout(foldTimer.current);
@@ -188,15 +187,17 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     }, EDGE_FOLD_GRACE_MS);
   };
 
-  const configuredProviders = parseEdgeProviders(settings.data?.edgeSidebarProviders);
-  const allProviders: ProviderUsage[] = quota.data ?? [];
-  const providers = visibleQuotaProviders(allProviders, configuredProviders);
-  /* A chosen-but-empty list is the user saying "show none", which is a
-     different thing from no provider reporting at all. */
-  const hiddenByChoice = Boolean(configuredProviders) && !providers.length;
-  const active =
-    providers.find((provider) => provider.provider === selected) ?? providers[0];
-  const summary: QuotaSummary | undefined = active ? quotaSummary(active) : undefined;
+  const configuredAgents = parseEdgeAgents(settings.data?.edgeSidebarAgents);
+  const rings: EdgeAgentQuota[] = edgeAgentQuotas(
+    sources.data ?? [],
+    quota.data ?? [],
+    configuredAgents,
+  );
+  /* A chosen-but-empty list is the user asking for none, which is a different
+     thing from nothing being detected. */
+  const hiddenByChoice = Boolean(configuredAgents) && !rings.length;
+  const active = rings.find((ring) => ring.agent === selected) ?? rings[0];
+  const summary = active?.summary;
 
   const openMain = async (settingsPage = false) => {
     try {
@@ -207,27 +208,29 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     }
   };
 
-  const notchHeight = notchHeightFor(providers.length);
+  const notchHeight = notchHeightFor(rings.length);
 
   // Point the tail at the ring it belongs to by measuring both, so it keeps up
   // with a provider list that grows or shrinks between readings.
   useLayoutEffect(() => {
     const sheet = sheetRef.current;
-    const ring = active ? ringRefs.current.get(active.provider) : undefined;
+    const ring = active ? ringRefs.current.get(active.agent) : undefined;
     if (!sheet || !ring) return;
     const sheetRect = sheet.getBoundingClientRect();
     const ringRect = ring.getBoundingClientRect();
     if (!sheetRect.height || !ringRect.height) return;
     const center = ringRect.top + RING_DIAMETER / 2 - sheetRect.top;
     setTailTop(Math.round(Math.min(Math.max(center, 18), sheetRect.height - 18)));
-  }, [active, providers.length, state.expanded, state.side]);
+  }, [active, rings.length, state.expanded, state.side]);
 
-  const select = (provider: string) => {
-    setSelected(provider);
+  const select = (agent: string) => {
+    setSelected(agent);
     if (!stateRef.current.expanded) void expand(true);
   };
 
-  const refreshedAt = active?.refreshedAt ? new Date(active.refreshedAt) : undefined;
+  const refreshedAt = active?.provider?.refreshedAt
+    ? new Date(active.provider.refreshedAt)
+    : undefined;
 
   return (
     <main
@@ -257,21 +260,20 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
         />
         <div className="edge-notch-body">
           <div className="edge-provider-rings">
-            {providers.map((provider) => {
-              const info = quotaSummary(provider);
-              const isSelected = active?.provider === provider.provider;
+            {rings.map((ring) => {
+              const info = ring.summary;
+              const isSelected = active?.agent === ring.agent;
               const remaining = info.remainingPercent;
-              const name = providerDisplayName(provider.provider);
-              const label =
-                remaining === undefined ? "—" : `${Math.round(remaining)}%`;
+              const name = agentName(ring.agent);
+              const label = remaining === undefined ? "—" : `${Math.round(remaining)}%`;
               const dashOffset =
                 RING_CIRCUMFERENCE * (1 - Math.min(Math.max((remaining ?? 0) / 100, 0), 1));
               return (
                 <button
-                  key={provider.provider}
+                  key={ring.agent}
                   ref={(el) => {
-                    if (el) ringRefs.current.set(provider.provider, el);
-                    else ringRefs.current.delete(provider.provider);
+                    if (el) ringRefs.current.set(ring.agent, el);
+                    else ringRefs.current.delete(ring.agent);
                   }}
                   className={`edge-ring-cell ${isSelected ? "is-selected" : ""} band-${info.band}`}
                   title={name}
@@ -281,9 +283,9 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                       : `${name} · ${t("quota.remaining", { value: Math.round(remaining) })}`
                   }
                   aria-pressed={isSelected}
-                  onPointerEnter={() => select(provider.provider)}
-                  onFocus={() => select(provider.provider)}
-                  onClick={() => select(provider.provider)}
+                  onPointerEnter={() => select(ring.agent)}
+                  onFocus={() => select(ring.agent)}
+                  onClick={() => select(ring.agent)}
                 >
                   <div className="edge-ring-wrapper">
                     <svg
@@ -312,7 +314,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                       )}
                     </svg>
                     <div className="edge-ring-icon">
-                      <AgentIcon agent={providerAgentIcon(provider.provider)} size={14} />
+                      <AgentIcon agent={ring.agent} size={14} />
                     </div>
                   </div>
                   <span className="edge-ring-label">{label}</span>
@@ -338,12 +340,8 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
         <div className="edge-detail">
           <header className="edge-card-header">
             <div className="edge-card-title">
-              {active ? (
-                <AgentIcon agent={providerAgentIcon(active.provider)} size={18} />
-              ) : (
-                <Gauge size={18} />
-              )}
-              <h1>{active ? providerDisplayName(active.provider) : t("edge.quota")}</h1>
+              {active ? <AgentIcon agent={active.agent} size={18} /> : <Gauge size={18} />}
+              <h1>{active ? agentName(active.agent) : t("edge.quota")}</h1>
             </div>
             <div className="edge-card-actions">
               <button
@@ -375,7 +373,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
             </div>
           </header>
 
-          <div className="edge-quota-list" key={active?.provider ?? "none"}>
+          <div className="edge-quota-list" key={active?.agent ?? "none"}>
             {!credentialsAllowed && settings.data ? (
               <button className="edge-enable-quota" onClick={() => void openMain(true)}>
                 <span>
@@ -411,7 +409,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
               <div className="edge-empty">
                 <Gauge size={28} />
                 <strong>{t("edge.unavailable")}</strong>
-                <p>{t("edge.unavailableBody")}</p>
+                <p>{t(active.provider ? "edge.unavailableBody" : "edge.noSubscriptionBody")}</p>
               </div>
             ) : (
               summary.windows.map((window) => {
@@ -456,7 +454,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 );
               })
             )}
-            {active?.stale ? <p className="edge-note">{t("edge.stale")}</p> : null}
+            {active?.provider?.stale ? <p className="edge-note">{t("edge.stale")}</p> : null}
           </div>
 
           {commandError ? (

@@ -1,4 +1,4 @@
-import type { Locale, ProviderUsage, RateWindow } from "../types";
+import type { Locale, ProviderUsage, RateWindow, SourceStatus } from "../types";
 
 export function resetTime(window: RateWindow, locale: Locale): string | undefined {
   if (window.resetAt) {
@@ -84,11 +84,11 @@ export function quotaSummary(provider: ProviderUsage): QuotaSummary {
   };
 }
 
-export const EDGE_PROVIDERS_AUTO = "auto";
+export const EDGE_AGENTS_AUTO = "auto";
 
-/** Reads the stored choice. `undefined` means "every provider", not "none". */
-export function parseEdgeProviders(value: string | undefined): string[] | undefined {
-  if (!value || value === EDGE_PROVIDERS_AUTO) return undefined;
+/** Reads the stored choice. `undefined` means "every detected agent", not "none". */
+export function parseEdgeAgents(value: string | undefined): string[] | undefined {
+  if (!value || value === EDGE_AGENTS_AUTO) return undefined;
   try {
     const parsed: unknown = JSON.parse(value);
     if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) return undefined;
@@ -98,19 +98,56 @@ export function parseEdgeProviders(value: string | undefined): string[] | undefi
   }
 }
 
-export function serializeEdgeProviders(providers: string[]): string {
-  return JSON.stringify([...new Set(providers)].sort());
+export function serializeEdgeAgents(agents: string[]): string {
+  return JSON.stringify([...new Set(agents)].sort());
 }
 
 /**
- * Applies the choice while keeping the store's order. An empty stored list is
- * a real answer — show nothing — and stays distinct from no choice at all.
+ * The subscription an agent bills against, where VibeMeter can read one.
+ *
+ * Most agents have none to read: a local harness, or a vendor with no usage
+ * endpoint. They still get a ring — they are agents the app supports, and
+ * leaving them out would say more than the data does — but the ring carries no
+ * arc and the card says the source reports no quota.
  */
-export function visibleQuotaProviders(
+export function agentSubscription(agent: string): string | undefined {
+  if (agent === "claude-code") return "claude";
+  if (agent === "codex") return "codex";
+  if (agent === "cursor") return "cursor";
+  return undefined;
+}
+
+export interface EdgeAgentQuota {
+  agent: string;
+  /** Present only when the agent bills against a readable subscription. */
+  provider?: ProviderUsage;
+  summary: QuotaSummary;
+}
+
+/**
+ * The rings the sidebar draws, in the sources' own order.
+ *
+ * `configured` undefined means the automatic list: every agent detected on
+ * this Mac. An explicit list is taken as given, including the empty one.
+ */
+export function edgeAgentQuotas(
+  sources: SourceStatus[],
   providers: ProviderUsage[],
   configured: string[] | undefined,
-): ProviderUsage[] {
-  if (!configured) return providers;
-  const allowed = new Set(configured);
-  return providers.filter((provider) => allowed.has(provider.provider));
+): EdgeAgentQuota[] {
+  const allowed = configured ? new Set(configured) : undefined;
+  return sources
+    .filter((source) => (allowed ? allowed.has(source.agent) : source.available))
+    .map((source) => {
+      const subscription = agentSubscription(source.agent);
+      const provider = subscription
+        ? providers.find((item) => item.provider === subscription)
+        : undefined;
+      return {
+        agent: source.agent,
+        provider,
+        summary: provider ? quotaSummary(provider) : { band: "unknown" as const, windows: [] },
+      };
+    });
 }
+

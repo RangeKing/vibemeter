@@ -7,9 +7,11 @@ use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl};
 use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelBuilder, PanelLevel, StyleMask};
 
 const WIDTH: f64 = 300.0;
-const HEIGHT: f64 = 460.0;
+const HEIGHT: f64 = 720.0;
 const FOLDED_WIDTH: f64 = 58.0;
-const FOLDED_HEIGHT: f64 = 300.0;
+/// Tall enough for a ring per supported agent; the notch itself is only as
+/// long as the rings it carries, and the rest of the panel stays click-through.
+const FOLDED_HEIGHT: f64 = 720.0;
 const SETTLE_MS: u64 = 700;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -202,13 +204,13 @@ pub fn set_expanded(
 }
 
 fn dimensions(expanded: bool, available_height: f64) -> (f64, f64) {
+    // Both states clamp to the display: a panel taller than the work area
+    // would put the first or last ring off-screen with no way to reach it.
+    let height = HEIGHT.min((available_height - 32.0).max(200.0));
     if expanded {
-        (
-            WIDTH,
-            HEIGHT.min((available_height - 32.0).max(FOLDED_HEIGHT)),
-        )
+        (WIDTH, height)
     } else {
-        (FOLDED_WIDTH, FOLDED_HEIGHT)
+        (FOLDED_WIDTH, FOLDED_HEIGHT.min(height))
     }
 }
 fn position(
@@ -271,8 +273,9 @@ mod tests {
     use super::*;
     #[test]
     fn folded_window_does_not_intercept_the_hidden_sidebar() {
-        assert_eq!(dimensions(false, 900.0), (58.0, 300.0));
-        assert_eq!(dimensions(true, 500.0), (300.0, 460.0));
+        assert_eq!(dimensions(false, 900.0), (58.0, 720.0));
+        assert_eq!(dimensions(false, 600.0), (58.0, 568.0));
+        assert_eq!(dimensions(true, 500.0), (300.0, 468.0));
     }
     #[test]
     fn placement_respects_display_origin_and_both_edges() {

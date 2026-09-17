@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
-import type { AppSettings, EdgeState, ProviderUsage, RateWindow } from "../types";
+import type { AppSettings, EdgeState, ProviderUsage, RateWindow, SourceStatus } from "../types";
 import { EdgeSidebar, notchHeightFor } from "./EdgeSidebar";
 
 const mocks = vi.hoisted(() => ({
@@ -14,9 +14,10 @@ const mocks = vi.hoisted(() => ({
   settings: vi.fn(),
   main: vi.fn(),
   providers: vi.fn(),
+  sources: vi.fn(),
   refreshProviders: vi.fn(),
   credentialsAllowed: "true",
-  edgeSidebarProviders: "auto",
+  edgeSidebarAgents: "auto",
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (_name, cb) => {
@@ -31,10 +32,11 @@ vi.mock("../lib/api", () => ({
     showSettings: mocks.settings,
     showMain: mocks.main,
     providers: mocks.providers,
+    sources: mocks.sources,
     refreshProviders: mocks.refreshProviders,
     settings: async (): Promise<Partial<AppSettings>> => ({
       credentialsAllowed: mocks.credentialsAllowed,
-      edgeSidebarProviders: mocks.edgeSidebarProviders,
+      edgeSidebarAgents: mocks.edgeSidebarAgents,
       cursorDashboardUsage: "false",
       useSystemProxy: "false",
     }),
@@ -53,6 +55,21 @@ function provider(name: string, windows: RateWindow[], available = true): Provid
     health: { state: "operational", description: "", statusUrl: "https://example.test" },
     refreshedAt: "2026-09-17T02:00:00Z",
     stale: false,
+  };
+}
+
+function source(agent: string, available = true): SourceStatus {
+  return {
+    agent,
+    available,
+    selected: true,
+    capabilityLevel: "full",
+    liveCapability: "exact",
+    parserVersion: "1",
+    sessionCount: 1,
+    status: available ? "ready" : "not-found",
+    warningCount: 0,
+    pathLabel: agent,
   };
 }
 
@@ -75,8 +92,15 @@ beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   mocks.state = { enabled: true, expanded: true, pinned: false, side: "right" };
   mocks.credentialsAllowed = "true";
-  mocks.edgeSidebarProviders = "auto";
+  mocks.edgeSidebarAgents = "auto";
   mocks.refreshProviders.mockResolvedValue([]);
+  mocks.sources.mockResolvedValue([
+    source("claude-code"),
+    source("codex"),
+    source("cursor"),
+    source("zcode"),
+    source("hermes", false),
+  ]);
   mocks.providers.mockResolvedValue([
     provider("claude", [
       window_("session", "quota.session", 73, "2026-09-17T03:00:00Z"),
@@ -104,7 +128,7 @@ describe("Edge sidebar", () => {
     expect(screen.getByText("93% left")).toBeTruthy();
     expect(screen.getByText(/Resets /)).toBeTruthy();
     // The ring carries the tightest window for that provider.
-    expect(screen.getByRole("button", { name: "Claude · 27% left" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude Code · 27% left" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Codex · 79% left" })).toBeTruthy();
   });
 
@@ -118,6 +142,18 @@ describe("Edge sidebar", () => {
     expect(screen.queryByText("27% left")).toBeNull();
     // An unreported window draws no arc rather than a full one.
     expect(document.querySelectorAll(".edge-ring-arc")).toHaveLength(2);
+  });
+
+  it("gives an Agent with no readable subscription a ring and says why", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.pointerEnter(screen.getByRole("button", { name: /^ZCode/ }));
+    });
+    expect(
+      screen.getByText("This Agent has no subscription VibeMeter can read. Nothing is estimated in its place."),
+    ).toBeTruthy();
+    // Undetected Agents stay out of the automatic list.
+    expect(screen.queryByRole("button", { name: /^Hermes/ })).toBeNull();
   });
 
   it("offers the settings route instead of a quota when credentials are off", async () => {
@@ -179,18 +215,19 @@ describe("Edge sidebar", () => {
   });
 
   it("distinguishes an empty provider list from a failed read", async () => {
-    mocks.providers.mockResolvedValue([]);
+    mocks.sources.mockResolvedValue([]);
     await mount();
-    expect(screen.getByText("No subscription providers")).toBeTruthy();
+    expect(screen.getByText("No Agent detected")).toBeTruthy();
     cleanup();
+    mocks.sources.mockResolvedValue([source("claude-code")]);
     mocks.providers.mockRejectedValue(new Error("unavailable"));
     await mount();
-    expect(screen.queryByText("No subscription providers")).toBeNull();
+    expect(screen.queryByText("No Agent detected")).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain("Quota is unavailable");
   });
 
   it("shows only the subscriptions the settings keep, and says so when none", async () => {
-    mocks.edgeSidebarProviders = JSON.stringify(["codex"]);
+    mocks.edgeSidebarAgents = JSON.stringify(["codex"]);
     await mount();
     expect(screen.getByRole("button", { name: /^Codex/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Claude/ })).toBeNull();
@@ -198,15 +235,17 @@ describe("Edge sidebar", () => {
     cleanup();
     // An empty list is the user asking for none, which must not read as a
     // provider outage.
-    mocks.edgeSidebarProviders = "[]";
+    mocks.edgeSidebarAgents = "[]";
     await mount();
-    expect(screen.getByText("Every subscription is hidden")).toBeTruthy();
-    expect(screen.queryByText("No subscription providers")).toBeNull();
+    expect(screen.getByText("Every Agent is hidden")).toBeTruthy();
+    expect(screen.queryByText("No Agent detected")).toBeNull();
   });
 
   it("keeps the notch inside the folded panel however many providers report", async () => {
     expect(notchHeightFor(1)).toBe(147);
     expect(notchHeightFor(3)).toBe(279);
-    expect(notchHeightFor(9)).toBe(300);
+    // Every supported Agent still fits inside the folded panel.
+    expect(notchHeightFor(9)).toBe(675);
+    expect(notchHeightFor(40)).toBe(720);
   });
 });

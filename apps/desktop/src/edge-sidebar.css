@@ -100,6 +100,15 @@ html[data-surface="edge"] #root {
   flex-direction: column;
   align-items: center;
   gap: 15px;
+  /* A short display can leave less room than the rings want. Scrolling keeps
+     the last one reachable instead of clipping it against the flare. */
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.edge-provider-rings::-webkit-scrollbar {
+  display: none;
 }
 
 /* ==========================================================================
