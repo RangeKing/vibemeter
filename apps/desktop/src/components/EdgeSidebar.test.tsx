@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   providers: vi.fn(),
   refreshProviders: vi.fn(),
   credentialsAllowed: "true",
+  edgeSidebarProviders: "auto",
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (_name, cb) => {
@@ -33,6 +34,7 @@ vi.mock("../lib/api", () => ({
     refreshProviders: mocks.refreshProviders,
     settings: async (): Promise<Partial<AppSettings>> => ({
       credentialsAllowed: mocks.credentialsAllowed,
+      edgeSidebarProviders: mocks.edgeSidebarProviders,
       cursorDashboardUsage: "false",
       useSystemProxy: "false",
     }),
@@ -73,6 +75,7 @@ beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   mocks.state = { enabled: true, expanded: true, pinned: false, side: "right" };
   mocks.credentialsAllowed = "true";
+  mocks.edgeSidebarProviders = "auto";
   mocks.refreshProviders.mockResolvedValue([]);
   mocks.providers.mockResolvedValue([
     provider("claude", [
@@ -184,6 +187,21 @@ describe("Edge sidebar", () => {
     await mount();
     expect(screen.queryByText("No subscription providers")).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain("Quota is unavailable");
+  });
+
+  it("shows only the subscriptions the settings keep, and says so when none", async () => {
+    mocks.edgeSidebarProviders = JSON.stringify(["codex"]);
+    await mount();
+    expect(screen.getByRole("button", { name: /^Codex/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Claude/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Cursor/ })).toBeNull();
+    cleanup();
+    // An empty list is the user asking for none, which must not read as a
+    // provider outage.
+    mocks.edgeSidebarProviders = "[]";
+    await mount();
+    expect(screen.getByText("Every subscription is hidden")).toBeTruthy();
+    expect(screen.queryByText("No subscription providers")).toBeNull();
   });
 
   it("keeps the notch inside the folded panel however many providers report", async () => {

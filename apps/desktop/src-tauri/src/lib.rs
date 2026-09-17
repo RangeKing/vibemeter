@@ -804,6 +804,7 @@ async fn get_app_settings(state: State<'_, AppState>) -> AppResult<BTreeMap<Stri
             ("notchEnabled", "true"),
             ("edgeSidebarEnabled", "false"),
             ("edgeSidebarSide", "right"),
+            ("edgeSidebarProviders", "auto"),
             ("menuBarEnabled", "true"),
             ("dataPageAgents", "auto"),
             ("iaMigrationTipSeen", "false"),
@@ -886,6 +887,14 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),
+        "edgeSidebarProviders" => {
+            value == "auto"
+                || serde_json::from_str::<Vec<String>>(value).is_ok_and(|providers| {
+                    providers.iter().all(|provider| {
+                        providers::SUBSCRIPTION_PROVIDERS.contains(&provider.as_str())
+                    })
+                })
+        }
         "dataPageAgents" => {
             value == "auto"
                 || serde_json::from_str::<Vec<String>>(value).is_ok_and(|agents| {
@@ -1321,6 +1330,12 @@ mod startup_tests {
 
     #[test]
     fn data_page_agent_setting_accepts_auto_and_known_agents_only() {
+        assert!(validate_setting("edgeSidebarProviders", "auto").is_ok());
+        assert!(validate_setting("edgeSidebarProviders", "[]").is_ok());
+        assert!(validate_setting("edgeSidebarProviders", r#"["claude","cursor"]"#).is_ok());
+        // Agents are not subscriptions: only a provider VibeMeter can read a
+        // quota for belongs in this list.
+        assert!(validate_setting("edgeSidebarProviders", r#"["claude-code"]"#).is_err());
         assert!(validate_setting("dataPageAgents", "auto").is_ok());
         assert!(validate_setting("dataPageAgents", "[]").is_ok());
         assert!(validate_setting("dataPageAgents", r#"["codex","grok-build"]"#).is_ok());

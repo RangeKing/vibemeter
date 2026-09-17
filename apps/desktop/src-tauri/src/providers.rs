@@ -30,6 +30,9 @@ static PERCENT: Lazy<Regex> = Lazy::new(|| {
 static RESET_DESCRIPTION: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bResets?\b[^\r\n]{0,120}").expect("valid reset regex"));
 
+/// The subscriptions VibeMeter can read a quota for, in display order.
+pub(crate) const SUBSCRIPTION_PROVIDERS: [&str; 3] = ["claude", "codex", "cursor"];
+
 #[derive(Clone)]
 pub struct ProviderStore {
     inner: Arc<RwLock<HashMap<String, ProviderUsage>>>,
@@ -40,7 +43,7 @@ impl ProviderStore {
     pub fn new(probe_dir: PathBuf) -> AppResult<Self> {
         std::fs::create_dir_all(&probe_dir)?;
         let mut providers = HashMap::new();
-        for provider in ["claude", "codex", "cursor"] {
+        for provider in SUBSCRIPTION_PROVIDERS {
             providers.insert(provider.into(), unavailable_provider(provider));
         }
         Ok(Self {
@@ -55,11 +58,11 @@ impl ProviderStore {
             .read()
             .map(|providers| providers.values().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
-        items.sort_by_key(|provider| match provider.provider.as_str() {
-            "claude" => 0,
-            "codex" => 1,
-            "cursor" => 2,
-            _ => 3,
+        items.sort_by_key(|provider| {
+            SUBSCRIPTION_PROVIDERS
+                .iter()
+                .position(|known| *known == provider.provider)
+                .unwrap_or(SUBSCRIPTION_PROVIDERS.len())
         });
         items
     }

@@ -9,6 +9,7 @@ import { AgentBadge, ErrorState, LoadingState, PageHeader, Toggle } from "../com
 import { api } from "../lib/api";
 import { refreshHistoryIndex } from "../lib/indexRefresh";
 import { detectedDataAgents, parseDataPageAgents, serializeDataPageAgents, sourceCapabilityNameGroups } from "../lib/sourceStatus";
+import { parseEdgeProviders, providerAgentIcon, providerDisplayName, serializeEdgeProviders } from "../lib/quota";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useUiStore } from "../store";
 import type { AppSettings, DiagnosticRetentionStatus, Locale, ProjectControl, Theme } from "../types";
@@ -82,6 +83,9 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
   const [historyRefreshPending, setHistoryRefreshPending] = useState(false);
   const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
+  const edgeProviderOptions = useQuery({ queryKey: ["providers"], queryFn: api.providers });
+  const [edgeProvidersDraft, setEdgeProvidersDraft] = useState<string | null>(null);
+  const [edgeProvidersPending, setEdgeProvidersPending] = useState(false);
   const [dataPageAgentsDraft, setDataPageAgentsDraft] = useState<string | null>(null);
   const [dataPageAgentsPending, setDataPageAgentsPending] = useState(false);
   const [agentDetectionPending, setAgentDetectionPending] = useState(false);
@@ -258,6 +262,24 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const theme = data.theme as Theme;
   const diagnosticStatus = diagnostics.data;
   const diagnosticPending = setDiagnostics.isPending || clearDiagnostics.isPending;
+  const configuredEdgeProviders = parseEdgeProviders(edgeProvidersDraft ?? data.edgeSidebarProviders);
+  const knownEdgeProviders = (edgeProviderOptions.data ?? []).map((provider) => provider.provider);
+  const selectedEdgeProviders = new Set(configuredEdgeProviders ?? knownEdgeProviders);
+  const toggleEdgeProvider = async (provider: string, checked: boolean) => {
+    const base = configuredEdgeProviders ?? knownEdgeProviders;
+    const next = checked ? [...base, provider] : base.filter((item) => item !== provider);
+    const previous = edgeProvidersDraft;
+    const value = serializeEdgeProviders(next);
+    setEdgeProvidersDraft(value);
+    setEdgeProvidersPending(true);
+    try {
+      await setSetting("edgeSidebarProviders", value);
+    } catch {
+      setEdgeProvidersDraft(previous);
+    } finally {
+      setEdgeProvidersPending(false);
+    }
+  };
   const persistDataPageAgents = async (value: string) => {
     const previous = dataPageAgentsDraft;
     setDataPageAgentsDraft(value);
@@ -383,6 +405,22 @@ export function SettingsPage({ locale }: { locale: Locale }) {
           <header><PanelTop size={17} /><div><h2>{t("edge.title")}</h2><p>{t("edge.description")}</p></div></header>
           <div className="setting-row"><div><strong>{t("edge.enabled")}</strong></div><Toggle checked={data.edgeSidebarEnabled === "true"} onCheckedChange={(enabled) => void setSetting("edgeSidebarEnabled", String(enabled))} label={t("edge.enabled")} /></div>
           <div className="setting-row"><div><strong>{t("edge.position")}</strong></div><select aria-label={t("edge.position")} value={data.edgeSidebarSide ?? "right"} onChange={(event) => void setSetting("edgeSidebarSide", event.target.value)}><option value="left">{t("edge.left")}</option><option value="right">{t("edge.right")}</option></select></div>
+          <div className="setting-row multiline"><div><strong>{t("edge.providers")}</strong><p>{t("edge.providersBody")}</p></div></div>
+          <div className="data-page-agent-options" role="group" aria-label={t("edge.providers")}>
+            {(edgeProviderOptions.data ?? []).map((provider) => (
+              <label className={`data-page-agent-option ${provider.available ? "" : "is-missing"}`} key={provider.provider}>
+                <AgentBadge agent={providerAgentIcon(provider.provider)} compact />
+                <span><strong>{providerDisplayName(provider.provider)}</strong><small>{provider.available ? t("edge.providerReporting") : t("edge.providerSilent")}</small></span>
+                <input
+                  type="checkbox"
+                  checked={selectedEdgeProviders.has(provider.provider)}
+                  disabled={edgeProvidersPending}
+                  aria-label={providerDisplayName(provider.provider)}
+                  onChange={(event) => void toggleEdgeProvider(provider.provider, event.target.checked)}
+                />
+              </label>
+            ))}
+          </div>
         </section>
 
         <section className="settings-section">

@@ -112,6 +112,7 @@ describe("Data page Agent display settings", () => {
     liveHooksEnabled: "true",
     notchEnabled: "true",
     menuBarEnabled: "true",
+    edgeSidebarProviders: "auto",
     dataPageAgents: "auto",
   };
 

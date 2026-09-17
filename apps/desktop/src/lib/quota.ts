@@ -83,3 +83,34 @@ export function quotaSummary(provider: ProviderUsage): QuotaSummary {
     windows,
   };
 }
+
+export const EDGE_PROVIDERS_AUTO = "auto";
+
+/** Reads the stored choice. `undefined` means "every provider", not "none". */
+export function parseEdgeProviders(value: string | undefined): string[] | undefined {
+  if (!value || value === EDGE_PROVIDERS_AUTO) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) return undefined;
+    return [...new Set(parsed as string[])];
+  } catch {
+    return undefined;
+  }
+}
+
+export function serializeEdgeProviders(providers: string[]): string {
+  return JSON.stringify([...new Set(providers)].sort());
+}
+
+/**
+ * Applies the choice while keeping the store's order. An empty stored list is
+ * a real answer — show nothing — and stays distinct from no choice at all.
+ */
+export function visibleQuotaProviders(
+  providers: ProviderUsage[],
+  configured: string[] | undefined,
+): ProviderUsage[] {
+  if (!configured) return providers;
+  const allowed = new Set(configured);
+  return providers.filter((provider) => allowed.has(provider.provider));
+}

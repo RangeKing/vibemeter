@@ -6,11 +6,13 @@ import { useTranslation } from "react-i18next";
 import { api } from "../lib/api";
 import {
   formatResetRemaining,
+  parseEdgeProviders,
   providerAgentIcon,
   providerDisplayName,
   quotaSummary,
   resetRemainingSeconds,
   resetTime,
+  visibleQuotaProviders,
   type QuotaSummary,
 } from "../lib/quota";
 import { SIDE_NOTCH_DEPTH, sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
@@ -186,7 +188,12 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     }, EDGE_FOLD_GRACE_MS);
   };
 
-  const providers: ProviderUsage[] = quota.data ?? [];
+  const configuredProviders = parseEdgeProviders(settings.data?.edgeSidebarProviders);
+  const allProviders: ProviderUsage[] = quota.data ?? [];
+  const providers = visibleQuotaProviders(allProviders, configuredProviders);
+  /* A chosen-but-empty list is the user saying "show none", which is a
+     different thing from no provider reporting at all. */
+  const hiddenByChoice = Boolean(configuredProviders) && !providers.length;
   const active =
     providers.find((provider) => provider.provider === selected) ?? providers[0];
   const summary: QuotaSummary | undefined = active ? quotaSummary(active) : undefined;
@@ -386,6 +393,14 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 <strong>{t("edge.error")}</strong>
                 <button onClick={() => void quota.refetch()}>{t("edge.retry")}</button>
               </div>
+            ) : hiddenByChoice ? (
+              <button className="edge-enable-quota" onClick={() => void openMain(true)}>
+                <span>
+                  <strong>{t("edge.allHidden")}</strong>
+                  <small>{t("edge.allHiddenBody")}</small>
+                </span>
+                <ArrowUpRight size={15} />
+              </button>
             ) : !active ? (
               <div className="edge-empty">
                 <Gauge size={28} />

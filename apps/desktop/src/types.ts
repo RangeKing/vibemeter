@@ -1032,6 +1032,7 @@ export interface AppSettings {
   edgeSidebarSide?: string;
   notchEnabled: string;
   menuBarEnabled: string;
+  edgeSidebarProviders: string;
   dataPageAgents: string;
 }
 
