@@ -380,8 +380,9 @@ describe("Edge sidebar", () => {
     const strip = document.querySelector(".edge-notch") as HTMLElement;
     strip.setPointerCapture = vi.fn();
     strip.releasePointerCapture = vi.fn();
-    // The page reports how long the notch is so the clamp knows the travel.
-    expect(mocks.placement).toHaveBeenCalledWith(undefined, 276);
+    // The page reports how long the notch and the card are, so the panel is
+    // never taller than what it shows — a taller one costs travel.
+    expect(mocks.placement).toHaveBeenLastCalledWith(undefined, 276, undefined);
     mocks.placement.mockClear();
 
     await act(async () => {
@@ -403,6 +404,15 @@ describe("Edge sidebar", () => {
       fireEvent.click(codex);
     });
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Claude Code");
+
+    // Dragging pulls the window out from under the pointer, so leaving the
+    // panel mid-drag must not start folding it away.
+    mocks.expand.mockClear();
+    fireEvent.pointerLeave(screen.getByRole("main"));
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(mocks.expand).not.toHaveBeenCalled();
 
     // The offset is written back once, at the end, not once per frame.
     await act(async () => {

@@ -37,8 +37,8 @@ import type {
 
 export const api = {
   edgeState: () => invoke<EdgeState>("get_edge_state"),
-  setEdgePlacement: (centerY?: number, notchHeight?: number) =>
-    invoke<void>("set_edge_placement", { centerY, notchHeight }),
+  setEdgePlacement: (centerY?: number, notchHeight?: number, cardHeight?: number) =>
+    invoke<void>("set_edge_placement", { centerY, notchHeight, cardHeight }),
   setEdgeExpanded: (expanded: boolean, pinned?: boolean) => invoke<void>("set_edge_expanded", { expanded, pinned }),
   overview: (range: string) => invoke<OverviewResponse>("get_overview", { range }),
   phraseCloud: (range: string) => invoke<PhraseCloudResponse>("get_phrase_cloud", { range }),

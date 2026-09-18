@@ -333,7 +333,9 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
 
   const scheduleFold = () => {
     cancelFold();
-    if (stateRef.current.pinned) return;
+    // A drag drags the window out from under the pointer, so leaving the panel
+    // mid-drag is the normal case and must not start folding it away.
+    if (stateRef.current.pinned || drag.current) return;
     foldTimer.current = setTimeout(() => {
       if (
         !stateRef.current.pinned &&
@@ -388,8 +390,11 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   }, [active, rings.length, state.expanded, state.side]);
 
   useEffect(() => {
-    void api.setEdgePlacement(undefined, notchHeight).catch(() => undefined);
-  }, [notchHeight]);
+    const card = sheetRef.current?.getBoundingClientRect().height;
+    void api
+      .setEdgePlacement(undefined, notchHeight, card ? Math.ceil(card) : undefined)
+      .catch(() => undefined);
+  }, [notchHeight, rings.length, state.expanded]);
 
   /* Dragging moves the panel, so the pointer stays over the strip the whole
      time; capture keeps the events coming even when a frame lands late and the
@@ -403,7 +408,12 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     const center = window.screenY + rect.top + rect.height / 2;
     drag.current = {
       pointerId: event.pointerId,
-      grab: event.screenY - center,
+      /* Where the pointer sat within the strip, so the notch keeps its grip
+         rather than jumping its middle under the cursor. Bounded by the
+         strip's own half-length: if `screenY` and the window's own origin ever
+         disagree, the worst case is a grip at one end, not a notch flung off
+         the display. */
+      grab: Math.max(-rect.height / 2, Math.min(rect.height / 2, event.screenY - center)),
       startScreenY: event.screenY,
       moved: false,
     };
@@ -419,7 +429,9 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
       setDragging(true);
       cancelFold();
     }
-    void api.setEdgePlacement(event.screenY - current.grab, notchHeight).catch(() => undefined);
+    void api
+      .setEdgePlacement(event.screenY - current.grab, notchHeight)
+      .catch(() => undefined);
   };
 
   const endDrag = (event: React.PointerEvent<HTMLElement>) => {

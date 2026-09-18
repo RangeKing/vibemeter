@@ -313,8 +313,9 @@ fn set_edge_placement(
     app: AppHandle,
     center_y: Option<f64>,
     notch_height: Option<f64>,
+    card_height: Option<f64>,
 ) -> AppResult<()> {
-    edge::set_placement(&app, center_y, notch_height)
+    edge::set_placement(&app, center_y, notch_height, card_height)
         .map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 
@@ -944,14 +945,17 @@ async fn set_app_setting(
             _ => None,
         });
     }
-    if key == "edgeSidebarEnabled" || key == "edgeSidebarSide" || key == "edgeSidebarOffset" {
+    if key == "edgeSidebarOffset" {
+        if let Ok(offset) = value.parse::<f64>() {
+            edge::set_offset(&app, offset)
+                .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
+        }
+    } else if key == "edgeSidebarEnabled" || key == "edgeSidebarSide" {
         edge::configure(
             &app,
             (key == "edgeSidebarEnabled").then_some(value == "true"),
             (key == "edgeSidebarSide").then_some(value.as_str()),
-            (key == "edgeSidebarOffset")
-                .then(|| value.parse::<f64>().ok())
-                .flatten(),
+            None,
         )
         .map_err(|error| AppError::InvalidRequest(error.to_string()))?;
     }
