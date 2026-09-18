@@ -311,11 +311,13 @@ fn set_edge_expanded(app: AppHandle, expanded: bool, pinned: Option<bool>) -> Ap
 #[tauri::command]
 fn set_edge_placement(
     app: AppHandle,
-    center_y: Option<f64>,
+    start_offset: Option<f64>,
+    delta_y: Option<f64>,
     notch_height: Option<f64>,
     card_height: Option<f64>,
 ) -> AppResult<()> {
-    edge::set_placement(&app, center_y, notch_height, card_height)
+    let drag = start_offset.zip(delta_y);
+    edge::set_placement(&app, drag, notch_height, card_height)
         .map_err(|error| AppError::InvalidRequest(error.to_string()))
 }
 

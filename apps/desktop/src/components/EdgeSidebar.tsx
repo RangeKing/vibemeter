@@ -39,9 +39,10 @@ export const EDGE_DRAG_THRESHOLD = 4;
 
 interface DragState {
   pointerId: number;
-  /** Where the pointer sat relative to the notch's middle when it went down. */
-  grab: number;
+  /** Screen Y when the press landed. Only ever used as a difference. */
   startScreenY: number;
+  /** The notch's position when the press landed, to move on from. */
+  startOffset: number;
   moved: boolean;
 }
 
@@ -404,17 +405,13 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     if (event.button !== 0) return;
     const notch = notchRef.current;
     if (!notch) return;
-    const rect = notch.getBoundingClientRect();
-    const center = window.screenY + rect.top + rect.height / 2;
+    /* Nothing is read out of the pointer's absolute position. The notch moves
+       on from where it already is, by however far the pointer travels — so a
+       press on its own moves it not at all, which is what a press should do. */
     drag.current = {
       pointerId: event.pointerId,
-      /* Where the pointer sat within the strip, so the notch keeps its grip
-         rather than jumping its middle under the cursor. Bounded by the
-         strip's own half-length: if `screenY` and the window's own origin ever
-         disagree, the worst case is a grip at one end, not a notch flung off
-         the display. */
-      grab: Math.max(-rect.height / 2, Math.min(rect.height / 2, event.screenY - center)),
       startScreenY: event.screenY,
+      startOffset: stateRef.current.offset,
       moved: false,
     };
     notch.setPointerCapture(event.pointerId);
@@ -430,7 +427,10 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
       cancelFold();
     }
     void api
-      .setEdgePlacement(event.screenY - current.grab, notchHeight)
+      .setEdgePlacement(
+        { startOffset: current.startOffset, deltaY: event.screenY - current.startScreenY },
+        notchHeight,
+      )
       .catch(() => undefined);
   };
 

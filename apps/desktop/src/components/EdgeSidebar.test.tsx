@@ -387,7 +387,8 @@ describe("Edge sidebar", () => {
 
     await act(async () => {
       fireEvent.pointerDown(strip, { button: 0, pointerId: 1, screenY: 500 });
-      // Under the threshold: still a click, nothing moves.
+      // Under the threshold: still a click. Nothing is sent, so a press on the
+      // strip cannot move it at all.
       fireEvent.pointerMove(strip, { pointerId: 1, screenY: 502 });
     });
     expect(mocks.placement).not.toHaveBeenCalled();
@@ -395,7 +396,9 @@ describe("Edge sidebar", () => {
     await act(async () => {
       fireEvent.pointerMove(strip, { pointerId: 1, screenY: 560 });
     });
-    expect(mocks.placement).toHaveBeenCalledWith(expect.any(Number), 276);
+    // Where it was, plus how far the pointer moved. No absolute screen
+    // position is read, so nothing can jump to the pointer.
+    expect(mocks.placement).toHaveBeenCalledWith({ startOffset: 0.5, deltaY: 60 }, 276);
 
     // A drag that passes over a ring must not switch the card to it.
     const codex = screen.getByRole("button", { name: /^Codex/ });

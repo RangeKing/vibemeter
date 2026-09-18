@@ -238,14 +238,17 @@ pub fn set_offset(app: &tauri::AppHandle, offset: f64) -> tauri::Result<()> {
 
 /// Moves the notch, and records how long it is.
 ///
-/// `center_y` is a screen coordinate — where the page wants the middle of the
-/// notch to land — because the page has no idea where the display's work area
-/// starts or ends. It is turned into an offset here, against the travel the
-/// display actually allows, and clamped so the notch cannot be dragged past
-/// either end and stranded out of reach.
+/// A drag arrives as where it started plus how far the pointer has moved since
+/// — never as an absolute screen position. The page cannot say where the notch
+/// is in screen terms: a borderless panel's `window.screenY` does not reliably
+/// agree with the window's own origin, and reading a position out of it once
+/// put the notch's bottom edge under the pointer the moment it was touched. A
+/// difference between two coordinates is sound whatever the origin, and taking
+/// it from the offset the drag began at means the notch moves exactly as far
+/// as the pointer with nothing accumulating along the way.
 pub fn set_placement(
     app: &tauri::AppHandle,
-    center_y: Option<f64>,
+    drag: Option<(f64, f64)>,
     notch_height: Option<f64>,
     card_height: Option<f64>,
 ) -> tauri::Result<()> {
@@ -269,10 +272,11 @@ pub fn set_placement(
             if let Some(height) = card_height {
                 s.card_height = height.max(1.0);
             }
-            if let Some(center) = center_y {
-                s.offset = offset_for_center(center, origin, available, s.notch_height);
+            if let Some((start_offset, delta)) = drag {
+                let from = center_for_offset(start_offset, origin, available, s.notch_height);
+                s.offset = offset_for_center(from + delta, origin, available, s.notch_height);
             }
-            center_y.is_some() || notch_height.is_some() || card_height.is_some()
+            drag.is_some() || notch_height.is_some() || card_height.is_some()
         };
         if changed {
             let _ = layout(&handle);
@@ -295,6 +299,12 @@ fn offset_for_center(center: f64, origin: f64, available: f64, notch_height: f64
     ((center - top) / (bottom - top)).clamp(0.0, 1.0)
 }
 
+/// Where the notch's centre sits for a given offset.
+fn center_for_offset(offset: f64, origin: f64, available: f64, notch_height: f64) -> f64 {
+    let (top, bottom) = travel(origin, available, notch_height);
+    top + (bottom - top).max(0.0) * offset.clamp(0.0, 1.0)
+}
+
 /// Top of the panel, so the notch's centre lands at `offset` of its travel.
 fn vertical_origin(
     origin: f64,
@@ -303,8 +313,7 @@ fn vertical_origin(
     notch_height: f64,
     offset: f64,
 ) -> f64 {
-    let (top, bottom) = travel(origin, available, notch_height);
-    let center = top + (bottom - top).max(0.0) * offset.clamp(0.0, 1.0);
+    let center = center_for_offset(offset, origin, available, notch_height);
     // macOS moves a window back onto the display rather than placing it partly
     // off, and the notch would come back with it. Keeping the panel inside the
     // work area means the position asked for is the position given — which is
@@ -435,6 +444,21 @@ mod tests {
         // Dragged well past the bottom of the display, it stops at the end
         // rather than leaving the notch somewhere unreachable.
         assert_eq!(offset_for_center(4000.0, origin, available, notch), 1.0);
+
+        // A drag is where it started plus how far the pointer moved, so a
+        // press that has not moved leaves the notch exactly where it was.
+        for offset in [0.0, 0.25, 0.5, 1.0] {
+            let from = center_for_offset(offset, origin, available, notch);
+            assert_eq!(offset_for_center(from, origin, available, notch), offset);
+        }
+        // And moving 100pt moves the notch 100pt, not to wherever the pointer
+        // happens to be.
+        let from = center_for_offset(0.5, origin, available, notch);
+        let moved = offset_for_center(from + 100.0, origin, available, notch);
+        assert_eq!(
+            center_for_offset(moved, origin, available, notch),
+            from + 100.0
+        );
 
         // A panel matching the notch reaches both ends of that travel.
         let fitted = vertical_origin(origin, available, notch, notch, 0.0);
