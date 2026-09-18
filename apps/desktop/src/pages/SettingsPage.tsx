@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { ArrowRight, BarChart3, Database, GitBranch, HardDrive, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2, X } from "lucide-react";
+import { ArrowRight, BarChart3, Database, GitBranch, HardDrive, KeyRound, Languages, Laptop, LoaderCircle, LockKeyhole, PanelTop, Power, RadioTower, RefreshCw, ScanSearch, ShieldAlert, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent as ReactFormEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,7 +10,7 @@ import { api } from "../lib/api";
 import { refreshHistoryIndex } from "../lib/indexRefresh";
 import { detectedDataAgents, parseDataPageAgents, serializeDataPageAgents, sourceCapabilityNameGroups } from "../lib/sourceStatus";
 import { agentName } from "../lib/format";
-import { agentSubscription, parseEdgeAgents, serializeEdgeAgents } from "../lib/quota";
+import { agentSubscription, isApiProvider, parseEdgeAgents, providerDisplayName, serializeEdgeAgents } from "../lib/quota";
 import { useFocusTrap } from "../lib/useFocusTrap";
 import { useUiStore } from "../store";
 import type { AppSettings, DiagnosticRetentionStatus, Locale, ProjectControl, Theme } from "../types";
@@ -84,6 +84,10 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const [cursorRefreshPending, setCursorRefreshPending] = useState(false);
   const [historyRefreshPending, setHistoryRefreshPending] = useState(false);
   const [cursorDashboardDraft, setCursorDashboardDraft] = useState<boolean | null>(null);
+  const apiAccounts = useQuery({ queryKey: ["api-accounts"], queryFn: api.apiAccounts });
+  const [apiDraft, setApiDraft] = useState({ provider: "deepseek", label: "", key: "" });
+  const [apiPending, setApiPending] = useState(false);
+  const [apiError, setApiError] = useState(false);
   const [edgeAgentsDraft, setEdgeAgentsDraft] = useState<string | null>(null);
   const [edgeAgentsPending, setEdgeAgentsPending] = useState(false);
   const [dataPageAgentsDraft, setDataPageAgentsDraft] = useState<string | null>(null);
@@ -282,6 +286,34 @@ export function SettingsPage({ locale }: { locale: Locale }) {
       setEdgeAgentsPending(false);
     }
   };
+  const apiProviders = ["deepseek", "moonshot"];
+  const addApiAccount = async () => {
+    setApiPending(true);
+    setApiError(false);
+    try {
+      await api.addApiAccount(apiDraft.provider, apiDraft.label, apiDraft.key);
+      // The key is gone from the page the moment it is stored; it lives in the
+      // keychain and is never read back here.
+      setApiDraft({ provider: apiDraft.provider, label: "", key: "" });
+      await apiAccounts.refetch();
+    } catch {
+      setApiError(true);
+    } finally {
+      setApiPending(false);
+    }
+  };
+  const removeApiAccount = async (id: string) => {
+    setApiPending(true);
+    setApiError(false);
+    try {
+      await api.removeApiAccount(id);
+      await apiAccounts.refetch();
+    } catch {
+      setApiError(true);
+    } finally {
+      setApiPending(false);
+    }
+  };
   const persistDataPageAgents = async (value: string) => {
     const previous = dataPageAgentsDraft;
     setDataPageAgentsDraft(value);
@@ -423,6 +455,29 @@ export function SettingsPage({ locale }: { locale: Locale }) {
               </label>
             ))}
           </div>
+        </section>
+
+        <section className="settings-section">
+          <header><KeyRound size={17} /><div><h2>{t("edge.accounts")}</h2><p>{t("edge.accountsBody")}</p></div></header>
+          <div className="api-account-list">
+            {apiAccounts.data?.length ? apiAccounts.data.map((account) => (
+              <div className="api-account-row" key={account.id}>
+                <AgentBadge agent={account.provider === "moonshot" ? "kimi-code" : "deepseek-harness"} compact />
+                <span><strong>{account.label}</strong><small>{providerDisplayName(account.provider)}</small></span>
+                <button className="button subtle" disabled={apiPending} aria-label={t("edge.accountRemove", { label: account.label })} onClick={() => void removeApiAccount(account.id)}><Trash2 size={13} /></button>
+              </div>
+            )) : <p className="api-account-empty">{t("edge.accountEmpty")}</p>}
+          </div>
+          <div className="api-account-form">
+            <select aria-label={t("settings.sources")} value={apiDraft.provider} onChange={(event) => setApiDraft({ ...apiDraft, provider: event.target.value })}>
+              {apiProviders.filter(isApiProvider).map((provider) => <option key={provider} value={provider}>{providerDisplayName(provider)}</option>)}
+            </select>
+            <input aria-label={t("edge.accountLabel")} placeholder={t("edge.accountLabel")} value={apiDraft.label} onChange={(event) => setApiDraft({ ...apiDraft, label: event.target.value })} />
+            <input aria-label={t("edge.accountKey")} placeholder={t("edge.accountKey")} type="password" autoComplete="off" spellCheck={false} value={apiDraft.key} onChange={(event) => setApiDraft({ ...apiDraft, key: event.target.value })} />
+            <button className="button primary" disabled={apiPending || !apiDraft.key.trim()} onClick={() => void addApiAccount()}>{t("edge.accountAdd")}</button>
+          </div>
+          <p className="api-account-hint">{t("edge.accountKeyHint")}</p>
+          {apiError ? <p className="api-account-hint danger" role="alert">{t("edge.error")}</p> : null}
         </section>
 
         <section className="settings-section">

@@ -1,4 +1,11 @@
-import type { Locale, ProviderUsage, RateWindow, SourceStatus } from "../types";
+import type {
+  CreditBalance,
+  Locale,
+  ProviderAccount,
+  ProviderUsage,
+  RateWindow,
+  SourceStatus,
+} from "../types";
 
 export function resetTime(window: RateWindow, locale: Locale): string | undefined {
   if (window.resetAt) {
@@ -61,6 +68,8 @@ export interface QuotaSummary {
   band: QuotaBand;
   /** Windows the provider actually reported, in provider order. */
   windows: RateWindow[];
+  /** Headline balance, where the provider bills a key rather than a plan. */
+  balance?: CreditBalance;
 }
 
 /**
@@ -70,18 +79,59 @@ export interface QuotaSummary {
  * full — an unreported quota is unknown, not untouched.
  */
 export function quotaSummary(provider: ProviderUsage): QuotaSummary {
-  const windows = provider.available ? provider.windows : [];
+  return accountsSummary(provider.available ? provider.accounts : []);
+}
+
+/**
+ * Condenses every account of a provider into the one reading a ring can carry.
+ *
+ * Windows win over balances when both exist, because a plan window is the
+ * limit that actually stops work; a balance has no denominator, so it can only
+ * be reported as an amount. Accounts do not share a limit, so the window taken
+ * is the tightest across all of them.
+ */
+export function accountsSummary(accounts: ProviderAccount[]): QuotaSummary {
+  const live = accounts.filter((account) => account.available);
+  const windows = live.flatMap((account) => account.windows);
   const measured = windows
     .map((window) => window.usedPercent)
     .filter((value): value is number => value !== undefined && Number.isFinite(value));
-  if (!measured.length) return { band: "unknown", windows };
+  const balance = live.find((account) => account.balance)?.balance ?? undefined;
+  if (!measured.length) return { band: "unknown", windows, balance };
   const used = Math.min(100, Math.max(0, Math.max(...measured)));
   const remainingPercent = 100 - used;
   return {
     remainingPercent,
     band: remainingPercent < 20 ? "critical" : remainingPercent < 50 ? "warning" : "steady",
     windows,
+    balance,
   };
+}
+
+/** A compact amount for a ring caption: "¥110", "$8.5". */
+export function formatBalanceShort(balance: CreditBalance, locale: Locale): string {
+  const symbol = balance.currency === "CNY" ? "¥" : balance.currency === "USD" ? "$" : "";
+  const value = new Intl.NumberFormat(locale, {
+    notation: Math.abs(balance.total) >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: Math.abs(balance.total) >= 100 ? 0 : 1,
+  }).format(balance.total);
+  return symbol ? `${symbol}${value}` : `${value} ${balance.currency}`;
+}
+
+export function formatBalance(balance: CreditBalance, locale: Locale): string {
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: balance.currency,
+    maximumFractionDigits: 2,
+  }).format(balance.total);
+}
+
+/** What a ring says when it has no percentage to show. */
+export function ringCaption(summary: QuotaSummary, locale: Locale): string {
+  if (summary.remainingPercent !== undefined) {
+    return `${Math.round(summary.remainingPercent)}%`;
+  }
+  return summary.balance ? formatBalanceShort(summary.balance, locale) : "—";
 }
 
 export const EDGE_AGENTS_AUTO = "auto";
@@ -103,24 +153,33 @@ export function serializeEdgeAgents(agents: string[]): string {
 }
 
 /**
- * The subscription an agent bills against, where VibeMeter can read one.
+ * The provider an agent bills against, where VibeMeter can read something.
  *
- * Most agents have none to read: a local harness, or a vendor with no usage
- * endpoint. They still get a ring — they are agents the app supports, and
- * leaving them out would say more than the data does — but the ring carries no
- * arc and the card says the source reports no quota.
+ * Two kinds sit behind this: a plan whose windows reset, and a key whose
+ * balance does not. Agents with neither still get a ring when ticked — they
+ * are agents the app supports, and leaving them out would say more than the
+ * data does — but the ring carries no arc and the card says so.
  */
 export function agentSubscription(agent: string): string | undefined {
   if (agent === "claude-code") return "claude";
   if (agent === "codex") return "codex";
   if (agent === "cursor") return "cursor";
+  if (agent === "deepseek-harness") return "deepseek";
+  if (agent === "kimi-code") return "moonshot";
   return undefined;
+}
+
+/** Providers billed per key rather than per plan. */
+export function isApiProvider(provider: string): boolean {
+  return provider === "deepseek" || provider === "moonshot";
 }
 
 export interface EdgeAgentQuota {
   agent: string;
-  /** Present only when the agent bills against a readable subscription. */
+  /** Present only when the agent bills against a readable provider. */
   provider?: ProviderUsage;
+  /** Every credential the provider was read through, subscription and key. */
+  accounts: ProviderAccount[];
   summary: QuotaSummary;
 }
 
@@ -151,10 +210,12 @@ export function edgeAgentQuotas(
       const provider = subscription
         ? providers.find((item) => item.provider === subscription)
         : undefined;
+      const accounts = provider?.accounts ?? [];
       return {
         agent: source.agent,
         provider,
-        summary: provider ? quotaSummary(provider) : { band: "unknown" as const, windows: [] },
+        accounts,
+        summary: provider ? accountsSummary(accounts) : { band: "unknown" as const, windows: [] },
       };
     });
 }

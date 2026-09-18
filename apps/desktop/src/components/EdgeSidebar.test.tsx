@@ -4,7 +4,14 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { I18nextProvider } from "react-i18next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../i18n";
-import type { AppSettings, EdgeState, ProviderUsage, RateWindow, SourceStatus } from "../types";
+import type {
+  AppSettings,
+  EdgeState,
+  ProviderAccount,
+  ProviderUsage,
+  RateWindow,
+  SourceStatus,
+} from "../types";
 import { EdgeSidebar, notchHeightFor } from "./EdgeSidebar";
 
 const mocks = vi.hoisted(() => ({
@@ -50,12 +57,24 @@ vi.mock("../lib/api", () => ({
 function window_(id: string, label: string, usedPercent?: number, resetAt?: string): RateWindow {
   return { id, label, usedPercent, resetAt, provenance: "observed" };
 }
+function account(provider: string, windows: RateWindow[], available = true): ProviderAccount {
+  return {
+    id: `subscription:${provider}`,
+    provider,
+    kind: "subscription",
+    label: `${provider}-oauth`,
+    available,
+    windows,
+    refreshedAt: "2026-09-17T02:00:00Z",
+  };
+}
 function provider(name: string, windows: RateWindow[], available = true): ProviderUsage {
   return {
     provider: name,
     available,
     source: `${name}-oauth`,
     windows,
+    accounts: [account(name, windows, available)],
     health: { state: "operational", description: "", statusUrl: "https://example.test" },
     refreshedAt: "2026-09-17T02:00:00Z",
     stale: false,
@@ -104,6 +123,7 @@ beforeEach(async () => {
     source("claude-code"),
     source("codex"),
     source("cursor"),
+    source("deepseek-harness"),
     source("zcode"),
     source("hermes", false),
   ]);
@@ -164,9 +184,52 @@ describe("Edge sidebar", () => {
     expect(screen.queryByRole("button", { name: /^Hermes/ })).toBeNull();
   });
 
+  it("reports an API balance as an amount, with no bar and no reset", async () => {
+    mocks.edgeSidebarAgents = JSON.stringify(["deepseek-harness"]);
+    mocks.providers.mockResolvedValue([
+      {
+        provider: "deepseek",
+        available: true,
+        source: "api-key",
+        windows: [],
+        accounts: [
+          {
+            id: "deepseek:a",
+            provider: "deepseek",
+            kind: "api" as const,
+            label: "work key",
+            available: true,
+            windows: [],
+            balance: {
+              currency: "CNY",
+              total: 110,
+              granted: 10,
+              toppedUp: 100,
+              spendable: true,
+              provenance: "observed",
+            },
+            refreshedAt: "2026-09-18T02:00:00Z",
+          },
+        ],
+        health: { state: "operational", description: "", statusUrl: "" },
+        refreshedAt: "2026-09-18T02:00:00Z",
+        stale: false,
+      },
+    ]);
+    await mount();
+    expect(screen.getByText("API key")).toBeTruthy();
+    expect(screen.getByText("work key")).toBeTruthy();
+    expect(screen.getByText("CN¥110.00")).toBeTruthy();
+    expect(screen.getByText("CN¥10.00 granted · CN¥100.00 topped up")).toBeTruthy();
+    // A balance has no window, so nothing draws a track or a countdown.
+    expect(document.querySelector(".edge-quota-track")).toBeNull();
+    // The ring carries the amount, since there is no percentage to carry.
+    expect(screen.getByRole("button", { name: /DeepSeek Harness · ¥110/ })).toBeTruthy();
+  });
+
   it("shows only Agents with a subscription to read unless told otherwise", async () => {
     await mount();
-    for (const name of [/^Claude Code/, /^Codex/, /^Cursor/]) {
+    for (const name of [/^Claude Code/, /^Codex/, /^Cursor/, /^DeepSeek Harness/]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
     // Detected, but there is no subscription behind it: a ring that could only
@@ -264,7 +327,7 @@ describe("Edge sidebar", () => {
     mocks.expand.mockClear();
     // The panel is already open; crossing four rings is four selections and no
     // native resize at all.
-    for (const name of [/^Codex/, /^Cursor/, /^Claude Code/]) {
+    for (const name of [/^Codex/, /^Cursor/, /^DeepSeek Harness/, /^Claude Code/]) {
       await act(async () => {
         fireEvent.pointerEnter(screen.getByRole("button", { name }));
       });
@@ -279,7 +342,7 @@ describe("Edge sidebar", () => {
     strip.setPointerCapture = vi.fn();
     strip.releasePointerCapture = vi.fn();
     // The page reports how long the notch is so the clamp knows the travel.
-    expect(mocks.placement).toHaveBeenCalledWith(undefined, 223);
+    expect(mocks.placement).toHaveBeenCalledWith(undefined, 276);
     mocks.placement.mockClear();
 
     await act(async () => {
@@ -292,7 +355,7 @@ describe("Edge sidebar", () => {
     await act(async () => {
       fireEvent.pointerMove(strip, { pointerId: 1, screenY: 560 });
     });
-    expect(mocks.placement).toHaveBeenCalledWith(expect.any(Number), 223);
+    expect(mocks.placement).toHaveBeenCalledWith(expect.any(Number), 276);
 
     // A drag that passes over a ring must not switch the card to it.
     const codex = screen.getByRole("button", { name: /^Codex/ });

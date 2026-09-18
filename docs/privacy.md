@@ -62,6 +62,18 @@ Delegation adapters inspect only source-provided structured identity and lifecyc
 
 Memory adapters inspect only source-provided structured activity signals. Path data used to recognize a supported local memory activity is discarded before canonicalization. Shared DTOs expose only the normalized operation, safe session/work-unit references, time, evidence level, source coverage, confidence, algorithm version, and canonical evidence ID.
 
+## API keys
+
+An API account holds an id, a provider and a label the user typed. The key
+itself is written to the macOS login keychain under
+`com.vibemeter.desktop.api-key` and read back only at the moment a balance is
+requested. It is never written to the database, a log, a diagnostic envelope or
+an export, and it is deleted with the account. Balances are fetched only while
+the credentials permission is on, over the provider's own documented endpoint,
+and nothing but the key is sent. VibeMeter reads no browser session and no other
+application's configuration file to obtain one; an `API_KEY` environment
+variable is used when the process happens to have inherited it.
+
 ## Edge sidebar
 
 The optional edge panel reads the existing provider quota snapshot: the same rate-window readings the menu bar shows, refreshed through the existing provider commands and only while the credentials permission is on. It adds no source reader, global input hook, telemetry, approval or execution capability. Hover is handled only inside the panel's own window; periodic checks read display geometry, not cursor or application activity. Pinning and dragging change only VibeMeter's presentation: a drag reports the pointer's position inside the panel's own window while the button is held, and stores one number — where along the edge the strip sits.

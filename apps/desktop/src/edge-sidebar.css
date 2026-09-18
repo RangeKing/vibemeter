@@ -359,6 +359,66 @@ html[data-surface="edge"] #root {
   display: none;
 }
 
+.edge-account + .edge-account {
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.edge-account-name {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 5px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.edge-account-name strong {
+  overflow: hidden;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.edge-account-name em {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.edge-account-note {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+/* A balance has no denominator, so it gets no track to fill. */
+.edge-balance {
+  padding: 8px 9px;
+  margin-bottom: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.edge-balance .edge-quota-heading span {
+  color: #30d158;
+}
+
+.edge-balance.is-spent .edge-quota-heading span {
+  color: #ff453a;
+}
+
+.edge-balance .edge-quota-reset {
+  margin-top: 5px;
+}
+
 .edge-quota-window {
   padding: 8px 9px;
   margin-bottom: 6px;

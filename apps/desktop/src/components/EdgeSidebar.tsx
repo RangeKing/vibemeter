@@ -7,14 +7,16 @@ import { api } from "../lib/api";
 import { agentName } from "../lib/format";
 import {
   edgeAgentQuotas,
+  formatBalance,
   formatResetRemaining,
   parseEdgeAgents,
   resetRemainingSeconds,
   resetTime,
+  ringCaption,
   type EdgeAgentQuota,
 } from "../lib/quota";
 import { SIDE_NOTCH_DEPTH, sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
-import type { EdgeState, Locale } from "../types";
+import type { EdgeState, Locale, ProviderAccount, RateWindow } from "../types";
 import { AgentIcon } from "./AgentIcon";
 
 export const EDGE_FOLD_GRACE_MS = 450;
@@ -92,6 +94,110 @@ function SideNotchPath({
         <path d={d} className="edge-notch-stroke" />
       </g>
     </svg>
+  );
+}
+
+function QuotaWindowRow({
+  window,
+  locale,
+  now,
+}: {
+  window: RateWindow;
+  locale: Locale;
+  now: Date;
+}) {
+  const { t } = useTranslation();
+  const used = window.usedPercent;
+  const remaining = used === undefined ? undefined : Math.max(0, Math.min(100, 100 - used));
+  const band =
+    remaining === undefined
+      ? "unknown"
+      : remaining < 20
+        ? "critical"
+        : remaining < 50
+          ? "warning"
+          : "steady";
+  const reset = resetTime(window, locale);
+  const resetSeconds = resetRemainingSeconds(window, now);
+  const resetLabel = reset ? t("quota.resetsAt", { time: reset }) : t("quota.resetUnknown");
+  const countdown =
+    resetSeconds === undefined
+      ? undefined
+      : t("quota.resetIn", { time: formatResetRemaining(resetSeconds, locale) });
+  return (
+    <article className={`edge-quota-window band-${band}`}>
+      <div className="edge-quota-heading">
+        <strong>{t(window.label, { defaultValue: window.label })}</strong>
+        <span>
+          {remaining === undefined
+            ? t("edge.unavailable")
+            : t("quota.remaining", { value: Math.round(remaining) })}
+        </span>
+      </div>
+      <div className="edge-quota-track" aria-hidden="true">
+        <i style={{ width: `${remaining ?? 0}%` }} />
+      </div>
+      <p className="edge-quota-reset">
+        {resetLabel}
+        {countdown ? <span> · {countdown}</span> : null}
+      </p>
+    </article>
+  );
+}
+
+/**
+ * One credential's worth of a provider. A balance gets no bar and no reset:
+ * there is no denominator to fill and nothing to count down to.
+ */
+function AccountBlock({
+  account,
+  locale,
+  now,
+}: {
+  account: ProviderAccount;
+  locale: Locale;
+  now: Date;
+}) {
+  const { t } = useTranslation();
+  const balance = account.balance ?? undefined;
+  return (
+    <section className="edge-account">
+      <header className="edge-account-name">
+        <strong title={account.label}>{account.label}</strong>
+        <em>{t(account.kind === "api" ? "edge.kindApi" : "edge.kindSubscription")}</em>
+      </header>
+      {!account.available ? (
+        <p className="edge-account-note">
+          {t(account.errorKey ?? "edge.unavailable", { defaultValue: t("edge.unavailable") })}
+        </p>
+      ) : balance ? (
+        <article className={`edge-balance ${balance.spendable === false ? "is-spent" : ""}`}>
+          <div className="edge-quota-heading">
+            <strong>{t("edge.balance")}</strong>
+            <span>{formatBalance(balance, locale)}</span>
+          </div>
+          <p className="edge-quota-reset">
+            {balance.spendable === false
+              ? t("edge.balanceBlocked")
+              : balance.granted !== undefined
+                ? t("edge.balanceSplit", {
+                    granted: formatBalance({ ...balance, total: balance.granted }, locale),
+                    toppedUp: formatBalance(
+                      { ...balance, total: balance.toppedUp ?? 0 },
+                      locale,
+                    ),
+                  })
+                : t("edge.balanceNoReset")}
+          </p>
+        </article>
+      ) : account.windows.length ? (
+        account.windows.map((window) => (
+          <QuotaWindowRow key={window.id} window={window} locale={locale} now={now} />
+        ))
+      ) : (
+        <p className="edge-account-note">{t("edge.unavailable")}</p>
+      )}
+    </section>
   );
 }
 
@@ -350,7 +456,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
               const isSelected = active?.agent === ring.agent;
               const remaining = info.remainingPercent;
               const name = agentName(ring.agent);
-              const label = remaining === undefined ? "—" : `${Math.round(remaining)}%`;
+              const label = ringCaption(info, locale);
               const dashOffset =
                 RING_CIRCUMFERENCE * (1 - Math.min(Math.max((remaining ?? 0) / 100, 0), 1));
               return (
@@ -364,7 +470,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                   title={name}
                   aria-label={
                     remaining === undefined
-                      ? `${name} · ${t("edge.unavailable")}`
+                      ? `${name} · ${label === "—" ? t("edge.unavailable") : label}`
                       : `${name} · ${t("quota.remaining", { value: Math.round(remaining) })}`
                   }
                   aria-pressed={isSelected}
@@ -496,54 +602,16 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 <strong>{t("edge.empty")}</strong>
                 <p>{t("edge.emptyBody")}</p>
               </div>
-            ) : !summary?.windows.length ? (
+            ) : !active.accounts.length ? (
               <div className="edge-empty">
                 <Gauge size={22} />
                 <strong>{t("edge.unavailable")}</strong>
                 <p>{t(active.provider ? "edge.unavailableBody" : "edge.noSubscriptionBody")}</p>
               </div>
             ) : (
-              summary.windows.map((window) => {
-                const used = window.usedPercent;
-                const remaining =
-                  used === undefined ? undefined : Math.max(0, Math.min(100, 100 - used));
-                const band =
-                  remaining === undefined
-                    ? "unknown"
-                    : remaining < 20
-                      ? "critical"
-                      : remaining < 50
-                        ? "warning"
-                        : "steady";
-                const reset = resetTime(window, locale);
-                const resetSeconds = resetRemainingSeconds(window, now);
-                const resetLabel = reset
-                  ? t("quota.resetsAt", { time: reset })
-                  : t("quota.resetUnknown");
-                const countdown =
-                  resetSeconds === undefined
-                    ? undefined
-                    : t("quota.resetIn", { time: formatResetRemaining(resetSeconds, locale) });
-                return (
-                  <article className={`edge-quota-window band-${band}`} key={window.id}>
-                    <div className="edge-quota-heading">
-                      <strong>{t(window.label, { defaultValue: window.label })}</strong>
-                      <span>
-                        {remaining === undefined
-                          ? t("edge.unavailable")
-                          : t("quota.remaining", { value: Math.round(remaining) })}
-                      </span>
-                    </div>
-                    <div className="edge-quota-track" aria-hidden="true">
-                      <i style={{ width: `${remaining ?? 0}%` }} />
-                    </div>
-                    <p className="edge-quota-reset">
-                      {resetLabel}
-                      {countdown ? <span> · {countdown}</span> : null}
-                    </p>
-                  </article>
-                );
-              })
+              active.accounts.map((account) => (
+                <AccountBlock account={account} key={account.id} locale={locale} now={now} />
+              ))
             )}
             {active?.provider?.stale ? <p className="edge-note">{t("edge.stale")}</p> : null}
           </div>

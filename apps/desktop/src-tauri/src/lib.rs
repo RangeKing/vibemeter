@@ -1,4 +1,5 @@
 mod adapters;
+mod credits;
 pub mod database;
 mod delegation_store;
 mod diagnostics;
@@ -782,16 +783,113 @@ async fn refresh_provider_data(
 ) -> AppResult<Vec<ProviderUsage>> {
     let providers = state.providers.clone();
     let providers_for_task = providers.clone();
+    let accounts = api_account_index(&state.database)?;
     tauri::async_runtime::spawn_blocking(move || {
-        providers_for_task.refresh(
+        providers_for_task.refresh_with_accounts(
             credentials_allowed,
             cursor_dashboard_usage_enabled,
             use_system_proxy,
+            &accounts,
         )
     })
     .await
     .map_err(|error| AppError::ProviderUnavailable(error.to_string()))?;
     Ok(providers.snapshot())
+}
+
+/// The API accounts the user has added: an id, a provider and a label. The key
+/// for each lives in the login keychain and is read only at the moment it is
+/// used, so it never passes through the database, a log or an export.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiAccountInfo {
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+}
+
+const API_ACCOUNTS_SETTING: &str = "apiAccounts";
+
+fn api_account_index(database: &Database) -> AppResult<Vec<providers::ApiAccountRef>> {
+    Ok(stored_api_accounts(database)?
+        .into_iter()
+        .map(|account| providers::ApiAccountRef {
+            id: account.id,
+            provider: account.provider,
+            label: account.label,
+        })
+        .collect())
+}
+
+fn stored_api_accounts(database: &Database) -> AppResult<Vec<ApiAccountInfo>> {
+    let Some(raw) = database.setting(API_ACCOUNTS_SETTING)? else {
+        return Ok(Vec::new());
+    };
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
+}
+
+#[tauri::command]
+async fn list_api_accounts(state: State<'_, AppState>) -> AppResult<Vec<ApiAccountInfo>> {
+    stored_api_accounts(&state.database)
+}
+
+#[tauri::command]
+async fn add_api_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    label: String,
+    key: String,
+) -> AppResult<Vec<ApiAccountInfo>> {
+    if !providers::known_providers().contains(&provider.as_str())
+        || !credits::is_api_provider(&provider)
+    {
+        return Err(AppError::InvalidRequest("unknown API provider".into()));
+    }
+    let label = label.trim();
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(AppError::InvalidRequest("an API key is required".into()));
+    }
+    let mut accounts = stored_api_accounts(&state.database)?;
+    let id = format!("{provider}:{}", uuid::Uuid::new_v4());
+    credits::store_key(&id, key)?;
+    accounts.push(ApiAccountInfo {
+        id,
+        provider,
+        label: if label.is_empty() {
+            "API key".into()
+        } else {
+            label.chars().take(60).collect()
+        },
+    });
+    state
+        .database
+        .set_setting(API_ACCOUNTS_SETTING, &serde_json::to_string(&accounts)?)?;
+    let _ = app.emit("settings-changed", ());
+    Ok(accounts)
+}
+
+#[tauri::command]
+async fn remove_api_account(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<Vec<ApiAccountInfo>> {
+    let mut accounts = stored_api_accounts(&state.database)?;
+    let before = accounts.len();
+    accounts.retain(|account| account.id != id);
+    if accounts.len() == before {
+        return Ok(accounts);
+    }
+    // Drop the key with the row, so removing an account really removes it
+    // rather than leaving the secret behind for the next one to inherit.
+    credits::delete_key(&id)?;
+    state
+        .database
+        .set_setting(API_ACCOUNTS_SETTING, &serde_json::to_string(&accounts)?)?;
+    let _ = app.emit("settings-changed", ());
+    Ok(accounts)
 }
 
 #[tauri::command]
@@ -904,6 +1002,7 @@ fn validate_setting(key: &str, value: &str) -> AppResult<()> {
             matches!(value, "true" | "false")
         }
         "retentionDays" => matches!(value, "30" | "90" | "180" | "365" | "730"),
+        "apiAccounts" => serde_json::from_str::<Vec<ApiAccountInfo>>(value).is_ok(),
         "edgeSidebarAgents" | "dataPageAgents" => {
             value == "auto"
                 || serde_json::from_str::<Vec<String>>(value).is_ok_and(|agents| {
@@ -1283,6 +1382,9 @@ pub fn run() {
             get_menu_bar_snapshot,
             get_provider_usage,
             refresh_provider_data,
+            list_api_accounts,
+            add_api_account,
+            remove_api_account,
             get_app_settings,
             set_app_setting,
             show_main_window,

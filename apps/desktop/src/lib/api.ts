@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ApiAccountInfo,
   AppSettings,
   EdgeState,
   AttentionEvent,
@@ -101,6 +102,10 @@ export const api = {
   refreshIndex: (force = false) => invoke<boolean>("refresh_index", { force }),
   menuSnapshot: (range: string) => invoke<MenuBarSnapshot>("get_menu_bar_snapshot", { range }),
   providers: () => invoke<ProviderUsage[]>("get_provider_usage"),
+  apiAccounts: () => invoke<ApiAccountInfo[]>("list_api_accounts"),
+  addApiAccount: (provider: string, label: string, key: string) =>
+    invoke<ApiAccountInfo[]>("add_api_account", { provider, label, key }),
+  removeApiAccount: (id: string) => invoke<ApiAccountInfo[]>("remove_api_account", { id }),
   refreshProviders: (credentialsAllowed: boolean, cursorDashboardUsageEnabled = false, useSystemProxy = false) =>
     invoke<ProviderUsage[]>("refresh_provider_data", { credentialsAllowed, cursorDashboardUsageEnabled, useSystemProxy }),
   settings: () => invoke<AppSettings>("get_app_settings"),

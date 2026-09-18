@@ -952,11 +952,39 @@ export interface ProviderAccountUsage {
   daily: ProviderDailyAccountUsage[];
 }
 
+export interface CreditBalance {
+  currency: string;
+  total: number;
+  granted?: number;
+  toppedUp?: number;
+  spendable?: boolean;
+  provenance: string;
+}
+
+export interface ProviderAccount {
+  id: string;
+  provider: string;
+  kind: "subscription" | "api";
+  label: string;
+  available: boolean;
+  windows: RateWindow[];
+  balance?: CreditBalance | null;
+  refreshedAt?: string;
+  errorKey?: string;
+}
+
+export interface ApiAccountInfo {
+  id: string;
+  provider: string;
+  label: string;
+}
+
 export interface ProviderUsage {
   provider: string;
   available: boolean;
   source: string;
   windows: RateWindow[];
+  accounts: ProviderAccount[];
   credits?: number;
   accountUsage?: ProviderAccountUsage | null;
   health: { state: string; description: string; checkedAt?: string; statusUrl: string };

@@ -1,7 +1,8 @@
+use crate::credits;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    Provenance, ProviderAccountUsage, ProviderDailyAccountUsage, ProviderHealth, ProviderUsage,
-    RateWindow,
+    Provenance, ProviderAccount, ProviderAccountUsage, ProviderDailyAccountUsage, ProviderHealth,
+    ProviderUsage, RateWindow,
 };
 use base64::Engine as _;
 use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
@@ -33,6 +34,26 @@ static RESET_DESCRIPTION: Lazy<Regex> =
 /// The subscriptions VibeMeter can read a quota for, in display order.
 pub(crate) const SUBSCRIPTION_PROVIDERS: [&str; 3] = ["claude", "codex", "cursor"];
 
+/// Every provider that can appear in the store: a plan window, a key balance,
+/// or both.
+pub(crate) fn known_providers() -> Vec<&'static str> {
+    SUBSCRIPTION_PROVIDERS
+        .iter()
+        .copied()
+        .chain(credits::API_PROVIDERS)
+        .collect()
+}
+
+/// An API account the user added, or that an environment variable stands in
+/// for. Holds no key — the key is fetched from the keychain at the moment it
+/// is used and never stored anywhere else.
+#[derive(Clone, Debug)]
+pub struct ApiAccountRef {
+    pub id: String,
+    pub provider: String,
+    pub label: String,
+}
+
 #[derive(Clone)]
 pub struct ProviderStore {
     inner: Arc<RwLock<HashMap<String, ProviderUsage>>>,
@@ -43,7 +64,7 @@ impl ProviderStore {
     pub fn new(probe_dir: PathBuf) -> AppResult<Self> {
         std::fs::create_dir_all(&probe_dir)?;
         let mut providers = HashMap::new();
-        for provider in SUBSCRIPTION_PROVIDERS {
+        for provider in known_providers() {
             providers.insert(provider.into(), unavailable_provider(provider));
         }
         Ok(Self {
@@ -58,11 +79,12 @@ impl ProviderStore {
             .read()
             .map(|providers| providers.values().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
+        let order = known_providers();
         items.sort_by_key(|provider| {
-            SUBSCRIPTION_PROVIDERS
+            order
                 .iter()
                 .position(|known| *known == provider.provider)
-                .unwrap_or(SUBSCRIPTION_PROVIDERS.len())
+                .unwrap_or(order.len())
         });
         items
     }
@@ -72,6 +94,21 @@ impl ProviderStore {
         credentials_allowed: bool,
         cursor_dashboard_usage_enabled: bool,
         use_system_proxy: bool,
+    ) {
+        self.refresh_with_accounts(
+            credentials_allowed,
+            cursor_dashboard_usage_enabled,
+            use_system_proxy,
+            &[],
+        )
+    }
+
+    pub fn refresh_with_accounts(
+        &self,
+        credentials_allowed: bool,
+        cursor_dashboard_usage_enabled: bool,
+        use_system_proxy: bool,
+        api_accounts: &[ApiAccountRef],
     ) {
         let Some(client) = build_provider_client(use_system_proxy) else {
             return;
@@ -145,6 +182,117 @@ impl ProviderStore {
             ))
         };
         self.store_result("cursor", cursor, cursor_health);
+
+        // API balances are per key, so several accounts for one provider are
+        // the normal case rather than an edge one.
+        for provider in credits::API_PROVIDERS {
+            let accounts =
+                self.read_api_accounts(&client, provider, api_accounts, credentials_allowed);
+            self.store_api_provider(provider, accounts, credentials_allowed);
+        }
+    }
+
+    /// One account per credential the user has for this provider, plus the one
+    /// an environment variable stands in for when there is no stored key.
+    fn read_api_accounts(
+        &self,
+        client: &reqwest::blocking::Client,
+        provider: &str,
+        api_accounts: &[ApiAccountRef],
+        credentials_allowed: bool,
+    ) -> Vec<ProviderAccount> {
+        if !credentials_allowed {
+            return Vec::new();
+        }
+        let mut stored = api_accounts
+            .iter()
+            .filter(|account| account.provider == provider)
+            .map(|account| {
+                let key = credits::load_key(&account.id).ok().flatten();
+                self.api_account(client, provider, &account.id, &account.label, key)
+            })
+            .collect::<Vec<_>>();
+        if stored.is_empty()
+            && let Some((name, key)) = credits::environment_key(provider)
+        {
+            stored.push(self.api_account(
+                client,
+                provider,
+                &format!("env:{provider}:{name}"),
+                name,
+                Some(key),
+            ));
+        }
+        stored
+    }
+
+    fn api_account(
+        &self,
+        client: &reqwest::blocking::Client,
+        provider: &str,
+        id: &str,
+        label: &str,
+        key: Option<String>,
+    ) -> ProviderAccount {
+        let balance = key
+            .as_deref()
+            .map(|key| credits::fetch_balance(client, provider, key, label));
+        let now = Utc::now().to_rfc3339();
+        match balance {
+            Some(Ok(balance)) => ProviderAccount {
+                id: id.into(),
+                provider: provider.into(),
+                kind: "api".into(),
+                label: label.into(),
+                available: true,
+                windows: Vec::new(),
+                balance: Some(balance),
+                refreshed_at: Some(now),
+                error_key: None,
+            },
+            Some(Err(_)) | None => ProviderAccount {
+                id: id.into(),
+                provider: provider.into(),
+                kind: "api".into(),
+                label: label.into(),
+                available: false,
+                windows: Vec::new(),
+                balance: None,
+                refreshed_at: None,
+                error_key: Some(if key.is_none() {
+                    "providers.api.missingKey".into()
+                } else {
+                    "providers.api.unavailable".into()
+                }),
+            },
+        }
+    }
+
+    fn store_api_provider(
+        &self,
+        provider: &str,
+        accounts: Vec<ProviderAccount>,
+        credentials_allowed: bool,
+    ) {
+        let Ok(mut providers) = self.inner.write() else {
+            return;
+        };
+        let readable = accounts.iter().any(|account| account.available);
+        let mut usage = unavailable_provider(provider);
+        usage.available = readable;
+        usage.source = "api-key".into();
+        usage.refreshed_at = readable.then(|| Utc::now().to_rfc3339());
+        usage.error_key = if !credentials_allowed {
+            Some("providers.api.permission".into())
+        } else if accounts.is_empty() {
+            Some("providers.api.noAccount".into())
+        } else if readable {
+            None
+        } else {
+            Some("providers.api.unavailable".into())
+        };
+        usage.accounts = accounts;
+        providers.insert(provider.into(), usage);
     }
 
     fn cached_cursor_account_usage(&self) -> Option<ProviderAccountUsage> {
@@ -175,7 +323,8 @@ impl ProviderStore {
             return;
         };
         match result {
-            Ok(usage) => {
+            Ok(mut usage) => {
+                usage.accounts = vec![subscription_account(&usage)];
                 providers.insert(provider.into(), usage);
             }
             Err(_) => {
@@ -185,6 +334,7 @@ impl ProviderStore {
                     .unwrap_or_else(|| unavailable_provider(provider));
                 previous.health = health;
                 previous.stale = previous.available;
+                previous.accounts = vec![subscription_account(&previous)];
                 previous.error_key = Some(
                     match provider {
                         "claude" => "providers.claude.unavailable",
@@ -199,8 +349,28 @@ impl ProviderStore {
     }
 }
 
+/// The signed-in subscription, as an account.
+///
+/// VibeMeter reads whichever session the provider's own CLI or app is signed in
+/// to, and those hold one at a time, so this is a list of one until a provider
+/// exposes more.
+fn subscription_account(usage: &ProviderUsage) -> ProviderAccount {
+    ProviderAccount {
+        id: format!("subscription:{}", usage.provider),
+        provider: usage.provider.clone(),
+        kind: "subscription".into(),
+        label: usage.source.clone(),
+        available: usage.available,
+        windows: usage.windows.clone(),
+        balance: None,
+        refreshed_at: usage.refreshed_at.clone(),
+        error_key: usage.error_key.clone(),
+    }
+}
+
 fn unavailable_provider(provider: &str) -> ProviderUsage {
     ProviderUsage {
+        accounts: Vec::new(),
         provider: provider.into(),
         available: false,
         source: "unavailable".into(),
@@ -522,6 +692,7 @@ fn fetch_cursor_usage(
         .and_then(Value::as_str)
         .map(str::to_owned);
     Ok(ProviderUsage {
+        accounts: Vec::new(),
         provider: "cursor".into(),
         available: true,
         source: "cursor-desktop-session".into(),
@@ -930,6 +1101,7 @@ fn codex_usage_from_value(payload: &Value) -> AppResult<ProviderUsage> {
         ));
     }
     Ok(ProviderUsage {
+        accounts: Vec::new(),
         provider: "codex".into(),
         available: true,
         source: "codex-app-server".into(),
@@ -1091,6 +1263,7 @@ fn claude_oauth_usage_from_value(payload: &Value) -> AppResult<ProviderUsage> {
         ));
     }
     Ok(ProviderUsage {
+        accounts: Vec::new(),
         provider: "claude".into(),
         available: true,
         source: "claude-oauth".into(),
@@ -1222,6 +1395,7 @@ fn claude_cli_usage_from_text(text: &str) -> AppResult<ProviderUsage> {
         ));
     }
     Ok(ProviderUsage {
+        accounts: Vec::new(),
         provider: "claude".into(),
         available: true,
         source: "claude-cli".into(),

@@ -1548,6 +1548,42 @@ pub struct RateWindow {
     pub provenance: Provenance,
 }
 
+/// Money left on an API key. Unlike a rate window it has no denominator and
+/// no reset: it falls until someone tops it up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditBalance {
+    pub currency: String,
+    pub total: f64,
+    /// Free or promotional credit, where the provider reports it separately.
+    pub granted: Option<f64>,
+    /// Paid credit. Can be negative where the provider allows a deficit.
+    pub topped_up: Option<f64>,
+    /// The provider's own word on whether the key can still spend, which is
+    /// not the same as the balance being above zero.
+    pub spendable: Option<bool>,
+    pub provenance: Provenance,
+}
+
+/// One credential's worth of a provider: a signed-in subscription, or an API
+/// key. A provider can have several of each, and they do not share a limit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAccount {
+    pub id: String,
+    pub provider: String,
+    /// "subscription" or "api".
+    pub kind: String,
+    /// What the user calls it, or where the credential came from. Never the
+    /// credential.
+    pub label: String,
+    pub available: bool,
+    pub windows: Vec<RateWindow>,
+    pub balance: Option<CreditBalance>,
+    pub refreshed_at: Option<String>,
+    pub error_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderHealth {
@@ -1591,6 +1627,11 @@ pub struct ProviderUsage {
     pub available: bool,
     pub source: String,
     pub windows: Vec<RateWindow>,
+    /// Every credential this provider was read through. The fields above stay
+    /// as they were and describe the first one, so the menu bar and the
+    /// exports keep reading a single account without knowing about the rest.
+    #[serde(default)]
+    pub accounts: Vec<ProviderAccount>,
     pub credits: Option<f64>,
     pub account_usage: Option<ProviderAccountUsage>,
     pub health: ProviderHealth,
