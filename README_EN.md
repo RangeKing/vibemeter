@@ -27,7 +27,7 @@ VibeMeter does not control your agents, approve requests, or modify source repos
 
 ## 0.6.0: Edge sidebar and glass
 
-Enable the independent panel in **Settings → Edge sidebar**, then choose the left or right edge. It also works on displays without a hardware notch. Hover to unfold; leaving folds it after a short delay. Pin keeps it open and Escape folds it. The sidebar draws a ring per supported Agent — every Agent detected on this Mac by default, adjustable in Settings → Edge sidebar — and reports subscription quota: each ring carries the tightest usage window for that provider, and the card lists every window with how much is left and when it resets. An Agent with no readable subscription still gets a ring, labelled as such rather than shown at zero. Live sessions stay in the Notch, which remains available.
+Enable the independent panel in **Settings → Edge sidebar**, then choose the left or right edge. It also works on displays without a hardware notch. Hover to unfold; leaving folds it after a short delay. Pin keeps it open and Escape folds it. The sidebar draws a ring per supported Agent — by default the Agents detected on this Mac that have a quota to read, adjustable in Settings → Edge sidebar — and reports subscription quota: each ring carries the tightest usage window for that provider, and the card lists every window with how much is left and when it resets. An Agent with no readable subscription still gets a ring, labelled as such rather than shown at zero. Live sessions stay in the Notch, which remains available.
 
 The main window uses native macOS vibrancy with translucent navigation and content layers. Light, dark and system appearance are supported, with reduced-motion and reduced-transparency fallbacks.
 

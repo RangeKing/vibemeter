@@ -151,6 +151,9 @@ describe("Edge sidebar", () => {
   });
 
   it("gives an Agent with no readable subscription a ring and says why", async () => {
+    // Not in the automatic list — it has no subscription to read — so it takes
+    // an explicit tick to appear.
+    mocks.edgeSidebarAgents = JSON.stringify(["claude-code", "zcode"]);
     await mount();
     await act(async () => {
       fireEvent.pointerEnter(screen.getByRole("button", { name: /^ZCode/ }));
@@ -158,8 +161,17 @@ describe("Edge sidebar", () => {
     expect(
       screen.getByText("This Agent has no subscription VibeMeter can read. Nothing is estimated in its place."),
     ).toBeTruthy();
-    // Undetected Agents stay out of the automatic list.
     expect(screen.queryByRole("button", { name: /^Hermes/ })).toBeNull();
+  });
+
+  it("shows only Agents with a subscription to read unless told otherwise", async () => {
+    await mount();
+    for (const name of [/^Claude Code/, /^Codex/, /^Cursor/]) {
+      expect(screen.getByRole("button", { name })).toBeTruthy();
+    }
+    // Detected, but there is no subscription behind it: a ring that could only
+    // ever say so is not worth a slot by default.
+    expect(screen.queryByRole("button", { name: /^ZCode/ })).toBeNull();
   });
 
   it("offers the settings route instead of a quota when credentials are off", async () => {
@@ -252,7 +264,7 @@ describe("Edge sidebar", () => {
     mocks.expand.mockClear();
     // The panel is already open; crossing four rings is four selections and no
     // native resize at all.
-    for (const name of [/^Codex/, /^Cursor/, /^ZCode/, /^Claude Code/]) {
+    for (const name of [/^Codex/, /^Cursor/, /^Claude Code/]) {
       await act(async () => {
         fireEvent.pointerEnter(screen.getByRole("button", { name }));
       });
@@ -267,7 +279,7 @@ describe("Edge sidebar", () => {
     strip.setPointerCapture = vi.fn();
     strip.releasePointerCapture = vi.fn();
     // The page reports how long the notch is so the clamp knows the travel.
-    expect(mocks.placement).toHaveBeenCalledWith(undefined, 276);
+    expect(mocks.placement).toHaveBeenCalledWith(undefined, 223);
     mocks.placement.mockClear();
 
     await act(async () => {
@@ -280,7 +292,7 @@ describe("Edge sidebar", () => {
     await act(async () => {
       fireEvent.pointerMove(strip, { pointerId: 1, screenY: 560 });
     });
-    expect(mocks.placement).toHaveBeenCalledWith(expect.any(Number), 276);
+    expect(mocks.placement).toHaveBeenCalledWith(expect.any(Number), 223);
 
     // A drag that passes over a ring must not switch the card to it.
     const codex = screen.getByRole("button", { name: /^Codex/ });

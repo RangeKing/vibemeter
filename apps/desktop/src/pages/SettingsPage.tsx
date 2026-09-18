@@ -263,9 +263,12 @@ export function SettingsPage({ locale }: { locale: Locale }) {
   const diagnosticStatus = diagnostics.data;
   const diagnosticPending = setDiagnostics.isPending || clearDiagnostics.isPending;
   const configuredEdgeAgents = parseEdgeAgents(edgeAgentsDraft ?? data.edgeSidebarAgents);
-  const selectedEdgeAgents = new Set(configuredEdgeAgents ?? detectedAgents);
+  /* Mirrors the sidebar's automatic list, so the ticks show what is actually
+     on screen rather than what would be if every Agent had a subscription. */
+  const autoEdgeAgents = detectedAgents.filter((agent) => agentSubscription(agent) !== undefined);
+  const selectedEdgeAgents = new Set(configuredEdgeAgents ?? autoEdgeAgents);
   const toggleEdgeAgent = async (agent: string, checked: boolean) => {
-    const base = configuredEdgeAgents ?? detectedAgents;
+    const base = configuredEdgeAgents ?? autoEdgeAgents;
     const next = checked ? [...base, agent] : base.filter((item) => item !== agent);
     const previous = edgeAgentsDraft;
     const value = serializeEdgeAgents(next);

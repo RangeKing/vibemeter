@@ -127,8 +127,12 @@ export interface EdgeAgentQuota {
 /**
  * The rings the sidebar draws, in the sources' own order.
  *
- * `configured` undefined means the automatic list: every agent detected on
- * this Mac. An explicit list is taken as given, including the empty one.
+ * `configured` undefined means the automatic list: an Agent detected on this
+ * Mac that also has a subscription to read. A local harness with nothing to
+ * report would otherwise take a slot to say so forever, which is worth an
+ * explicit tick in Settings but not the default. An explicit list is taken as
+ * given, including the empty one, so those Agents can still be shown on
+ * purpose.
  */
 export function edgeAgentQuotas(
   sources: SourceStatus[],
@@ -137,7 +141,11 @@ export function edgeAgentQuotas(
 ): EdgeAgentQuota[] {
   const allowed = configured ? new Set(configured) : undefined;
   return sources
-    .filter((source) => (allowed ? allowed.has(source.agent) : source.available))
+    .filter((source) =>
+      allowed
+        ? allowed.has(source.agent)
+        : source.available && agentSubscription(source.agent) !== undefined,
+    )
     .map((source) => {
       const subscription = agentSubscription(source.agent);
       const provider = subscription
