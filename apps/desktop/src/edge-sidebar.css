@@ -359,6 +359,38 @@ html[data-surface="edge"] #root {
   display: none;
 }
 
+.edge-account-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.edge-account-total strong {
+  font-size: 12px;
+  font-weight: 650;
+  color: #30d158;
+  font-variant-numeric: tabular-nums;
+}
+
+.edge-account-total.band-warning strong {
+  color: #ff9f0a;
+}
+
+.edge-account-total.band-critical strong {
+  color: #ff453a;
+}
+
+.edge-account-total.band-unknown strong {
+  color: rgba(255, 255, 255, 0.5);
+}
+
 .edge-account + .edge-account {
   margin-top: 6px;
   padding-top: 8px;

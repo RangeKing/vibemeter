@@ -14,6 +14,7 @@ import {
   resetTime,
   ringCaption,
   type EdgeAgentQuota,
+  type QuotaSummary,
 } from "../lib/quota";
 import { SIDE_NOTCH_DEPTH, sideNotchPath, sideNotchTransform } from "../lib/sideNotchShape";
 import type { EdgeState, Locale, ProviderAccount, RateWindow } from "../types";
@@ -142,6 +143,32 @@ function QuotaWindowRow({
         {countdown ? <span> · {countdown}</span> : null}
       </p>
     </article>
+  );
+}
+
+/** What several accounts come to together, above the per-account breakdown. */
+function AccountTotal({
+  accounts,
+  locale,
+  summary,
+}: {
+  accounts: ProviderAccount[];
+  locale: Locale;
+  summary?: QuotaSummary;
+}) {
+  const { t } = useTranslation();
+  const balance = summary?.balance;
+  const remaining = summary?.remainingPercent;
+  if (balance === undefined && remaining === undefined) return null;
+  return (
+    <div className={`edge-account-total band-${summary?.band ?? "unknown"}`}>
+      <span>{t("edge.accountTotal", { count: accounts.length })}</span>
+      <strong>
+        {balance
+          ? formatBalance(balance, locale)
+          : t("quota.remaining", { value: Math.round(remaining ?? 0) })}
+      </strong>
+    </div>
   );
 }
 
@@ -609,9 +636,14 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
                 <p>{t(active.provider ? "edge.unavailableBody" : "edge.noSubscriptionBody")}</p>
               </div>
             ) : (
-              active.accounts.map((account) => (
-                <AccountBlock account={account} key={account.id} locale={locale} now={now} />
-              ))
+              <>
+                {active.accounts.length > 1 ? (
+                  <AccountTotal accounts={active.accounts} locale={locale} summary={summary} />
+                ) : null}
+                {active.accounts.map((account) => (
+                  <AccountBlock account={account} key={account.id} locale={locale} now={now} />
+                ))}
+              </>
             )}
             {active?.provider?.stale ? <p className="edge-note">{t("edge.stale")}</p> : null}
           </div>

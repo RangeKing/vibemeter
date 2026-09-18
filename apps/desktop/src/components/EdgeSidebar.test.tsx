@@ -227,6 +227,45 @@ describe("Edge sidebar", () => {
     expect(screen.getByRole("button", { name: /DeepSeek Harness · ¥110/ })).toBeTruthy();
   });
 
+  it("totals several keys on one provider and lists each of them", async () => {
+    mocks.edgeSidebarAgents = JSON.stringify(["deepseek-harness"]);
+    const key = (id: string, label: string, total: number) => ({
+      id,
+      provider: "deepseek",
+      kind: "api" as const,
+      label,
+      available: true,
+      windows: [],
+      balance: {
+        currency: "CNY" as const,
+        total,
+        spendable: true,
+        provenance: "observed",
+      },
+      refreshedAt: "2026-09-18T02:00:00Z",
+    });
+    mocks.providers.mockResolvedValue([
+      {
+        provider: "deepseek",
+        available: true,
+        source: "api-key",
+        windows: [],
+        accounts: [key("deepseek:a", "work key", 110), key("deepseek:b", "side key", 40)],
+        health: { state: "operational", description: "", statusUrl: "" },
+        refreshedAt: "2026-09-18T02:00:00Z",
+        stale: false,
+      },
+    ]);
+    await mount();
+    expect(screen.getByText("Across 2 accounts")).toBeTruthy();
+    expect(screen.getByText("CN¥150.00")).toBeTruthy();
+    // And each key stays visible on its own, since they are separate limits.
+    expect(screen.getByText("work key")).toBeTruthy();
+    expect(screen.getByText("side key")).toBeTruthy();
+    expect(screen.getByText("CN¥110.00")).toBeTruthy();
+    expect(screen.getByText("CN¥40.00")).toBeTruthy();
+  });
+
   it("shows only Agents with a subscription to read unless told otherwise", async () => {
     await mount();
     for (const name of [/^Claude Code/, /^Codex/, /^Cursor/, /^DeepSeek Harness/]) {

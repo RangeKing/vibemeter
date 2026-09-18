@@ -83,6 +83,43 @@ export function quotaSummary(provider: ProviderUsage): QuotaSummary {
 }
 
 /**
+ * Adds up what several keys hold.
+ *
+ * Money combines, so two keys on one provider are one figure: what is left to
+ * spend. Mixed currencies do not combine, so the largest holding is reported
+ * on its own rather than summing figures that are not comparable.
+ */
+export function combineBalances(accounts: ProviderAccount[]): CreditBalance | undefined {
+  const balances = accounts
+    .filter((account) => account.available)
+    .map((account) => account.balance)
+    .filter((balance): balance is CreditBalance => Boolean(balance));
+  if (!balances.length) return undefined;
+  const currencies = new Set(balances.map((balance) => balance.currency));
+  if (currencies.size > 1) {
+    return [...balances].sort((left, right) => right.total - left.total)[0];
+  }
+  const sum = (pick: (balance: CreditBalance) => number | undefined) => {
+    const values = balances.map(pick).filter((value): value is number => value !== undefined);
+    return values.length ? values.reduce((total, value) => total + value, 0) : undefined;
+  };
+  return {
+    currency: balances[0].currency,
+    total: balances.reduce((total, balance) => total + balance.total, 0),
+    granted: sum((balance) => balance.granted),
+    toppedUp: sum((balance) => balance.toppedUp),
+    // Blocked on any one key is worth surfacing: that key has stopped working
+    // even though the combined figure still looks healthy.
+    spendable: balances.some((balance) => balance.spendable === false)
+      ? false
+      : balances.every((balance) => balance.spendable === true)
+        ? true
+        : undefined,
+    provenance: balances[0].provenance,
+  };
+}
+
+/**
  * Condenses every account of a provider into the one reading a ring can carry.
  *
  * Windows win over balances when both exist, because a plan window is the
@@ -96,8 +133,21 @@ export function accountsSummary(accounts: ProviderAccount[]): QuotaSummary {
   const measured = windows
     .map((window) => window.usedPercent)
     .filter((value): value is number => value !== undefined && Number.isFinite(value));
-  const balance = live.find((account) => account.balance)?.balance ?? undefined;
-  if (!measured.length) return { band: "unknown", windows, balance };
+  const balance = combineBalances(live);
+  if (!measured.length) {
+    return {
+      // No percentage to report, but an exhausted or blocked key still needs
+      // to read as a problem rather than as an absence of data.
+      band:
+        balance === undefined
+          ? "unknown"
+          : balance.spendable === false || balance.total <= 0
+            ? "critical"
+            : "steady",
+      windows,
+      balance,
+    };
+  }
   const used = Math.min(100, Math.max(0, Math.max(...measured)));
   const remainingPercent = 100 - used;
   return {
