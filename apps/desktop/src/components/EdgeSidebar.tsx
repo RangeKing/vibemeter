@@ -32,17 +32,12 @@ const initialState: EdgeState = {
   pinned: false,
   side: "right",
   offset: 0.5,
+  notchTop: 0,
 };
-
-/** Movement before a press on the strip counts as a drag and not a click. */
-export const EDGE_DRAG_THRESHOLD = 4;
 
 interface DragState {
   pointerId: number;
-  /** Screen Y when the press landed. Only ever used as a difference. */
-  startScreenY: number;
-  /** The notch's position when the press landed, to move on from. */
-  startOffset: number;
+  /** Set by the native tracker once the press has travelled far enough. */
   moved: boolean;
 }
 
@@ -269,6 +264,7 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   useEffect(() => {
     let disposed = false;
     let cleanup: (() => void) | undefined;
+    let cleanupDrag: (() => void) | undefined;
     void listen<EdgeState>("edge-state", ({ payload }) => {
       if (!disposed) updateState(payload);
     })
@@ -284,10 +280,24 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
       .catch(() => {
         if (!disposed) setCommandError(true);
       });
+    /* The native tracker owns the threshold, so it is what says a press has
+       become a drag — in time for the click it has to suppress. */
+    void listen<boolean>("edge-drag", () => {
+      if (disposed || !drag.current) return;
+      drag.current.moved = true;
+      setDragging(true);
+      cancelFold();
+    })
+      .then((unlisten) => {
+        if (disposed) unlisten();
+        else cleanupDrag = unlisten;
+      })
+      .catch(() => undefined);
     const timer = setInterval(() => setNow(new Date()), 30_000);
     return () => {
       disposed = true;
       cleanup?.();
+      cleanupDrag?.();
       clearInterval(timer);
       clearTimeout(foldTimer.current);
     };
@@ -393,45 +403,23 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
   useEffect(() => {
     const card = sheetRef.current?.getBoundingClientRect().height;
     void api
-      .setEdgePlacement(undefined, notchHeight, card ? Math.ceil(card) : undefined)
+      .setEdgePlacement(notchHeight, card ? Math.ceil(card) : undefined)
       .catch(() => undefined);
   }, [notchHeight, rings.length, state.expanded]);
 
-  /* Dragging moves the panel, so the pointer stays over the strip the whole
-     time; capture keeps the events coming even when a frame lands late and the
-     cursor is briefly off it. The offset is only written back to settings once
-     the drag ends — one row per drag, not one per frame. */
+  /* The page says when the press starts and ends and nothing else. Every
+     coordinate it could read is relative to the window the drag is moving, so
+     a position derived from one already contains the last frame's correction
+     — which is what made the strip flicker between where it was and the
+     pointer. AppKit's cursor reading owes nothing to any window, so the drag
+     is tracked there. The offset comes back once, at the end. */
   const startDrag = (event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0) return;
     const notch = notchRef.current;
     if (!notch) return;
-    /* Nothing is read out of the pointer's absolute position. The notch moves
-       on from where it already is, by however far the pointer travels — so a
-       press on its own moves it not at all, which is what a press should do. */
-    drag.current = {
-      pointerId: event.pointerId,
-      startScreenY: event.screenY,
-      startOffset: stateRef.current.offset,
-      moved: false,
-    };
+    drag.current = { pointerId: event.pointerId, moved: false };
     notch.setPointerCapture(event.pointerId);
-  };
-
-  const moveDrag = (event: React.PointerEvent<HTMLElement>) => {
-    const current = drag.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-    if (!current.moved) {
-      if (Math.abs(event.screenY - current.startScreenY) < EDGE_DRAG_THRESHOLD) return;
-      current.moved = true;
-      setDragging(true);
-      cancelFold();
-    }
-    void api
-      .setEdgePlacement(
-        { startOffset: current.startOffset, deltaY: event.screenY - current.startScreenY },
-        notchHeight,
-      )
-      .catch(() => undefined);
+    void api.startEdgeDrag().catch(() => undefined);
   };
 
   const endDrag = (event: React.PointerEvent<HTMLElement>) => {
@@ -439,9 +427,13 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
     if (!current || current.pointerId !== event.pointerId) return;
     drag.current = undefined;
     notchRef.current?.releasePointerCapture(event.pointerId);
-    if (!current.moved) return;
     setDragging(false);
-    void api.setSetting("edgeSidebarOffset", String(stateRef.current.offset)).catch(() => undefined);
+    void api
+      .endEdgeDrag()
+      .then(({ moved, offset }) => {
+        if (moved) void api.setSetting("edgeSidebarOffset", String(offset));
+      })
+      .catch(() => undefined);
   };
 
   const select = (agent: string) => {
@@ -477,10 +469,9 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
       <aside
         ref={notchRef}
         className={`edge-notch ${dragging ? "is-dragging" : ""}`}
-        style={{ height: notchHeight }}
+        style={{ height: notchHeight, marginTop: state.notchTop }}
         title={t("edge.dragHint")}
         onPointerDown={startDrag}
-        onPointerMove={moveDrag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
       >

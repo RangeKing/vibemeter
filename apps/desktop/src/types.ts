@@ -245,6 +245,8 @@ export interface WorkPulse {
 
 export interface EdgeState {
   offset: number;
+  /** Where the strip sits inside the panel, in px from its top. */
+  notchTop: number;
   enabled: boolean;
   expanded: boolean;
   pinned: boolean;

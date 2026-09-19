@@ -33,6 +33,11 @@ pub struct EdgeState {
     /// places the notch and lets the empty, click-through remainder of the
     /// panel hang off the screen if it must.
     pub offset: f64,
+    /// Where the notch sits inside the panel, in points down from its top. The
+    /// panel is held inside the work area, so near the ends of the travel it
+    /// can no longer be centred on the notch; the notch shifts within it
+    /// instead, and reaches the edge of the display either way.
+    pub notch_top: f64,
     #[serde(skip)]
     notch_height: f64,
     #[serde(skip)]
@@ -42,6 +47,26 @@ pub struct EdgeState {
     #[serde(skip)]
     closing: bool,
 }
+/// A press being tracked from AppKit rather than from the page. See `begin_drag`.
+struct Drag {
+    /// Cursor Y when the press landed, in Cocoa screen coordinates, which grow
+    /// upward from the primary display and owe nothing to any window.
+    cursor_y: f64,
+    /// The notch's offset at that moment, which the drag moves on from.
+    offset: f64,
+    moved: bool,
+}
+
+/// Pointer travel before a press counts as a drag rather than a click.
+const DRAG_THRESHOLD: f64 = 4.0;
+/// How often an in-flight drag re-reads the cursor.
+const DRAG_TICK_MS: u64 = 16;
+
+static DRAG: OnceLock<Mutex<Option<Drag>>> = OnceLock::new();
+fn drag_lock() -> &'static Mutex<Option<Drag>> {
+    DRAG.get_or_init(|| Mutex::new(None))
+}
+
 static STATE: OnceLock<Mutex<EdgeState>> = OnceLock::new();
 fn state_lock() -> &'static Mutex<EdgeState> {
     STATE.get_or_init(|| {
@@ -236,35 +261,19 @@ pub fn set_offset(app: &tauri::AppHandle, offset: f64) -> tauri::Result<()> {
     })
 }
 
-/// Moves the notch, and records how long it is.
-///
-/// A drag arrives as where it started plus how far the pointer has moved since
-/// — never as an absolute screen position. The page cannot say where the notch
-/// is in screen terms: a borderless panel's `window.screenY` does not reliably
-/// agree with the window's own origin, and reading a position out of it once
-/// put the notch's bottom edge under the pointer the moment it was touched. A
-/// difference between two coordinates is sound whatever the origin, and taking
-/// it from the offset the drag began at means the notch moves exactly as far
-/// as the pointer with nothing accumulating along the way.
+/// Records how long the notch and the card are, so the panel is never taller
+/// than what it shows.
 pub fn set_placement(
     app: &tauri::AppHandle,
-    drag: Option<(f64, f64)>,
     notch_height: Option<f64>,
     card_height: Option<f64>,
 ) -> tauri::Result<()> {
+    if notch_height.is_none() && card_height.is_none() {
+        return Ok(());
+    }
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        let Some(window) = handle.get_webview_window("edge") else {
-            return;
-        };
-        let Ok(Some(monitor)) = window.primary_monitor() else {
-            return;
-        };
-        let scale = monitor.scale_factor();
-        let area = monitor.work_area();
-        let origin = area.position.y as f64 / scale;
-        let available = area.size.height as f64 / scale;
-        let changed = {
+        {
             let mut s = state_lock().lock().expect("edge state");
             if let Some(height) = notch_height {
                 s.notch_height = height.max(1.0);
@@ -272,17 +281,150 @@ pub fn set_placement(
             if let Some(height) = card_height {
                 s.card_height = height.max(1.0);
             }
-            if let Some((start_offset, delta)) = drag {
-                let from = center_for_offset(start_offset, origin, available, s.notch_height);
-                s.offset = offset_for_center(from + delta, origin, available, s.notch_height);
-            }
-            drag.is_some() || notch_height.is_some() || card_height.is_some()
-        };
-        if changed {
-            let _ = layout(&handle);
-            let _ = handle.emit_to("edge", "edge-state", state());
         }
+        let _ = layout(&handle);
+        let _ = handle.emit_to("edge", "edge-state", state());
     })
+}
+
+/// Follows the pointer from AppKit for as long as the button is held.
+///
+/// The page cannot supply the position. Its coordinates are relative to the
+/// window the drag is moving, so feeding them back in makes the notch chase
+/// its own movement: each frame's reading already contains the last frame's
+/// correction, and the strip oscillates between where it was and the pointer.
+/// A borderless panel's `window.screenY` does not reliably say where it is
+/// either, so there is nothing in the page to subtract that out with.
+///
+/// `NSEvent::mouseLocation` is a global reading that no window affects, so the
+/// drag anchors to where the press landed and moves the notch exactly as far
+/// as the cursor since. The page only says when the press starts and ends.
+pub fn begin_drag(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let Some(cursor_y) = cursor_y() else {
+        return Ok(());
+    };
+    {
+        let mut drag = drag_lock().lock().expect("edge drag");
+        if drag.is_some() {
+            return Ok(());
+        }
+        *drag = Some(Drag {
+            cursor_y,
+            offset: state().offset,
+            moved: false,
+        });
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(DRAG_TICK_MS));
+            if drag_lock().lock().expect("edge drag").is_none() {
+                break;
+            }
+            let app = handle.clone();
+            if handle.run_on_main_thread(move || drag_tick(&app)).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Ends the drag and reports the offset to save, and whether it moved at all —
+/// a press that stayed put is a click on whatever it landed on.
+pub fn end_drag() -> (bool, f64) {
+    let moved = drag_lock()
+        .lock()
+        .expect("edge drag")
+        .take()
+        .is_some_and(|drag| drag.moved);
+    (moved, state().offset)
+}
+
+fn drag_tick(app: &tauri::AppHandle) {
+    let Some(cursor_y) = cursor_y() else {
+        return;
+    };
+    // A pointerup the page never saw must not leave the notch following the
+    // cursor around the screen.
+    if !primary_button_down() {
+        drag_lock().lock().expect("edge drag").take();
+        return;
+    }
+    let Some((start_offset, delta, crossed)) = ({
+        let mut guard = drag_lock().lock().expect("edge drag");
+        match guard.as_mut() {
+            Some(drag) => {
+                // Cocoa's Y grows upward; the offset grows downward.
+                let delta = drag.cursor_y - cursor_y;
+                if drag.moved {
+                    Some((drag.offset, delta, false))
+                } else if delta.abs() < DRAG_THRESHOLD {
+                    None
+                } else {
+                    drag.moved = true;
+                    Some((drag.offset, delta, true))
+                }
+            }
+            None => None,
+        }
+    }) else {
+        return;
+    };
+    let Some((origin, available)) = work_area(app) else {
+        return;
+    };
+    {
+        let mut s = state_lock().lock().expect("edge state");
+        let from = center_for_offset(start_offset, origin, available, s.notch_height);
+        s.offset = offset_for_center(from + delta, origin, available, s.notch_height);
+    }
+    let shifted = layout(app).unwrap_or(false);
+    if crossed {
+        let _ = app.emit_to("edge", "edge-drag", true);
+    }
+    // The page has no use for the offset until the drag ends, so it only hears
+    // from a frame that moved the notch inside the panel — which happens at
+    // the ends of the travel, and nowhere else.
+    if shifted || crossed {
+        let _ = app.emit_to("edge", "edge-state", state());
+    }
+}
+
+/// The work area's top and height, in points.
+fn work_area(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    let window = app.get_webview_window("edge")?;
+    let monitor = window.primary_monitor().ok()??;
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    Some((
+        area.position.y as f64 / scale,
+        area.size.height as f64 / scale,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn cursor_y() -> Option<f64> {
+    use objc2_app_kit::NSEvent;
+
+    Some(NSEvent::mouseLocation().y)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cursor_y() -> Option<f64> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn primary_button_down() -> bool {
+    use objc2_app_kit::NSEvent;
+
+    NSEvent::pressedMouseButtons() & 1 != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn primary_button_down() -> bool {
+    false
 }
 
 /// The screen coordinates the notch's centre can occupy, given how long it is.
@@ -316,11 +458,27 @@ fn vertical_origin(
     let center = center_for_offset(offset, origin, available, notch_height);
     // macOS moves a window back onto the display rather than placing it partly
     // off, and the notch would come back with it. Keeping the panel inside the
-    // work area means the position asked for is the position given — which is
-    // also why the panel is only as tall as its content: a panel taller than
-    // the notch can only be dragged across `work area - panel`, and a fixed
-    // tall one left the notch stuck in a band around the middle.
+    // work area means the position asked for is the position given.
     (center - panel_height / 2.0).clamp(origin, origin + (available - panel_height).max(0.0))
+}
+
+/// Where the notch sits inside the panel, in points down from its top.
+///
+/// Centring it there would cost travel: an open panel is as tall as the card,
+/// and holding that inside the work area pulls the notch back from the ends of
+/// the display with it. So the panel goes as close as it is allowed and the
+/// notch takes up the remaining distance inside it. The notch always fits —
+/// the panel is never shorter than the notch — so this never clips it.
+fn notch_top_in_panel(
+    origin: f64,
+    available: f64,
+    panel_height: f64,
+    notch_height: f64,
+    offset: f64,
+) -> f64 {
+    let center = center_for_offset(offset, origin, available, notch_height);
+    let top = vertical_origin(origin, available, panel_height, notch_height, offset);
+    (center - notch_height / 2.0 - top).clamp(0.0, (panel_height - notch_height).max(0.0))
 }
 
 /// The panel is exactly as tall as what it has to show: the notch when folded,
@@ -347,12 +505,14 @@ fn horizontal_origin(side: &str, x: f64, screen_width: f64, width: f64) -> f64 {
         x + screen_width - width
     }
 }
-fn layout(app: &tauri::AppHandle) -> tauri::Result<()> {
+/// Places the panel and says whether the notch moved inside it, which is the
+/// only part of the geometry the page has to redraw.
+fn layout(app: &tauri::AppHandle) -> tauri::Result<bool> {
     let Some(window) = app.get_webview_window("edge") else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(monitor) = window.primary_monitor()? else {
-        return Ok(());
+        return Ok(false);
     };
     let s = state();
     let scale = monitor.scale_factor();
@@ -370,13 +530,15 @@ fn layout(app: &tauri::AppHandle) -> tauri::Result<()> {
         area.size.width as f64,
         width * scale,
     );
-    let y = vertical_origin(
-        area.position.y as f64 / scale,
-        available,
-        height,
-        s.notch_height,
-        s.offset,
-    ) * scale;
+    let origin = area.position.y as f64 / scale;
+    let y = vertical_origin(origin, available, height, s.notch_height, s.offset) * scale;
+    let notch_top = notch_top_in_panel(origin, available, height, s.notch_height, s.offset);
+    let shifted = {
+        let mut current = state_lock().lock().expect("edge state");
+        let shifted = current.notch_top.round() != notch_top.round();
+        current.notch_top = notch_top;
+        shifted
+    };
     let size = window.inner_size()?;
     if size.width != (width * scale).round() as u32
         || size.height != (height * scale).round() as u32
@@ -391,7 +553,7 @@ fn layout(app: &tauri::AppHandle) -> tauri::Result<()> {
     if window.outer_position()? != target {
         window.set_position(target)?;
     }
-    Ok(())
+    Ok(shifted)
 }
 
 #[cfg(test)]
@@ -468,14 +630,47 @@ mod tests {
             815.0
         );
 
-        // A panel taller than the notch cannot: it is held inside the work
-        // area, which pulls the notch back with it. Hence `dimensions` sizing
-        // the panel to its content rather than to a fixed height.
+        // A taller panel is held inside the work area, so its centre cannot
+        // reach the ends — which is why the notch is placed inside it rather
+        // than centred in it.
         let centred = vertical_origin(origin, available, panel, notch, 0.0) + panel / 2.0;
         assert!(centred > 135.0);
         assert_eq!(
             vertical_origin(origin, available, panel, notch, 0.0),
             origin
+        );
+    }
+
+    #[test]
+    fn an_open_card_does_not_shorten_the_notch_travel() {
+        // 900pt of work area from 25, a 223pt notch, and a 420pt card holding
+        // the panel open. Centring the notch in that panel would strand its
+        // centre between 235 and 715; placing it inside reaches 136.5 and
+        // 813.5, which is the whole edge.
+        let (origin, available, notch, panel) = (25.0, 900.0, 223.0, 420.0);
+        let screen_top = |offset: f64| {
+            vertical_origin(origin, available, panel, notch, offset)
+                + notch_top_in_panel(origin, available, panel, notch, offset)
+        };
+        assert_eq!(screen_top(0.0), origin);
+        assert_eq!(screen_top(1.0), origin + available - notch);
+        // Centring it in the panel is what used to cost the last 98 points:
+        // the panel stops at the bottom of the work area and its centre with
+        // it, well short of where the notch's centre is allowed to go.
+        let centred = vertical_origin(origin, available, panel, notch, 1.0) + panel / 2.0;
+        assert_eq!(centred, 715.0);
+        assert_eq!(center_for_offset(1.0, origin, available, notch), 813.5);
+
+        // The notch stays inside the panel at every point along the way, so a
+        // shift never clips it.
+        for step in 0..=20 {
+            let at = notch_top_in_panel(origin, available, panel, notch, f64::from(step) / 20.0);
+            assert!((0.0..=panel - notch).contains(&at));
+        }
+        // Folded, the panel is the notch, so there is nothing to shift.
+        assert_eq!(
+            notch_top_in_panel(origin, available, notch, notch, 0.4),
+            0.0
         );
     }
 

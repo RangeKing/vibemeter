@@ -37,17 +37,12 @@ import type {
 
 export const api = {
   edgeState: () => invoke<EdgeState>("get_edge_state"),
-  setEdgePlacement: (
-    drag?: { startOffset: number; deltaY: number },
-    notchHeight?: number,
-    cardHeight?: number,
-  ) =>
-    invoke<void>("set_edge_placement", {
-      startOffset: drag?.startOffset,
-      deltaY: drag?.deltaY,
-      notchHeight,
-      cardHeight,
-    }),
+  setEdgePlacement: (notchHeight?: number, cardHeight?: number) =>
+    invoke<void>("set_edge_placement", { notchHeight, cardHeight }),
+  /* The drag itself is tracked natively: the page's own coordinates are
+     relative to the window the drag is moving, so it can only say when. */
+  startEdgeDrag: () => invoke<void>("start_edge_drag"),
+  endEdgeDrag: () => invoke<{ moved: boolean; offset: number }>("end_edge_drag"),
   setEdgeExpanded: (expanded: boolean, pinned?: boolean) => invoke<void>("set_edge_expanded", { expanded, pinned }),
   overview: (range: string) => invoke<OverviewResponse>("get_overview", { range }),
   phraseCloud: (range: string) => invoke<PhraseCloudResponse>("get_phrase_cloud", { range }),

@@ -15,23 +15,32 @@ import type {
 import { EdgeSidebar, notchHeightFor } from "./EdgeSidebar";
 
 const mocks = vi.hoisted(() => ({
-  state: { enabled: true, expanded: true, pinned: false, side: "right", offset: 0.5 } as EdgeState,
-  listener: undefined as undefined | ((event: { payload: EdgeState }) => void),
+  state: {
+    enabled: true,
+    expanded: true,
+    pinned: false,
+    side: "right",
+    offset: 0.5,
+    notchTop: 0,
+  } as EdgeState,
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
   expand: vi.fn(),
   settings: vi.fn(),
   main: vi.fn(),
   providers: vi.fn(),
   sources: vi.fn(),
   placement: vi.fn(),
+  startDrag: vi.fn(),
+  endDrag: vi.fn(async () => ({ moved: false, offset: 0.5 })),
   setSetting: vi.fn(),
   refreshProviders: vi.fn(),
   credentialsAllowed: "true",
   edgeSidebarAgents: "auto",
 }));
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_name, cb) => {
-    mocks.listener = cb;
-    return () => {};
+  listen: vi.fn(async (name: string, cb: (event: { payload: unknown }) => void) => {
+    mocks.listeners.set(name, cb);
+    return () => mocks.listeners.delete(name);
   }),
 }));
 vi.mock("../lib/api", () => ({
@@ -43,6 +52,8 @@ vi.mock("../lib/api", () => ({
     providers: mocks.providers,
     sources: mocks.sources,
     setEdgePlacement: mocks.placement,
+    startEdgeDrag: mocks.startDrag,
+    endEdgeDrag: mocks.endDrag,
     setSetting: mocks.setSetting,
     refreshProviders: mocks.refreshProviders,
     settings: async (): Promise<Partial<AppSettings>> => ({
@@ -113,11 +124,21 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   await i18n.changeLanguage("en-US");
-  mocks.state = { enabled: true, expanded: true, pinned: false, side: "right", offset: 0.5 };
+  mocks.listeners.clear();
+  mocks.state = {
+    enabled: true,
+    expanded: true,
+    pinned: false,
+    side: "right",
+    offset: 0.5,
+    notchTop: 0,
+  };
   mocks.credentialsAllowed = "true";
   mocks.edgeSidebarAgents = "auto";
   mocks.refreshProviders.mockResolvedValue([]);
   mocks.placement.mockResolvedValue(undefined);
+  mocks.startDrag.mockResolvedValue(undefined);
+  mocks.endDrag.mockResolvedValue({ moved: false, offset: 0.5 });
   mocks.setSetting.mockResolvedValue(undefined);
   mocks.sources.mockResolvedValue([
     source("claude-code"),
@@ -137,7 +158,7 @@ beforeEach(async () => {
   ]);
   mocks.expand.mockImplementation(async (expanded: boolean, pinned?: boolean) => {
     mocks.state = { ...mocks.state, expanded, pinned: pinned ?? mocks.state.pinned };
-    mocks.listener?.({ payload: mocks.state });
+    mocks.listeners.get("edge-state")?.({ payload: mocks.state });
   });
 });
 afterEach(() => {
@@ -382,31 +403,44 @@ describe("Edge sidebar", () => {
     strip.releasePointerCapture = vi.fn();
     // The page reports how long the notch and the card are, so the panel is
     // never taller than what it shows — a taller one costs travel.
-    expect(mocks.placement).toHaveBeenLastCalledWith(undefined, 276, undefined);
+    expect(mocks.placement).toHaveBeenLastCalledWith(276, undefined);
     mocks.placement.mockClear();
 
     await act(async () => {
       fireEvent.pointerDown(strip, { button: 0, pointerId: 1, screenY: 500 });
-      // Under the threshold: still a click. Nothing is sent, so a press on the
-      // strip cannot move it at all.
-      fireEvent.pointerMove(strip, { pointerId: 1, screenY: 502 });
     });
+    // The press says only that a drag may have begun. No coordinate from the
+    // page goes anywhere: every one of them is measured against the window
+    // this drag is about to move, so feeding one back in would make the strip
+    // chase its own movement.
+    expect(mocks.startDrag).toHaveBeenCalledOnce();
     expect(mocks.placement).not.toHaveBeenCalled();
-
     await act(async () => {
       fireEvent.pointerMove(strip, { pointerId: 1, screenY: 560 });
     });
-    // Where it was, plus how far the pointer moved. No absolute screen
-    // position is read, so nothing can jump to the pointer.
-    expect(mocks.placement).toHaveBeenCalledWith({ startOffset: 0.5, deltaY: 60 }, 276);
+    expect(mocks.placement).not.toHaveBeenCalled();
 
-    // A drag that passes over a ring must not switch the card to it.
+    // Until it has travelled far enough, the press is still a click, so the
+    // strip has not moved and the rings still answer the pointer.
     const codex = screen.getByRole("button", { name: /^Codex/ });
     await act(async () => {
       fireEvent.pointerEnter(codex);
-      fireEvent.click(codex);
     });
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Claude Code");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Codex");
+
+    // The native tracker owns the threshold and says when it is crossed.
+    await act(async () => {
+      mocks.listeners.get("edge-drag")?.({ payload: true });
+    });
+    expect(strip.className).toContain("is-dragging");
+
+    // A drag that passes over a ring must not switch the card to it.
+    const claude = screen.getByRole("button", { name: /^Claude Code/ });
+    await act(async () => {
+      fireEvent.pointerEnter(claude);
+      fireEvent.click(claude);
+    });
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Codex");
 
     // Dragging pulls the window out from under the pointer, so leaving the
     // panel mid-drag must not start folding it away.
@@ -417,11 +451,38 @@ describe("Edge sidebar", () => {
     });
     expect(mocks.expand).not.toHaveBeenCalled();
 
-    // The offset is written back once, at the end, not once per frame.
+    // The offset is written back once, at the end, and it is the one the
+    // tracker ended on rather than anything the page worked out.
+    mocks.endDrag.mockResolvedValue({ moved: true, offset: 0.82 });
     await act(async () => {
       fireEvent.pointerUp(strip, { pointerId: 1, screenY: 560 });
     });
-    expect(mocks.setSetting).toHaveBeenCalledExactlyOnceWith("edgeSidebarOffset", "0.5");
+    expect(mocks.setSetting).toHaveBeenCalledExactlyOnceWith("edgeSidebarOffset", "0.82");
+  });
+
+  it("leaves a press that never moved alone", async () => {
+    await mount();
+    const strip = document.querySelector(".edge-notch") as HTMLElement;
+    strip.setPointerCapture = vi.fn();
+    strip.releasePointerCapture = vi.fn();
+    mocks.placement.mockClear();
+
+    await act(async () => {
+      fireEvent.pointerDown(strip, { button: 0, pointerId: 1, screenY: 500 });
+      fireEvent.pointerUp(strip, { pointerId: 1, screenY: 500 });
+    });
+    // Nothing was placed, and nothing was saved: a click on the strip is a
+    // click, not a move to wherever the pointer happens to be.
+    expect(mocks.placement).not.toHaveBeenCalled();
+    expect(mocks.setSetting).not.toHaveBeenCalled();
+    expect(strip.className).not.toContain("is-dragging");
+  });
+
+  it("puts the strip where the panel says, so an open card costs it no travel", async () => {
+    mocks.state = { ...mocks.state, notchTop: 97 };
+    await mount();
+    const strip = document.querySelector(".edge-notch") as HTMLElement;
+    expect(strip.style.marginTop).toBe("97px");
   });
 
   it("keeps the notch inside the folded panel however many providers report", async () => {

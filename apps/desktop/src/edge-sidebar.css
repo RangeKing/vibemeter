@@ -30,7 +30,10 @@ html[data-surface="edge"] #root {
   width: 240px;
   height: 100%;
   display: flex;
-  align-items: center;
+  /* The strip is placed by `notchTop`, not centred: an open card makes the
+     panel taller than the strip, and a panel held inside the work area would
+     drag the strip back from the ends of the display with it. */
+  align-items: flex-start;
   pointer-events: none;
   background: transparent !important;
   color: #fff;
@@ -218,6 +221,8 @@ html[data-surface="edge"] #root {
    ========================================================================== */
 .edge-sheet {
   position: relative;
+  /* The card stays inside the panel wherever the strip has gone. */
+  align-self: center;
   /* Takes whatever the strip and its margins leave, so the panel width is the
      one number that decides how wide the card is. */
   flex: 1 1 auto;

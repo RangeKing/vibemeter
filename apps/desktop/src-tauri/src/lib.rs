@@ -311,14 +311,29 @@ fn set_edge_expanded(app: AppHandle, expanded: bool, pinned: Option<bool>) -> Ap
 #[tauri::command]
 fn set_edge_placement(
     app: AppHandle,
-    start_offset: Option<f64>,
-    delta_y: Option<f64>,
     notch_height: Option<f64>,
     card_height: Option<f64>,
 ) -> AppResult<()> {
-    let drag = start_offset.zip(delta_y);
-    edge::set_placement(&app, drag, notch_height, card_height)
+    edge::set_placement(&app, notch_height, card_height)
         .map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EdgeDragResult {
+    moved: bool,
+    offset: f64,
+}
+
+#[tauri::command]
+fn start_edge_drag(app: AppHandle) -> AppResult<()> {
+    edge::begin_drag(&app).map_err(|error| AppError::InvalidRequest(error.to_string()))
+}
+
+#[tauri::command]
+fn end_edge_drag() -> EdgeDragResult {
+    let (moved, offset) = edge::end_drag();
+    EdgeDragResult { moved, offset }
 }
 
 #[tauri::command]
@@ -1348,6 +1363,8 @@ pub fn run() {
             get_edge_state,
             set_edge_expanded,
             set_edge_placement,
+            start_edge_drag,
+            end_edge_drag,
             set_notch_pinned,
             set_notch_activity,
             set_notch_layout,
