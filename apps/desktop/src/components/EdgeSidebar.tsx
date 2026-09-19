@@ -455,6 +455,11 @@ export function EdgeSidebar({ locale }: { locale: Locale }) {
         if (!stateRef.current.expanded) void expand(true);
       }}
       onPointerLeave={scheduleFold}
+      /* A native drag starting anywhere in here would take the press with it:
+         WebKit cancels the pointer the moment one begins, so a drag that
+         happened to start on a label carried the label away and left the strip
+         behind. Nothing in a read-only overlay is worth dragging out of it. */
+      onDragStart={(event) => event.preventDefault()}
       onFocus={cancelFold}
       onBlur={scheduleFold}
       onKeyDown={(event) => {

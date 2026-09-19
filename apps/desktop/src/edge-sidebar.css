@@ -43,6 +43,13 @@ html[data-surface="edge"] #root {
   --agent-monochrome: #f4f4f0;
 }
 
+/* Not inherited, so it has to be said for the labels and marks themselves and
+   not just for the surface around them. */
+.edge-surface,
+.edge-surface * {
+  -webkit-user-drag: none;
+}
+
 .edge-surface.side-right {
   right: 0;
   flex-direction: row-reverse;

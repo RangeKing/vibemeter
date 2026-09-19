@@ -478,6 +478,29 @@ describe("Edge sidebar", () => {
     expect(strip.className).not.toContain("is-dragging");
   });
 
+  it("refuses to let anything be dragged out of the overlay", async () => {
+    await mount();
+    const strip = document.querySelector(".edge-notch") as HTMLElement;
+    strip.setPointerCapture = vi.fn();
+    strip.releasePointerCapture = vi.fn();
+
+    // WebKit cancels the pointer as soon as a native drag begins, so a label
+    // that could be dragged away took the strip's own drag with it.
+    for (const target of [
+      document.querySelector(".edge-ring-label") as HTMLElement,
+      document.querySelector(".edge-quota-heading strong") as HTMLElement,
+    ]) {
+      expect(target).toBeTruthy();
+      await act(async () => {
+        fireEvent.pointerDown(strip, { button: 0, pointerId: 1, screenY: 500 });
+      });
+      expect(fireEvent.dragStart(target)).toBe(false);
+      await act(async () => {
+        fireEvent.pointerUp(strip, { pointerId: 1, screenY: 500 });
+      });
+    }
+  });
+
   it("puts the strip where the panel says, so an open card costs it no travel", async () => {
     mocks.state = { ...mocks.state, notchTop: 97 };
     await mount();
